@@ -158,7 +158,7 @@ void SPHERES_GIZMO::render3dSpheresGizmo( glm::mat4 aCameraRotationMatrix )
                 for( int i = 0; i <= aSegments; ++i )
                 {
                     float     angle = 2.0f * glm::pi<float>() * i / aSegments;
-                    glm::vec3 dir = cos( angle ) * aCamRight + sin( angle ) * aCamUp;
+                    glm::vec3 dir = float( cos( angle ) ) * aCamRight + float( sin( angle ) ) * aCamUp;
 
                     glm::vec3 outer = aCenter + dir * ( aRadius + thickness * 0.5f );
                     glm::vec3 inner = aCenter + dir * ( aRadius - thickness * 0.5f );
