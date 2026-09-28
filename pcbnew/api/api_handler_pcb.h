@@ -134,6 +134,10 @@ private:
 
     HANDLER_RESULT<DragTrackResponse> handleDragTrack( const HANDLER_CONTEXT<DragTrack>& aCtx );
 
+    HANDLER_RESULT<CleanupTracksResponse> handleCleanupTracks( const HANDLER_CONTEXT<CleanupTracks>& aCtx );
+
+    HANDLER_RESULT<RunDrcResponse> handleRunDrc( const HANDLER_CONTEXT<RunDrc>& aCtx );
+
     std::optional<ApiResponseStatus> checkRouterRequest( const std::string& aCommand,
                                                          const std::string& aClientName,
                                                          board::types::BoardLayer aLayer,

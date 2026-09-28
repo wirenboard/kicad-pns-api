@@ -3667,10 +3667,36 @@ static std::vector<VECTOR2I> apiStepPoints( const VECTOR2I& aFrom, const VECTOR2
 }
 
 
-ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiRouteTrack( const VECTOR2I& aStart, PCB_LAYER_ID aLayer,
-                                                    const std::vector<VECTOR2I>& aPoints,
-                                                    PNS::PNS_MODE aMode, int aWidth,
-                                                    bool aForceFinish, bool aFreeAngle )
+static std::set<KIID> apiTrackIds( BOARD* aBoard )
+{
+    std::set<KIID> ids;
+
+    for( PCB_TRACK* track : aBoard->Tracks() )
+        ids.insert( track->m_Uuid );
+
+    return ids;
+}
+
+
+static void apiTrackDiff( BOARD* aBoard, const std::set<KIID>& aBefore, ROUTER_TOOL::API_RESULT& aRes )
+{
+    std::set<KIID> after = apiTrackIds( aBoard );
+
+    for( const KIID& id : after )
+    {
+        if( !aBefore.count( id ) )
+            aRes.created.push_back( id );
+    }
+
+    for( const KIID& id : aBefore )
+    {
+        if( !after.count( id ) )
+            aRes.removed.push_back( id );
+    }
+}
+
+
+ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiRouteTrack( const API_ROUTE_REQUEST& aReq )
 {
     API_RESULT res;
 
@@ -3689,35 +3715,63 @@ ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiRouteTrack( const VECTOR2I& aStart, PCB_
     Reset( RUN );
 
     PCB_EDIT_FRAME*        editFrame = getEditFrame<PCB_EDIT_FRAME>();
-    BOARD_DESIGN_SETTINGS& bds = frame()->GetBoard()->GetDesignSettings();
+    BOARD_DESIGN_SETTINGS& bds = board()->GetDesignSettings();
     PNS::ROUTING_SETTINGS& settings = m_router->Settings();
     PNS::PNS_MODE          savedMode = settings.Mode();
     bool                   savedFreeAngle = settings.GetFreeAngleMode();
+    DIRECTION_45::CORNER_MODE savedCorner = settings.GetCornerMode();
     bool                   savedTempOverride = bds.m_TempOverrideTrackWidth;
+    std::set<KIID>         before = apiTrackIds( board() );
 
-    settings.SetMode( aMode );
-    settings.SetFreeAngleMode( aFreeAngle );
-    m_router->SetMode( PNS::PNS_MODE_ROUTE_SINGLE );
+    settings.SetMode( aReq.mode );
+    settings.SetFreeAngleMode( aReq.freeAngle );
 
-    int pnsLayer = m_iface->GetPNSLayerFromBoardLayer( aLayer );
+    if( aReq.cornerMode )
+        settings.SetCornerMode( *aReq.cornerMode );
 
-    m_startItem = pickSingleItem( aStart, nullptr, pnsLayer );
-    m_startSnapPoint = m_startItem ? snapToItem( m_startItem, aStart ) : aStart;
+    m_router->SetMode( aReq.diffPair ? PNS::PNS_MODE_ROUTE_DIFF_PAIR : PNS::PNS_MODE_ROUTE_SINGLE );
+
+    int pnsLayer = m_iface->GetPNSLayerFromBoardLayer( aReq.layer );
+
+    m_startItem = pickSingleItem( aReq.start, nullptr, pnsLayer );
+    m_startSnapPoint = m_startItem ? snapToItem( m_startItem, aReq.start ) : aReq.start;
 
     m_originalActiveLayer = editFrame->GetActiveLayer();
-    editFrame->SetActiveLayer( aLayer );
+    editFrame->SetActiveLayer( aReq.layer );
 
     PNS::SIZES_SETTINGS sizes( m_router->Sizes() );
-    m_iface->SetStartLayerFromPCBNew( aLayer );
+    m_iface->SetStartLayerFromPCBNew( aReq.layer );
     bds.m_TempOverrideTrackWidth = false;
-    m_iface->ImportSizes( sizes, m_startItem, nullptr, aStart );
+    m_iface->ImportSizes( sizes, m_startItem, nullptr, aReq.start );
 
-    if( aWidth > 0 )
+    if( aReq.width > 0 && !aReq.diffPair )
     {
-        sizes.SetTrackWidth( aWidth );
+        sizes.SetTrackWidth( aReq.width );
         sizes.SetTrackWidthIsExplicit( true );
         sizes.SetWidthSource( wxS( "API request" ) );
     }
+
+    if( aReq.diffPair )
+    {
+        if( aReq.width > 0 )
+        {
+            sizes.SetDiffPairWidth( aReq.width );
+            sizes.SetDiffPairWidthSource( wxS( "API request" ) );
+        }
+
+        if( aReq.diffPairGap > 0 )
+        {
+            sizes.SetDiffPairGap( aReq.diffPairGap );
+            sizes.SetDiffPairGapSource( wxS( "API request" ) );
+            sizes.SetDiffPairViaGapSameAsTraceGap( true );
+        }
+    }
+
+    if( aReq.viaDiameter > 0 )
+        sizes.SetViaDiameter( aReq.viaDiameter );
+
+    if( aReq.viaDrill > 0 )
+        sizes.SetViaDrill( aReq.viaDrill );
 
     sizes.AddLayerPair( m_iface->GetPNSLayerFromBoardLayer( frame()->GetScreen()->m_Route_Layer_TOP ),
                         m_iface->GetPNSLayerFromBoardLayer( frame()->GetScreen()->m_Route_Layer_BOTTOM ) );
@@ -3728,6 +3782,7 @@ ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiRouteTrack( const VECTOR2I& aStart, PCB_
             {
                 settings.SetMode( savedMode );
                 settings.SetFreeAngleMode( savedFreeAngle );
+                settings.SetCornerMode( savedCorner );
                 bds.m_TempOverrideTrackWidth = savedTempOverride;
                 m_router->ClearViewDecorations();
                 view()->ClearPreview();
@@ -3744,15 +3799,52 @@ ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiRouteTrack( const VECTOR2I& aStart, PCB_
     }
 
     PNS::NET_HANDLE net = m_startItem ? m_startItem->Net() : nullptr;
+    PCB_LAYER_ID    curLayer = aReq.layer;
     VECTOR2I        reached = m_startSnapPoint;
     bool            done = false;
     bool            ok = true;
     const int       tolerance = pcbIUScale.mmToIU( 0.001 );
 
-    for( size_t i = 0; i < aPoints.size() && !done; ++i )
+    for( size_t i = 0; i < aReq.points.size() && !done && ok; ++i )
     {
-        const VECTOR2I& p = aPoints[i];
-        bool            last = ( i + 1 == aPoints.size() );
+        const VECTOR2I& p = aReq.points[i];
+        bool            last = ( i + 1 == aReq.points.size() );
+
+        // A layer change before this leg: drop a through via at the point reached so far
+        if( !aReq.pointLayers.empty() && aReq.pointLayers[i] != curLayer )
+        {
+            PCB_LAYER_ID        target = aReq.pointLayers[i];
+            PNS::SIZES_SETTINGS vs( m_router->Sizes() );
+
+            if( aReq.viaDiameter <= 0 )
+                vs.SetViaDiameter( bds.GetCurrentViaSize() );
+
+            if( aReq.viaDrill <= 0 )
+                vs.SetViaDrill( bds.GetCurrentViaDrill() );
+
+            vs.SetViaType( VIATYPE::THROUGH );
+            vs.ClearLayerPairs();
+            vs.AddLayerPair( m_iface->GetPNSLayerFromBoardLayer( curLayer ),
+                             m_iface->GetPNSLayerFromBoardLayer( target ) );
+            m_router->UpdateSizes( vs );
+
+            if( !m_router->IsPlacingVia() )
+                m_router->ToggleViaPlacement();
+
+            m_router->Move( reached, nullptr );
+
+            if( !m_router->FixRoute( reached, nullptr, false, false )
+                    && ( m_router->Placer()->CurrentEnd() - reached ).EuclideanNorm() > tolerance )
+            {
+                ok = false;
+                res.message = wxString::Format( wxS( "could not place a via at point %d" ),
+                                                (int) i - 1 );
+                break;
+            }
+
+            m_router->SwitchLayer( m_iface->GetPNSLayerFromBoardLayer( target ) );
+            curLayer = target;
+        }
 
         // Intermediate points are plain corners; only the last point may land on (and snap to)
         // an item of the net, and never on the start item itself.
@@ -3766,7 +3858,7 @@ ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiRouteTrack( const VECTOR2I& aStart, PCB_
         for( const VECTOR2I& q : apiStepPoints( reached, m_endSnapPoint ) )
             m_router->Move( q, q == m_endSnapPoint ? m_endItem : nullptr );
 
-        done = m_router->FixRoute( m_endSnapPoint, m_endItem, last && aForceFinish, false );
+        done = m_router->FixRoute( m_endSnapPoint, m_endItem, last && aReq.forceFinish, false );
 
         if( done )
         {
@@ -3784,7 +3876,6 @@ ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiRouteTrack( const VECTOR2I& aStart, PCB_
             res.message = m_router->FailureReason().IsEmpty()
                                   ? wxString::Format( wxS( "could not reach point %d" ), (int) i )
                                   : m_router->FailureReason();
-            break;
         }
     }
 
@@ -3799,6 +3890,9 @@ ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiRouteTrack( const VECTOR2I& aStart, PCB_
     }
 
     m_router->StopRouting();
+
+    if( ok )
+        apiTrackDiff( board(), before, res );
 
     res.success = ok;
     restore();
@@ -3825,6 +3919,7 @@ ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiDragTrack( const VECTOR2I& aGrab, PCB_LA
 
     PNS::ROUTING_SETTINGS& settings = m_router->Settings();
     PNS::PNS_MODE          savedMode = settings.Mode();
+    std::set<KIID>         before = apiTrackIds( board() );
 
     settings.SetMode( aMode );
 
@@ -3897,6 +3992,9 @@ ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiDragTrack( const VECTOR2I& aGrab, PCB_LA
 
     res.success = committed && lastValid == aTarget;
     res.end = committed ? lastValid : aGrab;
+
+    if( committed )
+        apiTrackDiff( board(), before, res );
     restore();
     return res;
 }

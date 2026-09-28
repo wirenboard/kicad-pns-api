@@ -702,6 +702,27 @@ message RouteTrack
   bool finish_at_last_point = 7;
   // Allow any-angle routing instead of 45-degree posture
   bool free_angle = 8;
+  // Route a differential pair (start on either net of the pair); width applies to each track
+  bool diff_pair = 9;
+  // Gap between the tracks of the pair; if absent, from the design rules like in the editor
+  optional kiapi.common.types.Distance diff_pair_gap = 10;
+  // Corner style; RCM_UNKNOWN keeps the editor's setting
+  RouterCornerMode corner_mode = 11;
+  // Empty, or the layer of each point (same length as points).  When the layer changes a
+  // through via is placed at the previous point and the route continues on the new layer.
+  repeated kiapi.board.types.BoardLayer point_layers = 12;
+  // Via size for layer changes; if absent, from the design rules / current via size
+  optional kiapi.common.types.Distance via_diameter = 13;
+  optional kiapi.common.types.Distance via_drill = 14;
+}
+
+enum RouterCornerMode
+{
+  RCM_UNKNOWN     = 0;
+  RCM_MITERED_45  = 1;
+  RCM_ROUNDED_45  = 2;
+  RCM_MITERED_90  = 3;
+  RCM_ROUNDED_90  = 4;
 }
 
 message RouteTrackResponse
@@ -714,6 +735,9 @@ message RouteTrackResponse
   string message = 3;
   // End point the router actually reached
   kiapi.common.types.Vector2 end = 4;
+  // Tracks, arcs and vias added / removed by the route (removed: replaced or loop-removed copper)
+  repeated kiapi.common.types.KIID created_items = 5;
+  repeated kiapi.common.types.KIID removed_items = 6;
 }
 
 // Drag a track segment, arc or via like the interactive "Drag (45 degree)" tool: grab the item at
@@ -737,4 +761,67 @@ message DragTrackResponse
   string message = 2;
   // Where the grab point ended up (the grab point itself if nothing was committed)
   kiapi.common.types.Vector2 end = 3;
+  repeated kiapi.common.types.KIID created_items = 4;
+  repeated kiapi.common.types.KIID removed_items = 5;
+}
+
+// Runs the board editor's "Cleanup Tracks & Vias" on the whole board or on the given nets.
+// One undo step.  Cannot run inside an open commit.
+message CleanupTracks
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+  // Restrict to these nets (empty = all nets)
+  repeated string nets = 2;
+  // Merge collinear segments and delete zero-length ones
+  bool merge_segments = 3;
+  // Delete tracks connected at one end only
+  bool delete_dangling_tracks = 4;
+  // Delete tracks fully inside pads
+  bool delete_tracks_in_pads = 5;
+  // Delete segments that short two nets
+  bool delete_shorting_tracks = 6;
+  // Delete redundant (superimposed) vias
+  bool delete_redundant_vias = 7;
+  // Delete vias connected on a single layer only
+  bool delete_dangling_vias = 8;
+  // Only report what would change
+  bool dry_run = 9;
+}
+
+// Runs the design rule checker on the open board and returns the violations (no markers are
+// added, no report files are written).  Schematic parity is not checked.
+message RunDrc
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+  // Refill all zones first (like the DRC dialog's option)
+  bool refill_zones = 2;
+  // Report all errors of each track instead of the first one
+  bool report_all_track_errors = 3;
+  // Only return violations that involve an item of one of these nets (empty = all)
+  repeated string nets = 4;
+}
+
+message DrcViolation
+{
+  // Settings key of the check, e.g. "clearance", "unconnected_items", "tracks_crossing"
+  string type = 1;
+  DrcSeverity severity = 2;
+  string description = 3;
+  kiapi.common.types.Vector2 position = 4;
+  kiapi.board.types.BoardLayer layer = 5;
+  repeated kiapi.common.types.KIID items = 6;
+  repeated string item_descriptions = 7;
+  // Rule that produced the violation, if any
+  string rule = 8;
+}
+
+message RunDrcResponse
+{
+  repeated DrcViolation violations = 1;
+}
+
+message CleanupTracksResponse
+{
+  // One line per change (cleanup item description with position)
+  repeated string changes = 1;
 }

@@ -101,23 +101,42 @@ public:
     /// Result of a programmatic (API) router operation
     struct API_RESULT
     {
-        bool     success = false;
-        bool     completed = false;   ///< route ended on an item of the same net
-        bool     busy = false;        ///< router already in use (interactive or another call)
-        bool     badRequest = false;  ///< the request cannot be served (nothing to drag, locked)
-        wxString message;             ///< router failure reason, if any
-        VECTOR2I end;                 ///< last point the router actually reached
+        bool              success = false;
+        bool              completed = false;   ///< route ended on an item of the same net
+        bool              busy = false;        ///< router already in use
+        bool              badRequest = false;  ///< the request cannot be served (nothing to drag, locked)
+        wxString          message;             ///< router failure reason, if any
+        VECTOR2I          end;                 ///< last point the router actually reached
+        std::vector<KIID> created;             ///< tracks, arcs and vias added by the operation
+        std::vector<KIID> removed;             ///< tracks, arcs and vias removed by the operation
+    };
+
+    /// Parameters of ApiRouteTrack()
+    struct API_ROUTE_REQUEST
+    {
+        VECTOR2I                  start;
+        PCB_LAYER_ID              layer = UNDEFINED_LAYER;
+        std::vector<VECTOR2I>     points;
+        std::vector<PCB_LAYER_ID> pointLayers;   ///< empty, or one per point (change = via)
+        PNS::PNS_MODE             mode = PNS::RM_Shove;
+        int                       width = 0;         ///< 0 = from the design rules
+        bool                      forceFinish = false;
+        bool                      freeAngle = false;
+        bool                      diffPair = false;
+        int                       diffPairGap = 0;   ///< 0 = from the design rules
+        std::optional<DIRECTION_45::CORNER_MODE> cornerMode;
+        int                       viaDiameter = 0;   ///< 0 = from the design rules
+        int                       viaDrill = 0;      ///< 0 = from the design rules
     };
 
     /**
-     * Route one track with the interactive router, driven by points instead of mouse events.
-     * Each point acts like a left click; the route completes when the last point lands on an
-     * item of the start net.  All or nothing: if any leg cannot be fixed at its point nothing
-     * is committed.  Commits as one undo step.  No vias / layer changes.
+     * Route one track (or differential pair) with the interactive router, driven by points
+     * instead of mouse events.  Each point acts like a left click; the route completes when the
+     * last point lands on an item of the start net.  A change of layer between points places a
+     * through via at the previous point.  All or nothing: if any leg cannot be fixed at its
+     * point nothing is committed.  Commits as one undo step.
      */
-    API_RESULT ApiRouteTrack( const VECTOR2I& aStart, PCB_LAYER_ID aLayer,
-                              const std::vector<VECTOR2I>& aPoints, PNS::PNS_MODE aMode,
-                              int aWidth, bool aForceFinish, bool aFreeAngle );
+    API_RESULT ApiRouteTrack( const API_ROUTE_REQUEST& aReq );
 
     /**
      * Drag the track/arc/via found at aGrab on aLayer so that the grab point moves to aTarget,

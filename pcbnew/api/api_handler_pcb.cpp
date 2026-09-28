@@ -50,6 +50,10 @@
 #include <pcb_text.h>
 #include <pcb_textbox.h>
 #include <pcb_track.h>
+#include <tracks_cleaner.h>
+#include <drc/drc_engine.h>
+#include <tools/zone_filler_tool.h>
+#include <cleanup_item.h>
 #include <pcbnew_id.h>
 #include <pcb_marker.h>
 #include <pcb_point.h>
@@ -160,6 +164,8 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
             &API_HANDLER_PCB::handleInjectDrcError );
     registerHandler<RouteTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteTrack );
     registerHandler<DragTrack, DragTrackResponse>( &API_HANDLER_PCB::handleDragTrack );
+    registerHandler<CleanupTracks, CleanupTracksResponse>( &API_HANDLER_PCB::handleCleanupTracks );
+    registerHandler<RunDrc, RunDrcResponse>( &API_HANDLER_PCB::handleRunDrc );
 
     registerHandler<GetVariants, VariantsResponse>( &API_HANDLER_PCB::handleGetVariants );
     registerHandler<AddVariant, Empty>( &API_HANDLER_PCB::handleAddVariant );
@@ -3482,6 +3488,14 @@ static PNS::PNS_MODE routerModeFromProto( RouterMode aMode, ROUTER_TOOL* aTool )
 }
 
 
+static void packIds( google::protobuf::RepeatedPtrField<types::KIID>* aOut,
+                     const std::vector<KIID>& aIds )
+{
+    for( const KIID& id : aIds )
+        aOut->Add()->set_value( id.AsStdString() );
+}
+
+
 HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
         const HANDLER_CONTEXT<RouteTrack>& aCtx )
 {
@@ -3490,10 +3504,10 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
-    PCB_LAYER_ID layer;
+    ROUTER_TOOL::API_ROUTE_REQUEST req;
 
     if( std::optional<ApiResponseStatus> err = checkRouterRequest( "RouteTrack", aCtx.ClientName,
-                                                                   aCtx.Request.layer(), layer ) )
+                                                                   aCtx.Request.layer(), req.layer ) )
     {
         return tl::unexpected( *err );
     }
@@ -3501,30 +3515,81 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
     if( aCtx.Request.points_size() == 0 )
         return apiError( ApiStatusCode::AS_BAD_REQUEST, "RouteTrack needs at least one point" );
 
-    int width = 0;
+    auto distance =
+            [&]( const types::Distance& aDist, int& aOut, const char* aWhat ) -> bool
+            {
+                int64_t v = aDist.value_nm();
 
-    if( aCtx.Request.has_width() )
+                if( v <= 0 || v > pcbIUScale.mmToIU( 100 ) )
+                    return false;
+
+                aOut = static_cast<int>( v );
+                return true;
+            };
+
+    if( aCtx.Request.has_width() && !distance( aCtx.Request.width(), req.width, "width" ) )
+        return apiError( ApiStatusCode::AS_BAD_REQUEST, "RouteTrack width out of range" );
+
+    if( aCtx.Request.has_diff_pair_gap()
+        && ( !aCtx.Request.diff_pair()
+             || !distance( aCtx.Request.diff_pair_gap(), req.diffPairGap, "gap" ) ) )
     {
-        int64_t w = aCtx.Request.width().value_nm();
-
-        if( w <= 0 || w > pcbIUScale.mmToIU( 100 ) )
-            return apiError( ApiStatusCode::AS_BAD_REQUEST, "RouteTrack width out of range" );
-
-        width = static_cast<int>( w );
+        return apiError( ApiStatusCode::AS_BAD_REQUEST, "RouteTrack diff_pair_gap out of range" );
     }
 
-    std::vector<VECTOR2I> points;
+    if( aCtx.Request.has_via_diameter()
+        && !distance( aCtx.Request.via_diameter(), req.viaDiameter, "via" ) )
+    {
+        return apiError( ApiStatusCode::AS_BAD_REQUEST, "RouteTrack via_diameter out of range" );
+    }
+
+    if( aCtx.Request.has_via_drill() && !distance( aCtx.Request.via_drill(), req.viaDrill, "drill" ) )
+        return apiError( ApiStatusCode::AS_BAD_REQUEST, "RouteTrack via_drill out of range" );
 
     for( const types::Vector2& p : aCtx.Request.points() )
-        points.emplace_back( UnpackVector2( p ) );
+        req.points.emplace_back( UnpackVector2( p ) );
+
+    if( aCtx.Request.point_layers_size() > 0 )
+    {
+        if( aCtx.Request.point_layers_size() != aCtx.Request.points_size() )
+        {
+            return apiError( ApiStatusCode::AS_BAD_REQUEST,
+                             "RouteTrack point_layers must be empty or match points" );
+        }
+
+        for( int k = 0; k < aCtx.Request.point_layers_size(); ++k )
+        {
+            PCB_LAYER_ID l = FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>(
+                    aCtx.Request.point_layers( k ) );
+
+            if( !IsCopperLayer( l ) || !frame()->GetBoard()->IsLayerEnabled( l ) )
+            {
+                return apiError( ApiStatusCode::AS_BAD_REQUEST,
+                                 "RouteTrack point_layers must be enabled copper layers" );
+            }
+
+            req.pointLayers.push_back( l );
+        }
+    }
+
+    switch( aCtx.Request.corner_mode() )
+    {
+    case RouterCornerMode::RCM_MITERED_45: req.cornerMode = DIRECTION_45::MITERED_45; break;
+    case RouterCornerMode::RCM_ROUNDED_45: req.cornerMode = DIRECTION_45::ROUNDED_45; break;
+    case RouterCornerMode::RCM_MITERED_90: req.cornerMode = DIRECTION_45::MITERED_90; break;
+    case RouterCornerMode::RCM_ROUNDED_90: req.cornerMode = DIRECTION_45::ROUNDED_90; break;
+    default:                               break;
+    }
 
     ROUTER_TOOL* router = toolManager()->GetTool<ROUTER_TOOL>();
 
-    ROUTER_TOOL::API_RESULT r = router->ApiRouteTrack( UnpackVector2( aCtx.Request.start() ), layer,
-                                                       points,
-                                                       routerModeFromProto( aCtx.Request.mode(), router ),
-                                                       width, aCtx.Request.finish_at_last_point(),
-                                                       aCtx.Request.free_angle() );
+    req.start = UnpackVector2( aCtx.Request.start() );
+    req.mode = routerModeFromProto( aCtx.Request.mode(), router );
+    req.forceFinish = aCtx.Request.finish_at_last_point();
+    req.freeAngle = aCtx.Request.free_angle();
+    req.diffPair = aCtx.Request.diff_pair();
+
+    ROUTER_TOOL::API_RESULT r = router->ApiRouteTrack( req );
 
     if( r.busy )
         return apiError( ApiStatusCode::AS_BUSY, r.message.ToStdString() );
@@ -3534,6 +3599,8 @@ HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
     response.set_completed( r.completed );
     response.set_message( r.message.ToUTF8() );
     PackVector2( *response.mutable_end(), r.end );
+    packIds( response.mutable_created_items(), r.created );
+    packIds( response.mutable_removed_items(), r.removed );
     return response;
 }
 
@@ -3570,5 +3637,196 @@ HANDLER_RESULT<DragTrackResponse> API_HANDLER_PCB::handleDragTrack( const HANDLE
     response.set_success( r.success );
     response.set_message( r.message.ToUTF8() );
     PackVector2( *response.mutable_end(), r.end );
+    packIds( response.mutable_created_items(), r.created );
+    packIds( response.mutable_removed_items(), r.removed );
+    return response;
+}
+
+
+HANDLER_RESULT<CleanupTracksResponse> API_HANDLER_PCB::handleCleanupTracks(
+        const HANDLER_CONTEXT<CleanupTracks>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> headless = checkForHeadless( "CleanupTracks" ) )
+        return tl::unexpected( *headless );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    if( m_commits.count( aCtx.ClientName ) )
+        return apiError( ApiStatusCode::AS_BAD_REQUEST, "CleanupTracks cannot run inside an open commit" );
+
+    BOARD*        board = frame()->GetBoard();
+    std::set<int> netCodes;
+
+    for( const std::string& name : aCtx.Request.nets() )
+    {
+        NETINFO_ITEM* net = board->FindNet( wxString::FromUTF8( name ) );
+
+        if( !net )
+            return apiError( ApiStatusCode::AS_BAD_REQUEST, "CleanupTracks: unknown net " + name );
+
+        netCodes.insert( net->GetNetCode() );
+    }
+
+    BOARD_COMMIT   commit( frame() );
+    TRACKS_CLEANER cleaner( board, commit );
+
+    if( !netCodes.empty() )
+    {
+        cleaner.SetFilter(
+                [&]( BOARD_CONNECTED_ITEM* aItem ) -> bool
+                {
+                    return !netCodes.count( aItem->GetNetCode() );
+                } );
+    }
+
+    toolManager()->RunAction( ACTIONS::selectionClear );
+    board->BuildConnectivity();
+
+    std::vector<std::shared_ptr<CLEANUP_ITEM>> items;
+    const CleanupTracks&                        req = aCtx.Request;
+
+    cleaner.CleanupBoard( req.dry_run(), &items, req.delete_redundant_vias(),
+                          req.delete_shorting_tracks(), req.merge_segments(),
+                          req.delete_dangling_tracks(), req.delete_tracks_in_pads(),
+                          req.delete_dangling_vias() );
+
+    if( !req.dry_run() && !commit.Empty() )
+    {
+        commit.Push( _( "API Cleanup Tracks" ) );
+        frame()->GetCanvas()->Refresh();
+    }
+
+    CleanupTracksResponse response;
+
+    for( const std::shared_ptr<CLEANUP_ITEM>& item : items )
+    {
+        wxString line = item->GetErrorMessage( false );
+
+        if( !item->GetMainItemID().AsString().IsEmpty() )
+        {
+            if( BOARD_ITEM* bi = board->ResolveItem( item->GetMainItemID(), true ) )
+            {
+                VECTOR2I p = bi->GetPosition();
+                line << wxString::Format( wxS( " @ %.4f,%.4f mm" ), pcbIUScale.IUTomm( p.x ),
+                                          pcbIUScale.IUTomm( p.y ) );
+            }
+        }
+
+        response.add_changes( line.ToUTF8() );
+    }
+
+    return response;
+}
+
+
+HANDLER_RESULT<RunDrcResponse> API_HANDLER_PCB::handleRunDrc( const HANDLER_CONTEXT<RunDrc>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> headless = checkForHeadless( "RunDrc" ) )
+        return tl::unexpected( *headless );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    BOARD*                      board = frame()->GetBoard();
+    BOARD_DESIGN_SETTINGS&      bds = board->GetDesignSettings();
+    std::shared_ptr<DRC_ENGINE> drcEngine = bds.m_DRCEngine;
+    std::set<int>               netCodes;
+
+    for( const std::string& name : aCtx.Request.nets() )
+    {
+        NETINFO_ITEM* net = board->FindNet( wxString::FromUTF8( name ) );
+
+        if( !net )
+            return apiError( ApiStatusCode::AS_BAD_REQUEST, "RunDrc: unknown net " + name );
+
+        netCodes.insert( net->GetNetCode() );
+    }
+
+    try
+    {
+        drcEngine->InitEngine( board->GetDesignRulesPath() );
+    }
+    catch( const PARSE_ERROR& error )
+    {
+        return apiError( ApiStatusCode::AS_BAD_REQUEST,
+                         "RunDrc: could not compile custom design rules: " + error.What().ToStdString() );
+    }
+
+    if( aCtx.Request.refill_zones() )
+        toolManager()->GetTool<ZONE_FILLER_TOOL>()->FillAllZones( frame(), nullptr, true );
+
+    board->BuildConnectivity();
+
+    RunDrcResponse response;
+
+    drcEngine->SetProgressReporter( nullptr );
+    drcEngine->SetViolationHandler(
+            [&]( const std::shared_ptr<DRC_ITEM>& aItem, const VECTOR2I& aPos, int aLayer,
+                 const std::function<void( PCB_MARKER* )>& aPathGenerator )
+            {
+                SEVERITY severity = bds.GetSeverity( aItem->GetErrorCode() );
+
+                if( severity == RPT_SEVERITY_IGNORE )
+                    return;
+
+                std::vector<KIID> ids;
+
+                for( const KIID& id : { aItem->GetMainItemID(), aItem->GetAuxItemID(),
+                                        aItem->GetAuxItem2ID(), aItem->GetAuxItem3ID() } )
+                {
+                    if( id != niluuid )
+                        ids.push_back( id );
+                }
+
+                if( !netCodes.empty() )
+                {
+                    bool involved = false;
+
+                    for( const KIID& id : ids )
+                    {
+                        if( BOARD_CONNECTED_ITEM* bci = dynamic_cast<BOARD_CONNECTED_ITEM*>(
+                                    board->ResolveItem( id, true ) ) )
+                        {
+                            involved |= netCodes.count( bci->GetNetCode() ) > 0;
+                        }
+                    }
+
+                    if( !involved )
+                        return;
+                }
+
+                DrcViolation* v = response.add_violations();
+                v->set_type( aItem->GetSettingsKey().ToStdString() );
+                v->set_severity( severity == RPT_SEVERITY_ERROR ? DrcSeverity::DRS_ERROR
+                                                                : DrcSeverity::DRS_WARNING );
+                v->set_description( aItem->GetErrorMessage( false ).ToUTF8() );
+                v->set_rule( aItem->GetViolatingRuleDesc( false ).ToUTF8() );
+                PackVector2( *v->mutable_position(), aPos );
+                v->set_layer( ToProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>(
+                        static_cast<PCB_LAYER_ID>( aLayer ) ) );
+
+                for( const KIID& id : ids )
+                {
+                    v->add_items()->set_value( id.AsStdString() );
+
+                    if( BOARD_ITEM* item = board->ResolveItem( id, true ) )
+                        v->add_item_descriptions( item->GetItemDescription( frame(), true ).ToUTF8() );
+                }
+            } );
+
+    drcEngine->RunTests( EDA_UNITS::MM, aCtx.Request.report_all_track_errors(), false );
+    drcEngine->ClearViolationHandler();
+
     return response;
 }
