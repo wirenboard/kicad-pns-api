@@ -21,6 +21,7 @@
 #ifndef KICAD_API_HANDLER_PCB_H
 #define KICAD_API_HANDLER_PCB_H
 
+#include <layer_ids.h>
 #include <api/api_handler_board.h>
 #include <api/pcb_context.h>
 #include <api/board/board_jobs.pb.h>
@@ -128,6 +129,15 @@ private:
 
     HANDLER_RESULT<InjectDrcErrorResponse> handleInjectDrcError(
             const HANDLER_CONTEXT<InjectDrcError>& aCtx );
+
+    HANDLER_RESULT<RouteTrackResponse> handleRouteTrack( const HANDLER_CONTEXT<RouteTrack>& aCtx );
+
+    HANDLER_RESULT<DragTrackResponse> handleDragTrack( const HANDLER_CONTEXT<DragTrack>& aCtx );
+
+    std::optional<ApiResponseStatus> checkRouterRequest( const std::string& aCommand,
+                                                         const std::string& aClientName,
+                                                         board::types::BoardLayer aLayer,
+                                                         PCB_LAYER_ID& aBoardLayer );
 
     HANDLER_RESULT<types::RunJobResponse> handleRunBoardJobExport3D(
             const HANDLER_CONTEXT<RunBoardJobExport3D>& aCtx );

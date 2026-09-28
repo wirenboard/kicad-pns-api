@@ -666,3 +666,75 @@ message InteractiveMoveItems
 
   repeated kiapi.common.types.KIID items = 2;
 }
+
+
+//// Push & shove router commands ////
+// These drive KiCad's interactive router (PNS) programmatically: the same code path as routing
+// or dragging with the mouse, but the points come from the request instead of mouse events.
+// They run synchronously and return when the operation has been committed (one undo step).
+// They require a board editor frame (not available in headless sessions).
+
+enum RouterMode
+{
+  RTM_UNKNOWN          = 0;   // use the editor's current router mode
+  RTM_SHOVE            = 1;   // push other tracks/vias out of the way
+  RTM_WALKAROUND       = 2;   // go around obstacles, never move other items
+  RTM_MARK_OBSTACLES   = 3;   // highlight collisions (only commits if the board allows DRC violations)
+}
+
+// Route a single track like the interactive router: start at `start` on `layer` (a pad, track end
+// or via there becomes the start item and sets the net), then each point in `points` acts like a
+// left click.  If a point lands on an item of the same net the route completes there.
+// Routes one track with the interactive router (like clicking with the mouse).  Each point is a
+// click; intermediate points are plain corners, the last one may land on an item of the net.
+// All or nothing: if a leg cannot be fixed at its point, nothing is committed (success = false).
+// Commits as one undo step and cannot run inside an open commit.  No vias or layer changes.
+message RouteTrack
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+  kiapi.common.types.Vector2 start = 2;
+  kiapi.board.types.BoardLayer layer = 3;
+  repeated kiapi.common.types.Vector2 points = 4;
+  RouterMode mode = 5;
+  // Track width; if absent, the width comes from the design rules / net class like in the editor
+  optional kiapi.common.types.Distance width = 6;
+  // Finish at the last point even when it does not end on an item (like a double click)
+  bool finish_at_last_point = 7;
+  // Allow any-angle routing instead of 45-degree posture
+  bool free_angle = 8;
+}
+
+message RouteTrackResponse
+{
+  // Every point was reached and the route was committed
+  bool success = 1;
+  // The route reached an item of the same net (completed connection)
+  bool completed = 2;
+  // Router failure reason, if any
+  string message = 3;
+  // End point the router actually reached
+  kiapi.common.types.Vector2 end = 4;
+}
+
+// Drag a track segment, arc or via like the interactive "Drag (45 degree)" tool: grab the item at
+// `grab` on `layer` and move that grab point to `target`, shoving neighbours as the mode allows.
+// Drags the track, arc or via under the grab point to the target, like the interactive drag tool
+// (shoving neighbours in shove mode).  Locked items are refused.  Never force-commits.
+message DragTrack
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+  kiapi.common.types.Vector2 grab = 2;
+  kiapi.board.types.BoardLayer layer = 3;
+  kiapi.common.types.Vector2 target = 4;
+  RouterMode mode = 5;
+  bool free_angle = 6;
+}
+
+message DragTrackResponse
+{
+  // The grab point reached the target and the drag was committed
+  bool success = 1;
+  string message = 2;
+  // Where the grab point ended up (the grab point itself if nothing was committed)
+  kiapi.common.types.Vector2 end = 3;
+}

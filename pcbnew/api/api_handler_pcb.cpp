@@ -87,6 +87,8 @@
 #include <tools/pcb_selection_tool.h>
 #include <tools/zone_filler_tool.h>
 #include <tools/generator_tool.h>
+#include <router/router_tool.h>
+#include <router/pns_routing_settings.h>
 #include <zone.h>
 #include <zone_filler.h>
 
@@ -156,6 +158,8 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<SetBoardPlotSettings, Empty>( &API_HANDLER_PCB::handleSetBoardPlotSettings );
     registerHandler<InjectDrcError, InjectDrcErrorResponse>(
             &API_HANDLER_PCB::handleInjectDrcError );
+    registerHandler<RouteTrack, RouteTrackResponse>( &API_HANDLER_PCB::handleRouteTrack );
+    registerHandler<DragTrack, DragTrackResponse>( &API_HANDLER_PCB::handleDragTrack );
 
     registerHandler<GetVariants, VariantsResponse>( &API_HANDLER_PCB::handleGetVariants );
     registerHandler<AddVariant, Empty>( &API_HANDLER_PCB::handleAddVariant );
@@ -3418,5 +3422,153 @@ API_HANDLER_PCB::handlePlaceFootprintFromLibrary( const HANDLER_CONTEXT<PlaceFoo
     response.mutable_header()->CopyFrom( aCtx.Request.header() );
     placed->Serialize( *response.mutable_item() );
 
+    return response;
+}
+
+
+// Interactive router (push & shove) driven through ROUTER_TOOL like mouse events would
+
+static tl::unexpected<ApiResponseStatus> apiError( ApiStatusCode aCode, const std::string& aMessage )
+{
+    ApiResponseStatus e;
+    e.set_status( aCode );
+    e.set_error_message( aMessage );
+    return tl::unexpected( e );
+}
+
+
+std::optional<ApiResponseStatus> API_HANDLER_PCB::checkRouterRequest( const std::string& aCommand,
+                                                                      const std::string& aClientName,
+                                                                      board::types::BoardLayer aLayer,
+                                                                      PCB_LAYER_ID& aBoardLayer )
+{
+    if( std::optional<ApiResponseStatus> headless = checkForHeadless( aCommand ) )
+        return headless;
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return busy;
+
+    ApiResponseStatus e;
+    e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+
+    // The router makes its own commit (one undo step); it can't join a client's open commit.
+    if( m_commits.count( aClientName ) )
+    {
+        e.set_error_message( aCommand + " cannot run inside an open commit; end it first" );
+        return e;
+    }
+
+    aBoardLayer = FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( aLayer );
+
+    if( !IsCopperLayer( aBoardLayer ) || !frame()->GetBoard()->IsLayerEnabled( aBoardLayer ) )
+    {
+        e.set_error_message( aCommand + " needs an enabled copper layer" );
+        return e;
+    }
+
+    return std::nullopt;
+}
+
+
+static PNS::PNS_MODE routerModeFromProto( RouterMode aMode, ROUTER_TOOL* aTool )
+{
+    switch( aMode )
+    {
+    case RouterMode::RTM_SHOVE:          return PNS::RM_Shove;
+    case RouterMode::RTM_WALKAROUND:     return PNS::RM_Walkaround;
+    case RouterMode::RTM_MARK_OBSTACLES: return PNS::RM_MarkObstacles;
+    default:                             return aTool->GetRouterMode();   // editor's current mode
+    }
+}
+
+
+HANDLER_RESULT<RouteTrackResponse> API_HANDLER_PCB::handleRouteTrack(
+        const HANDLER_CONTEXT<RouteTrack>& aCtx )
+{
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    PCB_LAYER_ID layer;
+
+    if( std::optional<ApiResponseStatus> err = checkRouterRequest( "RouteTrack", aCtx.ClientName,
+                                                                   aCtx.Request.layer(), layer ) )
+    {
+        return tl::unexpected( *err );
+    }
+
+    if( aCtx.Request.points_size() == 0 )
+        return apiError( ApiStatusCode::AS_BAD_REQUEST, "RouteTrack needs at least one point" );
+
+    int width = 0;
+
+    if( aCtx.Request.has_width() )
+    {
+        int64_t w = aCtx.Request.width().value_nm();
+
+        if( w <= 0 || w > pcbIUScale.mmToIU( 100 ) )
+            return apiError( ApiStatusCode::AS_BAD_REQUEST, "RouteTrack width out of range" );
+
+        width = static_cast<int>( w );
+    }
+
+    std::vector<VECTOR2I> points;
+
+    for( const types::Vector2& p : aCtx.Request.points() )
+        points.emplace_back( UnpackVector2( p ) );
+
+    ROUTER_TOOL* router = toolManager()->GetTool<ROUTER_TOOL>();
+
+    ROUTER_TOOL::API_RESULT r = router->ApiRouteTrack( UnpackVector2( aCtx.Request.start() ), layer,
+                                                       points,
+                                                       routerModeFromProto( aCtx.Request.mode(), router ),
+                                                       width, aCtx.Request.finish_at_last_point(),
+                                                       aCtx.Request.free_angle() );
+
+    if( r.busy )
+        return apiError( ApiStatusCode::AS_BUSY, r.message.ToStdString() );
+
+    RouteTrackResponse response;
+    response.set_success( r.success );
+    response.set_completed( r.completed );
+    response.set_message( r.message.ToUTF8() );
+    PackVector2( *response.mutable_end(), r.end );
+    return response;
+}
+
+
+HANDLER_RESULT<DragTrackResponse> API_HANDLER_PCB::handleDragTrack( const HANDLER_CONTEXT<DragTrack>& aCtx )
+{
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    PCB_LAYER_ID layer;
+
+    if( std::optional<ApiResponseStatus> err = checkRouterRequest( "DragTrack", aCtx.ClientName,
+                                                                   aCtx.Request.layer(), layer ) )
+    {
+        return tl::unexpected( *err );
+    }
+
+    ROUTER_TOOL* router = toolManager()->GetTool<ROUTER_TOOL>();
+
+    ROUTER_TOOL::API_RESULT r = router->ApiDragTrack( UnpackVector2( aCtx.Request.grab() ), layer,
+                                                      UnpackVector2( aCtx.Request.target() ),
+                                                      routerModeFromProto( aCtx.Request.mode(), router ),
+                                                      aCtx.Request.free_angle() );
+
+    if( r.busy )
+        return apiError( ApiStatusCode::AS_BUSY, r.message.ToStdString() );
+
+    if( r.badRequest )
+        return apiError( ApiStatusCode::AS_BAD_REQUEST, r.message.ToStdString() );
+
+    DragTrackResponse response;
+    response.set_success( r.success );
+    response.set_message( r.message.ToUTF8() );
+    PackVector2( *response.mutable_end(), r.end );
     return response;
 }

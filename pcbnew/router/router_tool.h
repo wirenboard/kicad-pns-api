@@ -98,6 +98,35 @@ public:
      */
     bool RoutingInProgress();
 
+    /// Result of a programmatic (API) router operation
+    struct API_RESULT
+    {
+        bool     success = false;
+        bool     completed = false;   ///< route ended on an item of the same net
+        bool     busy = false;        ///< router already in use (interactive or another call)
+        bool     badRequest = false;  ///< the request cannot be served (nothing to drag, locked)
+        wxString message;             ///< router failure reason, if any
+        VECTOR2I end;                 ///< last point the router actually reached
+    };
+
+    /**
+     * Route one track with the interactive router, driven by points instead of mouse events.
+     * Each point acts like a left click; the route completes when the last point lands on an
+     * item of the start net.  All or nothing: if any leg cannot be fixed at its point nothing
+     * is committed.  Commits as one undo step.  No vias / layer changes.
+     */
+    API_RESULT ApiRouteTrack( const VECTOR2I& aStart, PCB_LAYER_ID aLayer,
+                              const std::vector<VECTOR2I>& aPoints, PNS::PNS_MODE aMode,
+                              int aWidth, bool aForceFinish, bool aFreeAngle );
+
+    /**
+     * Drag the track/arc/via found at aGrab on aLayer so that the grab point moves to aTarget,
+     * like the interactive drag tool (shoving neighbours in shove mode).  Locked items are
+     * refused.  success is false if the drag stopped short of aTarget; end reports where.
+     */
+    API_RESULT ApiDragTrack( const VECTOR2I& aGrab, PCB_LAYER_ID aLayer, const VECTOR2I& aTarget,
+                             PNS::PNS_MODE aMode, bool aFreeAngle );
+
     void setTransitions() override;
 
     // A filter for narrowing a collection representing a simple corner

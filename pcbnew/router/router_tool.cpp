@@ -3638,3 +3638,265 @@ void ROUTER_TOOL::setTransitions()
     Go( &ROUTER_TOOL::handlePnSCornerModeChange, ACT_SwitchCornerModeArc45.MakeEvent() );
     Go( &ROUTER_TOOL::handlePnSCornerModeChange, ACT_SwitchCornerModeArc90.MakeEvent() );
 }
+
+
+// Programmatic (IPC API) access to the interactive router: the same call sequence as
+// performRouting() / performDragging(), with points supplied by the caller instead of mouse events.
+
+// The router works incrementally, like a mouse drag: approach each point in small steps.
+static constexpr double API_ROUTER_STEP_MM = 0.05;
+static constexpr int    API_ROUTER_MAX_STEPS = 400;  // per leg; longer legs use larger steps
+
+
+static std::vector<VECTOR2I> apiStepPoints( const VECTOR2I& aFrom, const VECTOR2I& aTo )
+{
+    VECTOR2D d = VECTOR2D( aTo ) - VECTOR2D( aFrom );
+    double   step = pcbIUScale.mmToIU( API_ROUTER_STEP_MM );
+    int      n = std::clamp( KiROUND( d.EuclideanNorm() / step ), 1, API_ROUTER_MAX_STEPS );
+
+    std::vector<VECTOR2I> pts;
+
+    for( int k = 1; k < n; ++k )
+    {
+        double f = static_cast<double>( k ) / n;
+        pts.emplace_back( KiROUND( aFrom.x + d.x * f ), KiROUND( aFrom.y + d.y * f ) );
+    }
+
+    pts.push_back( aTo );
+    return pts;
+}
+
+
+ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiRouteTrack( const VECTOR2I& aStart, PCB_LAYER_ID aLayer,
+                                                    const std::vector<VECTOR2I>& aPoints,
+                                                    PNS::PNS_MODE aMode, int aWidth,
+                                                    bool aForceFinish, bool aFreeAngle )
+{
+    API_RESULT res;
+
+    if( m_inRouterTool || !m_router || m_router->RoutingInProgress() )
+    {
+        res.busy = true;
+        res.message = wxS( "router is busy" );
+        return res;
+    }
+
+    REENTRANCY_GUARD guard( &m_inRouterTool );
+
+    // Rebuild the router against the current board, view and settings: ROUTER_TOOL ignores
+    // MODEL_RELOAD, so after a board (re)load its interface may still point at the old BOARD.
+    // Reset( RUN ) also syncs the router world.
+    Reset( RUN );
+
+    PCB_EDIT_FRAME*        editFrame = getEditFrame<PCB_EDIT_FRAME>();
+    BOARD_DESIGN_SETTINGS& bds = frame()->GetBoard()->GetDesignSettings();
+    PNS::ROUTING_SETTINGS& settings = m_router->Settings();
+    PNS::PNS_MODE          savedMode = settings.Mode();
+    bool                   savedFreeAngle = settings.GetFreeAngleMode();
+    bool                   savedTempOverride = bds.m_TempOverrideTrackWidth;
+
+    settings.SetMode( aMode );
+    settings.SetFreeAngleMode( aFreeAngle );
+    m_router->SetMode( PNS::PNS_MODE_ROUTE_SINGLE );
+
+    int pnsLayer = m_iface->GetPNSLayerFromBoardLayer( aLayer );
+
+    m_startItem = pickSingleItem( aStart, nullptr, pnsLayer );
+    m_startSnapPoint = m_startItem ? snapToItem( m_startItem, aStart ) : aStart;
+
+    m_originalActiveLayer = editFrame->GetActiveLayer();
+    editFrame->SetActiveLayer( aLayer );
+
+    PNS::SIZES_SETTINGS sizes( m_router->Sizes() );
+    m_iface->SetStartLayerFromPCBNew( aLayer );
+    bds.m_TempOverrideTrackWidth = false;
+    m_iface->ImportSizes( sizes, m_startItem, nullptr, aStart );
+
+    if( aWidth > 0 )
+    {
+        sizes.SetTrackWidth( aWidth );
+        sizes.SetTrackWidthIsExplicit( true );
+        sizes.SetWidthSource( wxS( "API request" ) );
+    }
+
+    sizes.AddLayerPair( m_iface->GetPNSLayerFromBoardLayer( frame()->GetScreen()->m_Route_Layer_TOP ),
+                        m_iface->GetPNSLayerFromBoardLayer( frame()->GetScreen()->m_Route_Layer_BOTTOM ) );
+    m_router->UpdateSizes( sizes );
+
+    auto restore =
+            [&]()
+            {
+                settings.SetMode( savedMode );
+                settings.SetFreeAngleMode( savedFreeAngle );
+                bds.m_TempOverrideTrackWidth = savedTempOverride;
+                m_router->ClearViewDecorations();
+                view()->ClearPreview();
+                m_startItem = nullptr;
+                m_endItem = nullptr;
+                editFrame->SetActiveLayer( m_originalActiveLayer );
+            };
+
+    if( !m_router->StartRouting( m_startSnapPoint, m_startItem, pnsLayer ) )
+    {
+        res.message = m_router->FailureReason();
+        restore();
+        return res;
+    }
+
+    PNS::NET_HANDLE net = m_startItem ? m_startItem->Net() : nullptr;
+    VECTOR2I        reached = m_startSnapPoint;
+    bool            done = false;
+    bool            ok = true;
+    const int       tolerance = pcbIUScale.mmToIU( 0.001 );
+
+    for( size_t i = 0; i < aPoints.size() && !done; ++i )
+    {
+        const VECTOR2I& p = aPoints[i];
+        bool            last = ( i + 1 == aPoints.size() );
+
+        // Intermediate points are plain corners; only the last point may land on (and snap to)
+        // an item of the net, and never on the start item itself.
+        m_endItem = last ? pickSingleItem( p, net, m_router->GetCurrentLayer() ) : nullptr;
+
+        if( m_endItem == m_startItem )
+            m_endItem = nullptr;
+
+        m_endSnapPoint = m_endItem ? snapToItem( m_endItem, p ) : p;
+
+        for( const VECTOR2I& q : apiStepPoints( reached, m_endSnapPoint ) )
+            m_router->Move( q, q == m_endSnapPoint ? m_endItem : nullptr );
+
+        done = m_router->FixRoute( m_endSnapPoint, m_endItem, last && aForceFinish, false );
+
+        if( done )
+        {
+            reached = m_endSnapPoint;
+            break;
+        }
+
+        // Not finished: the fixed part must end where we asked, otherwise the router gave up
+        // on this leg (collision in mark-obstacles mode, walkaround failure, ...).
+        reached = m_router->Placer()->CurrentEnd();
+
+        if( ( reached - m_endSnapPoint ).EuclideanNorm() > tolerance )
+        {
+            ok = false;
+            res.message = m_router->FailureReason().IsEmpty()
+                                  ? wxString::Format( wxS( "could not reach point %d" ), (int) i )
+                                  : m_router->FailureReason();
+            break;
+        }
+    }
+
+    res.end = reached;
+    res.completed = done;
+
+    if( ok )
+    {
+        // One undo step for the whole route
+        m_router->CommitRouting();
+        m_iface->SetCommitFlags( 0 );
+    }
+
+    m_router->StopRouting();
+
+    res.success = ok;
+    restore();
+    return res;
+}
+
+
+ROUTER_TOOL::API_RESULT ROUTER_TOOL::ApiDragTrack( const VECTOR2I& aGrab, PCB_LAYER_ID aLayer,
+                                                   const VECTOR2I& aTarget, PNS::PNS_MODE aMode,
+                                                   bool aFreeAngle )
+{
+    API_RESULT res;
+
+    if( m_inRouterTool || !m_router || m_router->RoutingInProgress() )
+    {
+        res.busy = true;
+        res.message = wxS( "router is busy" );
+        return res;
+    }
+
+    REENTRANCY_GUARD guard( &m_inRouterTool );
+
+    Reset( RUN );    // see ApiRouteTrack()
+
+    PNS::ROUTING_SETTINGS& settings = m_router->Settings();
+    PNS::PNS_MODE          savedMode = settings.Mode();
+
+    settings.SetMode( aMode );
+
+    int pnsLayer = m_iface->GetPNSLayerFromBoardLayer( aLayer );
+
+    m_startItem = pickSingleItem( aGrab, nullptr, pnsLayer, true );
+    m_startSnapPoint = aGrab;
+
+    auto restore =
+            [&]()
+            {
+                settings.SetMode( savedMode );
+                m_router->ClearViewDecorations();
+                view()->ClearPreview();
+                m_startItem = nullptr;
+                m_endItem = nullptr;
+            };
+
+    if( !m_startItem
+        || !m_startItem->OfKind( PNS::ITEM::SEGMENT_T | PNS::ITEM::ARC_T | PNS::ITEM::VIA_T ) )
+    {
+        res.badRequest = true;
+        res.message = wxS( "no track, arc or via at the grab point" );
+        restore();
+        return res;
+    }
+
+    if( m_startItem->IsLocked() )
+    {
+        // The editor asks before dragging locked items; the API refuses instead.
+        res.badRequest = true;
+        res.message = wxS( "the item at the grab point is locked" );
+        restore();
+        return res;
+    }
+
+    int dragMode = aFreeAngle ? PNS::DM_ANY | PNS::DM_FREE_ANGLE : PNS::DM_ANY;
+
+    if( !m_router->StartDragging( m_startSnapPoint, m_startItem, dragMode ) )
+    {
+        res.message = m_router->FailureReason();
+        restore();
+        return res;
+    }
+
+    m_endItem = nullptr;
+    m_endSnapPoint = aTarget;
+
+    VECTOR2I lastValid = aGrab;
+
+    for( const VECTOR2I& q : apiStepPoints( aGrab, aTarget ) )
+    {
+        if( m_router->Move( q, nullptr ) )
+            lastValid = q;
+    }
+
+    // Never force-commit.  In shove mode the dragger falls back to the last valid position,
+    // so a successful fix may still have stopped short of the target: report where it ended.
+    bool committed = m_router->FixRoute( aTarget, nullptr, false, false );
+
+    if( !m_router->FailureReason().IsEmpty() )
+        res.message = m_router->FailureReason();
+    else if( !committed )
+        res.message = wxS( "drag could not be completed without collisions" );
+    else if( lastValid != aTarget )
+        res.message = wxS( "drag stopped short of the target" );
+
+    if( m_router->RoutingInProgress() )
+        m_router->StopRouting();
+
+    res.success = committed && lastValid == aTarget;
+    res.end = committed ? lastValid : aGrab;
+    restore();
+    return res;
+}
