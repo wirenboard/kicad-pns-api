@@ -1,5 +1,8 @@
 # KiCad README
 
+> **This repository is a fork:** KiCad with an IPC API for the push-and-shove router, for AI agents
+> that route PCBs headlessly. It is not upstream KiCad; see [ai-pns/README.md](ai-pns/README.md).
+
 For specific documentation about [building KiCad](https://dev-docs.kicad.org/en/build/), policies
 and guidelines, and source code documentation see the
 [Developer Documentation](https://dev-docs.kicad.org) website.
