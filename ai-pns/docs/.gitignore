@@ -1,0 +1,2 @@
+# the screenshots of the docs (the top-level .gitignore ignores *.png)
+!img/*.png

@@ -226,6 +226,12 @@ docstring.
   relaxed clearance to every segment of a `route_track` call that touches the area. Route a
   fine-pitch neck in its own call that ends just outside the area, then continue at full width.
 
+## Documentation
+
+- [docs/QUICKSTART.md](docs/QUICKSTART.md): a short start for humans and AI agents.
+- [docs/ROUTING_RECIPE.md](docs/ROUTING_RECIPE.md): how we route a board with this tool, from rules
+  and fan-out to A* guides smoothed by the PNS router, and how track widths are chosen.
+
 ## Licence
 
 KiCad, and with it this branch, is GPL-3.0-or-later. `pyapi/kipy/` is MIT (see its LICENSE).
