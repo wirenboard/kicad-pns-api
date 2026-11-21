@@ -294,7 +294,17 @@ bool DP_MEANDER_PLACER::Move( const VECTOR2I& aP, ITEM* aEndItem )
 
     tuned.SetShape( tunedP, tunedN );
 
-    tuned.CoupledSegmentPairs( coupledSegments );
+    // A tuning path already has an observed pair gap, but AssembleDiffPair
+    // does not populate GapConstraint.  Using that empty constraint recognizes
+    // only gaps near zero (e.g. rejects 96.5 um tracks with a 221.5 um gap).
+    // Recognize the original gap; collision/clearance checks remain unchanged.
+    DP_GAP_CONSTRAINT tuningGap;
+    const int observedGap = tuned.Dimensions().Gap();
+    const int gapTolerance = 10000; // 10 um, including integer/diagonal rounding
+    tuningGap.SetMin( std::max( 0, observedGap - gapTolerance ) );
+    tuningGap.SetOpt( observedGap );
+    tuningGap.SetMax( observedGap + gapTolerance );
+    tuned.CoupledSegmentPairs( coupledSegments, false, tuningGap );
 
     if( coupledSegments.size() == 0 )
     {
