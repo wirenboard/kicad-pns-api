@@ -1,0 +1,21 @@
+{
+  "_comment": "Example board config for fr.py (fr.configure('this.json') or FR_CONFIG=this.json). Coordinates in mm, y up. Values are placeholders.",
+  "layers": [["F", "F.Cu"], ["2", "In2.Cu"], ["3", "In3.Cu"], ["B", "B.Cu"]],
+  "clearance_track_track": 0.2032,
+  "clearance_track_pad": 0.2286,
+  "clearance_edge": 0.254,
+  "clearance_hole": 0.25,
+  "via_diameter": 0.7,
+  "via_drill": 0.3,
+  "via_hole_to_hole": 0.55,
+  "power_nets": ["VIN", "+3V3"],
+  "power_width": 0.4064,
+  "gap_zone_skip_refs": ["U1"],
+  "gap_zone_skip_prefixes": ["CONN"],
+  "forbid_rects": [
+    {"layer": "F", "rect": [10.0, 20.0, 10.0, 15.0]},
+    {"layer": "F", "rect": [30.0, 32.0, 5.0, 9.0], "except_nets": ["SIG_A"]}
+  ],
+  "via_forbid_rects": [[10.0, 20.0, 10.0, 15.0]],
+  "keepout_circles": [{"layer": "B", "x": 40.0, "y": 25.0, "r": 1.8}]
+}

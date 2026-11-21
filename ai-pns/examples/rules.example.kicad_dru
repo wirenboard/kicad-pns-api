@@ -1,0 +1,30 @@
+(version 1)
+# Example custom rules for routing with the router API (copy next to PROJECT.kicad_pro as
+# PROJECT.kicad_dru; host/hoststart_n.sh copies it along). Later rules take precedence.
+# Values are an example of a conservative house standard: track >= 0.254 mm, clearance >= 0.24 mm,
+# relaxed only inside a rule area around a fine-pitch part.
+#
+# Fine-pitch "neck": draw a rule area (keepout off, name e.g. "U1_NECK") around the part's pads
+# plus ~0.6 mm. A track that merely touches the area gets the relaxed values over its WHOLE
+# length, and the router applies the relaxed clearance to every segment of a route_track call
+# that touches it - so route the thin neck in one call that ends ~0.3 mm outside the area, and
+# continue at full width with a second call. tools/merge.py --relaxed-area matches such names.
+
+(rule "track min width"
+	(condition "A.Type == 'Track'")
+	(constraint track_width (min 0.254mm)))
+
+(rule "neck clearance"
+	(condition "A.intersectsArea('U1_NECK') && B.intersectsArea('U1_NECK')")
+	(constraint clearance (min 0.2286mm)))
+
+(rule "neck width"
+	(condition "A.Type == 'Track' && A.intersectsArea('U1_NECK')")
+	(constraint track_width (min 0.17mm)))
+
+# The router API places 0.7/0.3 vias on every net unless via_diameter/via_drill are passed
+# (the netclass via size is not used): flag undersized vias on a "Power" netclass.
+(rule "power via"
+	(condition "A.Type == 'Via' && A.NetClass == 'Power' && A.NetName != 'GND'")
+	(constraint via_diameter (min 0.8mm))
+	(constraint hole_size (min 0.4mm)))
