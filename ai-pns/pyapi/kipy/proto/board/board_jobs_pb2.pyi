@@ -135,12 +135,49 @@ class Ipc2581Version(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     IPC2581V_B: _ClassVar[Ipc2581Version]
     IPC2581V_C: _ClassVar[Ipc2581Version]
 
+class FabDataSet(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    FDS_UNKNOWN: _ClassVar[FabDataSet]
+    FDS_USERDEF: _ClassVar[FabDataSet]
+    FDS_BOM: _ClassVar[FabDataSet]
+    FDS_STACKUP: _ClassVar[FabDataSet]
+    FDS_FABRICATION: _ClassVar[FabDataSet]
+    FDS_ASSEMBLY: _ClassVar[FabDataSet]
+    FDS_TEST: _ClassVar[FabDataSet]
+    FDS_STENCIL: _ClassVar[FabDataSet]
+    FDS_DFX: _ClassVar[FabDataSet]
+
+class FabNetNamePolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    FNNP_UNKNOWN: _ClassVar[FabNetNamePolicy]
+    FNNP_INCLUDE: _ClassVar[FabNetNamePolicy]
+    FNNP_ANONYMIZE: _ClassVar[FabNetNamePolicy]
+
+class Ipc2581RefDes(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    IPC2581RD_UNKNOWN: _ClassVar[Ipc2581RefDes]
+    IPC2581RD_INCLUDE: _ClassVar[Ipc2581RefDes]
+    IPC2581RD_OMIT: _ClassVar[Ipc2581RefDes]
+
 class OdbCompression(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     ODBC_UNKNOWN: _ClassVar[OdbCompression]
     ODBC_NONE: _ClassVar[OdbCompression]
     ODBC_ZIP: _ClassVar[OdbCompression]
     ODBC_TGZ: _ClassVar[OdbCompression]
+
+class OdbVariantPackaging(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ODBVP_UNKNOWN: _ClassVar[OdbVariantPackaging]
+    ODBVP_SEPARATE: _ClassVar[OdbVariantPackaging]
+    ODBVP_COMBINED: _ClassVar[OdbVariantPackaging]
+
+class OdbOrigin(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ODBO_UNKNOWN: _ClassVar[OdbOrigin]
+    ODBO_ABSOLUTE: _ClassVar[OdbOrigin]
+    ODBO_AUX: _ClassVar[OdbOrigin]
+    ODBO_GRID: _ClassVar[OdbOrigin]
 
 class StatsOutputFormat(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -229,10 +266,32 @@ PF_GERBER: PositionFormat
 IPC2581V_UNKNOWN: Ipc2581Version
 IPC2581V_B: Ipc2581Version
 IPC2581V_C: Ipc2581Version
+FDS_UNKNOWN: FabDataSet
+FDS_USERDEF: FabDataSet
+FDS_BOM: FabDataSet
+FDS_STACKUP: FabDataSet
+FDS_FABRICATION: FabDataSet
+FDS_ASSEMBLY: FabDataSet
+FDS_TEST: FabDataSet
+FDS_STENCIL: FabDataSet
+FDS_DFX: FabDataSet
+FNNP_UNKNOWN: FabNetNamePolicy
+FNNP_INCLUDE: FabNetNamePolicy
+FNNP_ANONYMIZE: FabNetNamePolicy
+IPC2581RD_UNKNOWN: Ipc2581RefDes
+IPC2581RD_INCLUDE: Ipc2581RefDes
+IPC2581RD_OMIT: Ipc2581RefDes
 ODBC_UNKNOWN: OdbCompression
 ODBC_NONE: OdbCompression
 ODBC_ZIP: OdbCompression
 ODBC_TGZ: OdbCompression
+ODBVP_UNKNOWN: OdbVariantPackaging
+ODBVP_SEPARATE: OdbVariantPackaging
+ODBVP_COMBINED: OdbVariantPackaging
+ODBO_UNKNOWN: OdbOrigin
+ODBO_ABSOLUTE: OdbOrigin
+ODBO_AUX: OdbOrigin
+ODBO_GRID: OdbOrigin
 SOF_UNKNOWN: StatsOutputFormat
 SOF_REPORT: StatsOutputFormat
 SOF_JSON: StatsOutputFormat
@@ -586,8 +645,24 @@ class RunBoardJobExportGencad(_message.Message):
     use_unique_pins: bool
     def __init__(self, job_settings: _Optional[_Union[_jobs_pb2.RunJobSettings, _Mapping]] = ..., flip_bottom_pads: bool = ..., use_individual_shapes: bool = ..., store_origin_coords: bool = ..., use_drill_origin: bool = ..., use_unique_pins: bool = ...) -> None: ...
 
+class RunBoardJobExportSpecctraDsn(_message.Message):
+    __slots__ = ("job_settings",)
+    JOB_SETTINGS_FIELD_NUMBER: _ClassVar[int]
+    job_settings: _jobs_pb2.RunJobSettings
+    def __init__(self, job_settings: _Optional[_Union[_jobs_pb2.RunJobSettings, _Mapping]] = ...) -> None: ...
+
+class FabExportContent(_message.Message):
+    __slots__ = ("data_set", "sections", "net_names")
+    DATA_SET_FIELD_NUMBER: _ClassVar[int]
+    SECTIONS_FIELD_NUMBER: _ClassVar[int]
+    NET_NAMES_FIELD_NUMBER: _ClassVar[int]
+    data_set: FabDataSet
+    sections: str
+    net_names: FabNetNamePolicy
+    def __init__(self, data_set: _Optional[_Union[FabDataSet, str]] = ..., sections: _Optional[str] = ..., net_names: _Optional[_Union[FabNetNamePolicy, str]] = ...) -> None: ...
+
 class RunBoardJobExportIpc2581(_message.Message):
-    __slots__ = ("job_settings", "drawing_sheet", "variant", "units", "version", "precision", "compress", "internal_id_column", "manufacturer_part_number_column", "manufacturer_column", "distributor_part_number_column", "distributor_column", "bom_revision")
+    __slots__ = ("job_settings", "drawing_sheet", "variant", "units", "version", "precision", "compress", "internal_id_column", "manufacturer_part_number_column", "manufacturer_column", "distributor_part_number_column", "distributor_column", "bom_revision", "check_zones", "content", "ref_des")
     JOB_SETTINGS_FIELD_NUMBER: _ClassVar[int]
     DRAWING_SHEET_FIELD_NUMBER: _ClassVar[int]
     VARIANT_FIELD_NUMBER: _ClassVar[int]
@@ -601,6 +676,9 @@ class RunBoardJobExportIpc2581(_message.Message):
     DISTRIBUTOR_PART_NUMBER_COLUMN_FIELD_NUMBER: _ClassVar[int]
     DISTRIBUTOR_COLUMN_FIELD_NUMBER: _ClassVar[int]
     BOM_REVISION_FIELD_NUMBER: _ClassVar[int]
+    CHECK_ZONES_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_FIELD_NUMBER: _ClassVar[int]
+    REF_DES_FIELD_NUMBER: _ClassVar[int]
     job_settings: _jobs_pb2.RunJobSettings
     drawing_sheet: str
     variant: str
@@ -614,7 +692,10 @@ class RunBoardJobExportIpc2581(_message.Message):
     distributor_part_number_column: str
     distributor_column: str
     bom_revision: str
-    def __init__(self, job_settings: _Optional[_Union[_jobs_pb2.RunJobSettings, _Mapping]] = ..., drawing_sheet: _Optional[str] = ..., variant: _Optional[str] = ..., units: _Optional[_Union[_enums_pb2.Units, str]] = ..., version: _Optional[_Union[Ipc2581Version, str]] = ..., precision: _Optional[int] = ..., compress: bool = ..., internal_id_column: _Optional[str] = ..., manufacturer_part_number_column: _Optional[str] = ..., manufacturer_column: _Optional[str] = ..., distributor_part_number_column: _Optional[str] = ..., distributor_column: _Optional[str] = ..., bom_revision: _Optional[str] = ...) -> None: ...
+    check_zones: bool
+    content: FabExportContent
+    ref_des: Ipc2581RefDes
+    def __init__(self, job_settings: _Optional[_Union[_jobs_pb2.RunJobSettings, _Mapping]] = ..., drawing_sheet: _Optional[str] = ..., variant: _Optional[str] = ..., units: _Optional[_Union[_enums_pb2.Units, str]] = ..., version: _Optional[_Union[Ipc2581Version, str]] = ..., precision: _Optional[int] = ..., compress: bool = ..., internal_id_column: _Optional[str] = ..., manufacturer_part_number_column: _Optional[str] = ..., manufacturer_column: _Optional[str] = ..., distributor_part_number_column: _Optional[str] = ..., distributor_column: _Optional[str] = ..., bom_revision: _Optional[str] = ..., check_zones: bool = ..., content: _Optional[_Union[FabExportContent, _Mapping]] = ..., ref_des: _Optional[_Union[Ipc2581RefDes, str]] = ...) -> None: ...
 
 class RunBoardJobExportIpcD356(_message.Message):
     __slots__ = ("job_settings",)
@@ -623,20 +704,34 @@ class RunBoardJobExportIpcD356(_message.Message):
     def __init__(self, job_settings: _Optional[_Union[_jobs_pb2.RunJobSettings, _Mapping]] = ...) -> None: ...
 
 class RunBoardJobExportODB(_message.Message):
-    __slots__ = ("job_settings", "drawing_sheet", "variant", "units", "precision", "compression")
+    __slots__ = ("job_settings", "drawing_sheet", "variant", "units", "precision", "compression", "check_zones", "variant_names", "variant_packaging", "manufacturer_part_number_column", "origin", "product_name", "content")
     JOB_SETTINGS_FIELD_NUMBER: _ClassVar[int]
     DRAWING_SHEET_FIELD_NUMBER: _ClassVar[int]
     VARIANT_FIELD_NUMBER: _ClassVar[int]
     UNITS_FIELD_NUMBER: _ClassVar[int]
     PRECISION_FIELD_NUMBER: _ClassVar[int]
     COMPRESSION_FIELD_NUMBER: _ClassVar[int]
+    CHECK_ZONES_FIELD_NUMBER: _ClassVar[int]
+    VARIANT_NAMES_FIELD_NUMBER: _ClassVar[int]
+    VARIANT_PACKAGING_FIELD_NUMBER: _ClassVar[int]
+    MANUFACTURER_PART_NUMBER_COLUMN_FIELD_NUMBER: _ClassVar[int]
+    ORIGIN_FIELD_NUMBER: _ClassVar[int]
+    PRODUCT_NAME_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_FIELD_NUMBER: _ClassVar[int]
     job_settings: _jobs_pb2.RunJobSettings
     drawing_sheet: str
     variant: str
     units: _enums_pb2.Units
     precision: int
     compression: OdbCompression
-    def __init__(self, job_settings: _Optional[_Union[_jobs_pb2.RunJobSettings, _Mapping]] = ..., drawing_sheet: _Optional[str] = ..., variant: _Optional[str] = ..., units: _Optional[_Union[_enums_pb2.Units, str]] = ..., precision: _Optional[int] = ..., compression: _Optional[_Union[OdbCompression, str]] = ...) -> None: ...
+    check_zones: bool
+    variant_names: _containers.RepeatedScalarFieldContainer[str]
+    variant_packaging: OdbVariantPackaging
+    manufacturer_part_number_column: str
+    origin: OdbOrigin
+    product_name: str
+    content: FabExportContent
+    def __init__(self, job_settings: _Optional[_Union[_jobs_pb2.RunJobSettings, _Mapping]] = ..., drawing_sheet: _Optional[str] = ..., variant: _Optional[str] = ..., units: _Optional[_Union[_enums_pb2.Units, str]] = ..., precision: _Optional[int] = ..., compression: _Optional[_Union[OdbCompression, str]] = ..., check_zones: bool = ..., variant_names: _Optional[_Iterable[str]] = ..., variant_packaging: _Optional[_Union[OdbVariantPackaging, str]] = ..., manufacturer_part_number_column: _Optional[str] = ..., origin: _Optional[_Union[OdbOrigin, str]] = ..., product_name: _Optional[str] = ..., content: _Optional[_Union[FabExportContent, _Mapping]] = ...) -> None: ...
 
 class RunBoardJobExportStats(_message.Message):
     __slots__ = ("job_settings", "format", "units", "exclude_footprints_without_pads", "subtract_holes_from_board_area", "subtract_holes_from_copper_areas")

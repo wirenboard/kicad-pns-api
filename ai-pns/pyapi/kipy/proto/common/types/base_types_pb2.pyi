@@ -133,6 +133,16 @@ class PageOrientation(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PO_UNKNOWN: _ClassVar[PageOrientation]
     PO_LANDSCAPE: _ClassVar[PageOrientation]
     PO_PORTRAIT: _ClassVar[PageOrientation]
+
+class MarkerType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    MT_UNKNOWN: _ClassVar[MarkerType]
+    MT_ERC: _ClassVar[MarkerType]
+    MT_DRC: _ClassVar[MarkerType]
+    MT_DRAWING_SHEET: _ClassVar[MarkerType]
+    MT_RATSNEST: _ClassVar[MarkerType]
+    MT_PARITY: _ClassVar[MarkerType]
+    MT_SIMULATION: _ClassVar[MarkerType]
 CS_UNKNOWN: CommandStatus
 CS_OK: CommandStatus
 CS_FAILED: CommandStatus
@@ -220,6 +230,13 @@ PS_USER: PageSize
 PO_UNKNOWN: PageOrientation
 PO_LANDSCAPE: PageOrientation
 PO_PORTRAIT: PageOrientation
+MT_UNKNOWN: MarkerType
+MT_ERC: MarkerType
+MT_DRC: MarkerType
+MT_DRAWING_SHEET: MarkerType
+MT_RATSNEST: MarkerType
+MT_PARITY: MarkerType
+MT_SIMULATION: MarkerType
 
 class CommandStatusResponse(_message.Message):
     __slots__ = ("status",)
@@ -678,3 +695,19 @@ class CustomProperty(_message.Message):
     key: str
     value: str
     def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+
+class DesignBlock(_message.Message):
+    __slots__ = ("id", "schematic_filename", "board_filename", "lib_description", "keywords", "fields")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    SCHEMATIC_FILENAME_FIELD_NUMBER: _ClassVar[int]
+    BOARD_FILENAME_FIELD_NUMBER: _ClassVar[int]
+    LIB_DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    KEYWORDS_FIELD_NUMBER: _ClassVar[int]
+    FIELDS_FIELD_NUMBER: _ClassVar[int]
+    id: LibraryIdentifier
+    schematic_filename: str
+    board_filename: str
+    lib_description: str
+    keywords: str
+    fields: _containers.RepeatedCompositeFieldContainer[CustomProperty]
+    def __init__(self, id: _Optional[_Union[LibraryIdentifier, _Mapping]] = ..., schematic_filename: _Optional[str] = ..., board_filename: _Optional[str] = ..., lib_description: _Optional[str] = ..., keywords: _Optional[str] = ..., fields: _Optional[_Iterable[_Union[CustomProperty, _Mapping]]] = ...) -> None: ...

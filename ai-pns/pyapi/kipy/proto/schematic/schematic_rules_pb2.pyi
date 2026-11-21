@@ -70,6 +70,9 @@ class ErcErrorType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     ERCET_GENERIC_ERROR: _ClassVar[ErcErrorType]
     ERCET_FIELD_NAME_WHITESPACE: _ClassVar[ErcErrorType]
     ERCET_WIRED_IMPLICIT_POWER: _ClassVar[ErcErrorType]
+    ERCET_EMPTY_POWER_VALUE: _ClassVar[ErcErrorType]
+    ERCET_DUPLICATE_SHEET_SUFFIX: _ClassVar[ErcErrorType]
+    ERCET_REF_SUFFIX_MISMATCH: _ClassVar[ErcErrorType]
 ERCET_UNKNOWN: ErcErrorType
 ERCET_DUPLICATE_SHEET_NAME: ErcErrorType
 ERCET_ENDPOINT_OFF_GRID: ErcErrorType
@@ -131,6 +134,9 @@ ERCET_GENERIC_WARNING: ErcErrorType
 ERCET_GENERIC_ERROR: ErcErrorType
 ERCET_FIELD_NAME_WHITESPACE: ErcErrorType
 ERCET_WIRED_IMPLICIT_POWER: ErcErrorType
+ERCET_EMPTY_POWER_VALUE: ErcErrorType
+ERCET_DUPLICATE_SHEET_SUFFIX: ErcErrorType
+ERCET_REF_SUFFIX_MISMATCH: ErcErrorType
 
 class ErcSymbolChildReference(_message.Message):
     __slots__ = ("text_value",)
@@ -139,7 +145,7 @@ class ErcSymbolChildReference(_message.Message):
     def __init__(self, text_value: _Optional[str] = ...) -> None: ...
 
 class ErcMarker(_message.Message):
-    __slots__ = ("error_type", "position", "items", "sheet_specific_path", "main_item_sheet_path", "aux_item_sheet_path", "child")
+    __slots__ = ("error_type", "position", "items", "sheet_specific_path", "main_item_sheet_path", "aux_item_sheet_path", "child", "description", "severity", "excluded")
     ERROR_TYPE_FIELD_NUMBER: _ClassVar[int]
     POSITION_FIELD_NUMBER: _ClassVar[int]
     ITEMS_FIELD_NUMBER: _ClassVar[int]
@@ -147,6 +153,9 @@ class ErcMarker(_message.Message):
     MAIN_ITEM_SHEET_PATH_FIELD_NUMBER: _ClassVar[int]
     AUX_ITEM_SHEET_PATH_FIELD_NUMBER: _ClassVar[int]
     CHILD_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    SEVERITY_FIELD_NUMBER: _ClassVar[int]
+    EXCLUDED_FIELD_NUMBER: _ClassVar[int]
     error_type: ErcErrorType
     position: _base_types_pb2.Vector2
     items: _containers.RepeatedCompositeFieldContainer[_base_types_pb2.KIID]
@@ -154,7 +163,10 @@ class ErcMarker(_message.Message):
     main_item_sheet_path: _base_types_pb2.SheetPath
     aux_item_sheet_path: _base_types_pb2.SheetPath
     child: ErcSymbolChildReference
-    def __init__(self, error_type: _Optional[_Union[ErcErrorType, str]] = ..., position: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., items: _Optional[_Iterable[_Union[_base_types_pb2.KIID, _Mapping]]] = ..., sheet_specific_path: _Optional[_Union[_base_types_pb2.SheetPath, _Mapping]] = ..., main_item_sheet_path: _Optional[_Union[_base_types_pb2.SheetPath, _Mapping]] = ..., aux_item_sheet_path: _Optional[_Union[_base_types_pb2.SheetPath, _Mapping]] = ..., child: _Optional[_Union[ErcSymbolChildReference, _Mapping]] = ...) -> None: ...
+    description: str
+    severity: _base_types_pb2.RuleSeverity
+    excluded: bool
+    def __init__(self, error_type: _Optional[_Union[ErcErrorType, str]] = ..., position: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., items: _Optional[_Iterable[_Union[_base_types_pb2.KIID, _Mapping]]] = ..., sheet_specific_path: _Optional[_Union[_base_types_pb2.SheetPath, _Mapping]] = ..., main_item_sheet_path: _Optional[_Union[_base_types_pb2.SheetPath, _Mapping]] = ..., aux_item_sheet_path: _Optional[_Union[_base_types_pb2.SheetPath, _Mapping]] = ..., child: _Optional[_Union[ErcSymbolChildReference, _Mapping]] = ..., description: _Optional[str] = ..., severity: _Optional[_Union[_base_types_pb2.RuleSeverity, str]] = ..., excluded: bool = ...) -> None: ...
 
 class ErcSeveritySetting(_message.Message):
     __slots__ = ("rule_type", "severity")

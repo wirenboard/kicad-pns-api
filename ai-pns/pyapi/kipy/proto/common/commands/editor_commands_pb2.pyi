@@ -122,6 +122,14 @@ class GetDocumentModifiedStateResponse(_message.Message):
     state: DocumentModifiedState
     def __init__(self, state: _Optional[_Union[DocumentModifiedState, str]] = ...) -> None: ...
 
+class SaveDocumentAs(_message.Message):
+    __slots__ = ("document", "path")
+    DOCUMENT_FIELD_NUMBER: _ClassVar[int]
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    document: _base_types_pb2.DocumentSpecifier
+    path: str
+    def __init__(self, document: _Optional[_Union[_base_types_pb2.DocumentSpecifier, _Mapping]] = ..., path: _Optional[str] = ...) -> None: ...
+
 class SaveOptions(_message.Message):
     __slots__ = ("overwrite", "include_project")
     OVERWRITE_FIELD_NUMBER: _ClassVar[int]

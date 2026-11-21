@@ -60,6 +60,8 @@ class KiCadObjectType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     KOT_PCB_POINT: _ClassVar[KiCadObjectType]
     KOT_PCB_DRILL_CHART: _ClassVar[KiCadObjectType]
     KOT_PCB_DRILL_MAP: _ClassVar[KiCadObjectType]
+    KOT_PCB_3D_BODY: _ClassVar[KiCadObjectType]
+    KOT_PCB_STACKUP_TABLE: _ClassVar[KiCadObjectType]
 
 class HorizontalAlignment(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -161,6 +163,8 @@ KOT_SCH_RULE_AREA: KiCadObjectType
 KOT_PCB_POINT: KiCadObjectType
 KOT_PCB_DRILL_CHART: KiCadObjectType
 KOT_PCB_DRILL_MAP: KiCadObjectType
+KOT_PCB_3D_BODY: KiCadObjectType
+KOT_PCB_STACKUP_TABLE: KiCadObjectType
 HA_UNKNOWN: HorizontalAlignment
 HA_LEFT: HorizontalAlignment
 HA_CENTER: HorizontalAlignment

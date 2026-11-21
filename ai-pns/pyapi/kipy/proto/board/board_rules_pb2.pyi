@@ -70,6 +70,7 @@ class DrcErrorType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DRCET_SILK_EDGE_CLEARANCE: _ClassVar[DrcErrorType]
     DRCET_SOLDERMASK_BRIDGE: _ClassVar[DrcErrorType]
     DRCET_TEXT_HEIGHT: _ClassVar[DrcErrorType]
+    DRCET_LINE_WIDTH: _ClassVar[DrcErrorType]
     DRCET_TEXT_THICKNESS: _ClassVar[DrcErrorType]
     DRCET_LENGTH_OUT_OF_RANGE: _ClassVar[DrcErrorType]
     DRCET_SKEW_OUT_OF_RANGE: _ClassVar[DrcErrorType]
@@ -92,8 +93,10 @@ class DrcErrorType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DRCET_MALFORMED_MICROVIA_STACK_SPAN: _ClassVar[DrcErrorType]
     DRCET_MICROVIA_STACK_NOT_FILLED: _ClassVar[DrcErrorType]
     DRCET_MICROVIA_STACK_DEPTH: _ClassVar[DrcErrorType]
-    DRCET_MICROVIA_ASPECT_RATIO: _ClassVar[DrcErrorType]
+    DRCET_HOLE_ASPECT_RATIO: _ClassVar[DrcErrorType]
     DRCET_MICROVIA_CROSSES_CORE: _ClassVar[DrcErrorType]
+    DRCET_COPPER_OUTSIDE_BOARD: _ClassVar[DrcErrorType]
+    DRCET_MICROVIA_SPANS_DIELECTRICS: _ClassVar[DrcErrorType]
 
 class CustomRuleLayerMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -113,6 +116,7 @@ class CustomRuleConstraintType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper
     CRCT_COURTYARD_CLEARANCE: _ClassVar[CustomRuleConstraintType]
     CRCT_SILK_CLEARANCE: _ClassVar[CustomRuleConstraintType]
     CRCT_TEXT_HEIGHT: _ClassVar[CustomRuleConstraintType]
+    CRCT_LINE_WIDTH: _ClassVar[CustomRuleConstraintType]
     CRCT_TEXT_THICKNESS: _ClassVar[CustomRuleConstraintType]
     CRCT_TRACK_WIDTH: _ClassVar[CustomRuleConstraintType]
     CRCT_TRACK_SEGMENT_LENGTH: _ClassVar[CustomRuleConstraintType]
@@ -144,7 +148,7 @@ class CustomRuleConstraintType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper
     CRCT_NET_CHAIN_STUB_LENGTH: _ClassVar[CustomRuleConstraintType]
     CRCT_NET_CHAIN_RETURN_PATH: _ClassVar[CustomRuleConstraintType]
     CRCT_MICROVIA_STACK_DEPTH: _ClassVar[CustomRuleConstraintType]
-    CRCT_MICROVIA_ASPECT_RATIO: _ClassVar[CustomRuleConstraintType]
+    CRCT_HOLE_ASPECT_RATIO: _ClassVar[CustomRuleConstraintType]
 
 class CustomRuleConstraintOption(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -224,6 +228,7 @@ DRCET_SILK_MASK_CLEARANCE: DrcErrorType
 DRCET_SILK_EDGE_CLEARANCE: DrcErrorType
 DRCET_SOLDERMASK_BRIDGE: DrcErrorType
 DRCET_TEXT_HEIGHT: DrcErrorType
+DRCET_LINE_WIDTH: DrcErrorType
 DRCET_TEXT_THICKNESS: DrcErrorType
 DRCET_LENGTH_OUT_OF_RANGE: DrcErrorType
 DRCET_SKEW_OUT_OF_RANGE: DrcErrorType
@@ -246,8 +251,10 @@ DRCET_NET_CHAIN_TUNING_PROFILES: DrcErrorType
 DRCET_MALFORMED_MICROVIA_STACK_SPAN: DrcErrorType
 DRCET_MICROVIA_STACK_NOT_FILLED: DrcErrorType
 DRCET_MICROVIA_STACK_DEPTH: DrcErrorType
-DRCET_MICROVIA_ASPECT_RATIO: DrcErrorType
+DRCET_HOLE_ASPECT_RATIO: DrcErrorType
 DRCET_MICROVIA_CROSSES_CORE: DrcErrorType
+DRCET_COPPER_OUTSIDE_BOARD: DrcErrorType
+DRCET_MICROVIA_SPANS_DIELECTRICS: DrcErrorType
 CRLM_UNKNOWN: CustomRuleLayerMode
 CRLM_OUTER: CustomRuleLayerMode
 CRLM_INNER: CustomRuleLayerMode
@@ -261,6 +268,7 @@ CRCT_HOLE_SIZE: CustomRuleConstraintType
 CRCT_COURTYARD_CLEARANCE: CustomRuleConstraintType
 CRCT_SILK_CLEARANCE: CustomRuleConstraintType
 CRCT_TEXT_HEIGHT: CustomRuleConstraintType
+CRCT_LINE_WIDTH: CustomRuleConstraintType
 CRCT_TEXT_THICKNESS: CustomRuleConstraintType
 CRCT_TRACK_WIDTH: CustomRuleConstraintType
 CRCT_TRACK_SEGMENT_LENGTH: CustomRuleConstraintType
@@ -292,7 +300,7 @@ CRCT_NET_CHAIN_LENGTH: CustomRuleConstraintType
 CRCT_NET_CHAIN_STUB_LENGTH: CustomRuleConstraintType
 CRCT_NET_CHAIN_RETURN_PATH: CustomRuleConstraintType
 CRCT_MICROVIA_STACK_DEPTH: CustomRuleConstraintType
-CRCT_MICROVIA_ASPECT_RATIO: CustomRuleConstraintType
+CRCT_HOLE_ASPECT_RATIO: CustomRuleConstraintType
 CRCO_UNKNOWN: CustomRuleConstraintOption
 CRCO_SKEW_WITHIN_DIFF_PAIRS: CustomRuleConstraintOption
 CRCO_SPACE_DOMAIN: CustomRuleConstraintOption
@@ -463,16 +471,26 @@ class ViaProtectionDefaults(_message.Message):
     def __init__(self, tent_front: bool = ..., tent_back: bool = ..., cover_front: bool = ..., cover_back: bool = ..., plug_front: bool = ..., plug_back: bool = ..., cap: bool = ..., fill: bool = ...) -> None: ...
 
 class DrcMarker(_message.Message):
-    __slots__ = ("error_type", "position", "items", "layer")
+    __slots__ = ("error_type", "position", "items", "layer", "violating_rule", "description", "severity", "excluded", "marker_type")
     ERROR_TYPE_FIELD_NUMBER: _ClassVar[int]
     POSITION_FIELD_NUMBER: _ClassVar[int]
     ITEMS_FIELD_NUMBER: _ClassVar[int]
     LAYER_FIELD_NUMBER: _ClassVar[int]
+    VIOLATING_RULE_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    SEVERITY_FIELD_NUMBER: _ClassVar[int]
+    EXCLUDED_FIELD_NUMBER: _ClassVar[int]
+    MARKER_TYPE_FIELD_NUMBER: _ClassVar[int]
     error_type: DrcErrorType
     position: _base_types_pb2.Vector2
     items: _containers.RepeatedCompositeFieldContainer[_base_types_pb2.KIID]
     layer: _board_types_pb2.BoardLayer
-    def __init__(self, error_type: _Optional[_Union[DrcErrorType, str]] = ..., position: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., items: _Optional[_Iterable[_Union[_base_types_pb2.KIID, _Mapping]]] = ..., layer: _Optional[_Union[_board_types_pb2.BoardLayer, str]] = ...) -> None: ...
+    violating_rule: str
+    description: str
+    severity: _base_types_pb2.RuleSeverity
+    excluded: bool
+    marker_type: _base_types_pb2.MarkerType
+    def __init__(self, error_type: _Optional[_Union[DrcErrorType, str]] = ..., position: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., items: _Optional[_Iterable[_Union[_base_types_pb2.KIID, _Mapping]]] = ..., layer: _Optional[_Union[_board_types_pb2.BoardLayer, str]] = ..., violating_rule: _Optional[str] = ..., description: _Optional[str] = ..., severity: _Optional[_Union[_base_types_pb2.RuleSeverity, str]] = ..., excluded: bool = ..., marker_type: _Optional[_Union[_base_types_pb2.MarkerType, str]] = ...) -> None: ...
 
 class DrcSeveritySetting(_message.Message):
     __slots__ = ("rule_type", "severity")
@@ -496,14 +514,23 @@ class CustomRuleDisallowSettings(_message.Message):
     types: _containers.RepeatedScalarFieldContainer[CustomRuleDisallowType]
     def __init__(self, types: _Optional[_Iterable[_Union[CustomRuleDisallowType, str]]] = ...) -> None: ...
 
+class CustomRuleReturnPathSettings(_message.Message):
+    __slots__ = ("reference_layer", "reference_net")
+    REFERENCE_LAYER_FIELD_NUMBER: _ClassVar[int]
+    REFERENCE_NET_FIELD_NUMBER: _ClassVar[int]
+    reference_layer: str
+    reference_net: str
+    def __init__(self, reference_layer: _Optional[str] = ..., reference_net: _Optional[str] = ...) -> None: ...
+
 class CustomRuleConstraint(_message.Message):
-    __slots__ = ("type", "name", "numeric", "disallow", "zone_connection", "assertion_expression", "options")
+    __slots__ = ("type", "name", "numeric", "disallow", "zone_connection", "assertion_expression", "return_path", "options")
     TYPE_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     NUMERIC_FIELD_NUMBER: _ClassVar[int]
     DISALLOW_FIELD_NUMBER: _ClassVar[int]
     ZONE_CONNECTION_FIELD_NUMBER: _ClassVar[int]
     ASSERTION_EXPRESSION_FIELD_NUMBER: _ClassVar[int]
+    RETURN_PATH_FIELD_NUMBER: _ClassVar[int]
     OPTIONS_FIELD_NUMBER: _ClassVar[int]
     type: CustomRuleConstraintType
     name: str
@@ -511,8 +538,9 @@ class CustomRuleConstraint(_message.Message):
     disallow: CustomRuleDisallowSettings
     zone_connection: _board_types_pb2.ZoneConnectionStyle
     assertion_expression: str
+    return_path: CustomRuleReturnPathSettings
     options: _containers.RepeatedScalarFieldContainer[CustomRuleConstraintOption]
-    def __init__(self, type: _Optional[_Union[CustomRuleConstraintType, str]] = ..., name: _Optional[str] = ..., numeric: _Optional[_Union[_base_types_pb2.MinOptMax, _Mapping]] = ..., disallow: _Optional[_Union[CustomRuleDisallowSettings, _Mapping]] = ..., zone_connection: _Optional[_Union[_board_types_pb2.ZoneConnectionStyle, str]] = ..., assertion_expression: _Optional[str] = ..., options: _Optional[_Iterable[_Union[CustomRuleConstraintOption, str]]] = ...) -> None: ...
+    def __init__(self, type: _Optional[_Union[CustomRuleConstraintType, str]] = ..., name: _Optional[str] = ..., numeric: _Optional[_Union[_base_types_pb2.MinOptMax, _Mapping]] = ..., disallow: _Optional[_Union[CustomRuleDisallowSettings, _Mapping]] = ..., zone_connection: _Optional[_Union[_board_types_pb2.ZoneConnectionStyle, str]] = ..., assertion_expression: _Optional[str] = ..., return_path: _Optional[_Union[CustomRuleReturnPathSettings, _Mapping]] = ..., options: _Optional[_Iterable[_Union[CustomRuleConstraintOption, str]]] = ...) -> None: ...
 
 class CustomRule(_message.Message):
     __slots__ = ("condition", "constraints", "single_layer", "layer_mode", "severity", "name", "comments")

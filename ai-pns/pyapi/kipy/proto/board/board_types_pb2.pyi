@@ -243,6 +243,7 @@ class PadType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PT_SMD: _ClassVar[PadType]
     PT_EDGE_CONNECTOR: _ClassVar[PadType]
     PT_NPTH: _ClassVar[PadType]
+    PT_NON_COMPONENT: _ClassVar[PadType]
 
 class PadSimElectricalType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -439,6 +440,20 @@ class FootprintMountingStyle(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     FMS_SMD: _ClassVar[FootprintMountingStyle]
     FMS_UNSPECIFIED: _ClassVar[FootprintMountingStyle]
 
+class Body3DKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    BDK_UNKNOWN: _ClassVar[Body3DKind]
+    BDK_EXTRUDED: _ClassVar[Body3DKind]
+    BDK_MODEL: _ClassVar[Body3DKind]
+
+class ExtrusionMaterial(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EM_UNKNOWN: _ClassVar[ExtrusionMaterial]
+    EM_PLASTIC: _ClassVar[ExtrusionMaterial]
+    EM_MATTE: _ClassVar[ExtrusionMaterial]
+    EM_METAL: _ClassVar[ExtrusionMaterial]
+    EM_COPPER: _ClassVar[ExtrusionMaterial]
+
 class TableStrokeMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     TSM_UNKNOWN: _ClassVar[TableStrokeMode]
@@ -512,6 +527,17 @@ class ViaStackStyle(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     VSK_UNKNOWN: _ClassVar[ViaStackStyle]
     VSK_STACKED: _ClassVar[ViaStackStyle]
     VSK_STAGGERED: _ClassVar[ViaStackStyle]
+
+class StackupTableColumnId(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    STC_UNKNOWN: _ClassVar[StackupTableColumnId]
+    STC_LAYER: _ClassVar[StackupTableColumnId]
+    STC_TYPE: _ClassVar[StackupTableColumnId]
+    STC_MATERIAL: _ClassVar[StackupTableColumnId]
+    STC_THICKNESS: _ClassVar[StackupTableColumnId]
+    STC_COLOR: _ClassVar[StackupTableColumnId]
+    STC_EPSILON_R: _ClassVar[StackupTableColumnId]
+    STC_LOSS_TANGENT: _ClassVar[StackupTableColumnId]
 BL_UNKNOWN: BoardLayer
 BL_UNDEFINED: BoardLayer
 BL_UNSELECTED: BoardLayer
@@ -692,6 +718,7 @@ PT_PTH: PadType
 PT_SMD: PadType
 PT_EDGE_CONNECTOR: PadType
 PT_NPTH: PadType
+PT_NON_COMPONENT: PadType
 PSET_NONE: PadSimElectricalType
 PSET_SOURCE: PadSimElectricalType
 PSET_SINK: PadSimElectricalType
@@ -818,6 +845,14 @@ FMS_UNKNOWN: FootprintMountingStyle
 FMS_THROUGH_HOLE: FootprintMountingStyle
 FMS_SMD: FootprintMountingStyle
 FMS_UNSPECIFIED: FootprintMountingStyle
+BDK_UNKNOWN: Body3DKind
+BDK_EXTRUDED: Body3DKind
+BDK_MODEL: Body3DKind
+EM_UNKNOWN: ExtrusionMaterial
+EM_PLASTIC: ExtrusionMaterial
+EM_MATTE: ExtrusionMaterial
+EM_METAL: ExtrusionMaterial
+EM_COPPER: ExtrusionMaterial
 TSM_UNKNOWN: TableStrokeMode
 TSM_DISABLED: TableStrokeMode
 TSM_ENABLED: TableStrokeMode
@@ -862,6 +897,14 @@ VSM_GUARD: ViaStitchMode
 VSK_UNKNOWN: ViaStackStyle
 VSK_STACKED: ViaStackStyle
 VSK_STAGGERED: ViaStackStyle
+STC_UNKNOWN: StackupTableColumnId
+STC_LAYER: StackupTableColumnId
+STC_TYPE: StackupTableColumnId
+STC_MATERIAL: StackupTableColumnId
+STC_THICKNESS: StackupTableColumnId
+STC_COLOR: StackupTableColumnId
+STC_EPSILON_R: StackupTableColumnId
+STC_LOSS_TANGENT: StackupTableColumnId
 
 class NetCode(_message.Message):
     __slots__ = ("value",)
@@ -1028,10 +1071,10 @@ class PostMachiningProperties(_message.Message):
     DEPTH_FIELD_NUMBER: _ClassVar[int]
     ANGLE_FIELD_NUMBER: _ClassVar[int]
     mode: ViaDrillPostMachiningMode
-    size: int
-    depth: int
-    angle: int
-    def __init__(self, mode: _Optional[_Union[ViaDrillPostMachiningMode, str]] = ..., size: _Optional[int] = ..., depth: _Optional[int] = ..., angle: _Optional[int] = ...) -> None: ...
+    size: _base_types_pb2.Distance
+    depth: _base_types_pb2.Distance
+    angle: _base_types_pb2.Angle
+    def __init__(self, mode: _Optional[_Union[ViaDrillPostMachiningMode, str]] = ..., size: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., depth: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., angle: _Optional[_Union[_base_types_pb2.Angle, _Mapping]] = ...) -> None: ...
 
 class PadStack(_message.Message):
     __slots__ = ("type", "layers", "drill", "unconnected_layer_removal", "copper_layers", "angle", "front_outer_layers", "back_outer_layers", "zone_settings", "secondary_drill", "tertiary_drill", "front_post_machining", "back_post_machining")
@@ -1182,7 +1225,7 @@ class BoardText(_message.Message):
     def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., text: _Optional[_Union[_base_types_pb2.Text, _Mapping]] = ..., layer: _Optional[_Union[BoardLayer, str]] = ..., knockout: bool = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ...) -> None: ...
 
 class BoardTextBox(_message.Message):
-    __slots__ = ("id", "textbox", "layer", "locked", "parent", "knockout", "custom_properties")
+    __slots__ = ("id", "textbox", "layer", "locked", "parent", "knockout", "custom_properties", "border_stroke")
     ID_FIELD_NUMBER: _ClassVar[int]
     TEXTBOX_FIELD_NUMBER: _ClassVar[int]
     LAYER_FIELD_NUMBER: _ClassVar[int]
@@ -1190,6 +1233,7 @@ class BoardTextBox(_message.Message):
     PARENT_FIELD_NUMBER: _ClassVar[int]
     KNOCKOUT_FIELD_NUMBER: _ClassVar[int]
     CUSTOM_PROPERTIES_FIELD_NUMBER: _ClassVar[int]
+    BORDER_STROKE_FIELD_NUMBER: _ClassVar[int]
     id: _base_types_pb2.KIID
     textbox: _base_types_pb2.TextBox
     layer: BoardLayer
@@ -1197,7 +1241,8 @@ class BoardTextBox(_message.Message):
     parent: _base_types_pb2.KIID
     knockout: bool
     custom_properties: _containers.RepeatedCompositeFieldContainer[_base_types_pb2.CustomProperty]
-    def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., textbox: _Optional[_Union[_base_types_pb2.TextBox, _Mapping]] = ..., layer: _Optional[_Union[BoardLayer, str]] = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., knockout: bool = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ...) -> None: ...
+    border_stroke: _base_types_pb2.StrokeAttributes
+    def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., textbox: _Optional[_Union[_base_types_pb2.TextBox, _Mapping]] = ..., layer: _Optional[_Union[BoardLayer, str]] = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., knockout: bool = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ..., border_stroke: _Optional[_Union[_base_types_pb2.StrokeAttributes, _Mapping]] = ...) -> None: ...
 
 class ThermalSpokeSettings(_message.Message):
     __slots__ = ("width", "angle", "gap")
@@ -1532,7 +1577,7 @@ class Dimension(_message.Message):
     def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., layer: _Optional[_Union[BoardLayer, str]] = ..., text: _Optional[_Union[_base_types_pb2.Text, _Mapping]] = ..., aligned: _Optional[_Union[AlignedDimensionAttributes, _Mapping]] = ..., orthogonal: _Optional[_Union[OrthogonalDimensionAttributes, _Mapping]] = ..., radial: _Optional[_Union[RadialDimensionAttributes, _Mapping]] = ..., leader: _Optional[_Union[LeaderDimensionAttributes, _Mapping]] = ..., center: _Optional[_Union[CenterDimensionAttributes, _Mapping]] = ..., override_text_enabled: bool = ..., override_text: _Optional[str] = ..., prefix: _Optional[str] = ..., suffix: _Optional[str] = ..., unit: _Optional[_Union[DimensionUnit, str]] = ..., unit_format: _Optional[_Union[DimensionUnitFormat, str]] = ..., arrow_direction: _Optional[_Union[DimensionArrowDirection, str]] = ..., precision: _Optional[_Union[DimensionPrecision, str]] = ..., suppress_trailing_zeroes: bool = ..., line_thickness: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., arrow_length: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., extension_offset: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., text_position: _Optional[_Union[DimensionTextPosition, str]] = ..., keep_text_aligned: bool = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ...) -> None: ...
 
 class ReferenceImage(_message.Message):
-    __slots__ = ("id", "layer", "position", "transform_origin_offset", "image_scale", "image_data", "locked", "parent", "custom_properties")
+    __slots__ = ("id", "layer", "position", "transform_origin_offset", "image_scale", "image_data", "locked", "parent", "custom_properties", "orientation", "opacity")
     ID_FIELD_NUMBER: _ClassVar[int]
     LAYER_FIELD_NUMBER: _ClassVar[int]
     POSITION_FIELD_NUMBER: _ClassVar[int]
@@ -1542,6 +1587,8 @@ class ReferenceImage(_message.Message):
     LOCKED_FIELD_NUMBER: _ClassVar[int]
     PARENT_FIELD_NUMBER: _ClassVar[int]
     CUSTOM_PROPERTIES_FIELD_NUMBER: _ClassVar[int]
+    ORIENTATION_FIELD_NUMBER: _ClassVar[int]
+    OPACITY_FIELD_NUMBER: _ClassVar[int]
     id: _base_types_pb2.KIID
     layer: BoardLayer
     position: _base_types_pb2.Vector2
@@ -1551,7 +1598,9 @@ class ReferenceImage(_message.Message):
     locked: _base_types_pb2.LockedState
     parent: _base_types_pb2.KIID
     custom_properties: _containers.RepeatedCompositeFieldContainer[_base_types_pb2.CustomProperty]
-    def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., layer: _Optional[_Union[BoardLayer, str]] = ..., position: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., transform_origin_offset: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., image_scale: _Optional[_Union[_base_types_pb2.Ratio, _Mapping]] = ..., image_data: _Optional[bytes] = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ...) -> None: ...
+    orientation: _base_types_pb2.Angle
+    opacity: float
+    def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., layer: _Optional[_Union[BoardLayer, str]] = ..., position: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., transform_origin_offset: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., image_scale: _Optional[_Union[_base_types_pb2.Ratio, _Mapping]] = ..., image_data: _Optional[bytes] = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ..., orientation: _Optional[_Union[_base_types_pb2.Angle, _Mapping]] = ..., opacity: _Optional[float] = ...) -> None: ...
 
 class GridItemAffects(_message.Message):
     __slots__ = ("cursor", "routing", "placement")
@@ -1718,6 +1767,14 @@ class FootprintVariant(_message.Message):
     fields: _containers.ScalarMap[str, str]
     def __init__(self, name: _Optional[str] = ..., do_not_populate: bool = ..., exclude_from_bill_of_materials: bool = ..., exclude_from_position_files: bool = ..., exclude_from_simulation: bool = ..., fields: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
+class FootprintUnitInfo(_message.Message):
+    __slots__ = ("name", "pin_numbers")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    PIN_NUMBERS_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    pin_numbers: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, name: _Optional[str] = ..., pin_numbers: _Optional[_Iterable[str]] = ...) -> None: ...
+
 class NetTieDefinition(_message.Message):
     __slots__ = ("pad_number",)
     PAD_NUMBER_FIELD_NUMBER: _ClassVar[int]
@@ -1752,6 +1809,40 @@ class Footprint3DModel(_message.Message):
     opacity: float
     def __init__(self, filename: _Optional[str] = ..., scale: _Optional[_Union[_base_types_pb2.Vector3D, _Mapping]] = ..., rotation: _Optional[_Union[_base_types_pb2.Vector3D, _Mapping]] = ..., offset: _Optional[_Union[_base_types_pb2.Vector3D, _Mapping]] = ..., visible: bool = ..., opacity: _Optional[float] = ...) -> None: ...
 
+class ExtrudedBody(_message.Message):
+    __slots__ = ("height", "standoff", "outline_layer", "material", "color")
+    HEIGHT_FIELD_NUMBER: _ClassVar[int]
+    STANDOFF_FIELD_NUMBER: _ClassVar[int]
+    OUTLINE_LAYER_FIELD_NUMBER: _ClassVar[int]
+    MATERIAL_FIELD_NUMBER: _ClassVar[int]
+    COLOR_FIELD_NUMBER: _ClassVar[int]
+    height: _base_types_pb2.Distance
+    standoff: _base_types_pb2.Distance
+    outline_layer: BoardLayer
+    material: ExtrusionMaterial
+    color: _base_types_pb2.Color
+    def __init__(self, height: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., standoff: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., outline_layer: _Optional[_Union[BoardLayer, str]] = ..., material: _Optional[_Union[ExtrusionMaterial, str]] = ..., color: _Optional[_Union[_base_types_pb2.Color, _Mapping]] = ...) -> None: ...
+
+class Body3D(_message.Message):
+    __slots__ = ("id", "parent", "kind", "scale", "rotation", "offset", "visible", "extruded")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    PARENT_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    SCALE_FIELD_NUMBER: _ClassVar[int]
+    ROTATION_FIELD_NUMBER: _ClassVar[int]
+    OFFSET_FIELD_NUMBER: _ClassVar[int]
+    VISIBLE_FIELD_NUMBER: _ClassVar[int]
+    EXTRUDED_FIELD_NUMBER: _ClassVar[int]
+    id: _base_types_pb2.KIID
+    parent: _base_types_pb2.KIID
+    kind: Body3DKind
+    scale: _base_types_pb2.Vector3D
+    rotation: _base_types_pb2.Vector3D
+    offset: _base_types_pb2.Vector3D
+    visible: bool
+    extruded: ExtrudedBody
+    def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., kind: _Optional[_Union[Body3DKind, str]] = ..., scale: _Optional[_Union[_base_types_pb2.Vector3D, _Mapping]] = ..., rotation: _Optional[_Union[_base_types_pb2.Vector3D, _Mapping]] = ..., offset: _Optional[_Union[_base_types_pb2.Vector3D, _Mapping]] = ..., visible: bool = ..., extruded: _Optional[_Union[ExtrudedBody, _Mapping]] = ...) -> None: ...
+
 class JumperGroup(_message.Message):
     __slots__ = ("pad_names",)
     PAD_NAMES_FIELD_NUMBER: _ClassVar[int]
@@ -1767,7 +1858,7 @@ class JumperSettings(_message.Message):
     def __init__(self, duplicate_names_are_jumpered: bool = ..., groups: _Optional[_Iterable[_Union[JumperGroup, _Mapping]]] = ...) -> None: ...
 
 class Footprint(_message.Message):
-    __slots__ = ("id", "anchor", "attributes", "overrides", "net_ties", "private_layers", "reference_field", "value_field", "datasheet_field", "description_field", "items", "jumpers")
+    __slots__ = ("id", "anchor", "attributes", "overrides", "net_ties", "private_layers", "reference_field", "value_field", "datasheet_field", "description_field", "items", "jumpers", "height")
     ID_FIELD_NUMBER: _ClassVar[int]
     ANCHOR_FIELD_NUMBER: _ClassVar[int]
     ATTRIBUTES_FIELD_NUMBER: _ClassVar[int]
@@ -1780,6 +1871,7 @@ class Footprint(_message.Message):
     DESCRIPTION_FIELD_FIELD_NUMBER: _ClassVar[int]
     ITEMS_FIELD_NUMBER: _ClassVar[int]
     JUMPERS_FIELD_NUMBER: _ClassVar[int]
+    HEIGHT_FIELD_NUMBER: _ClassVar[int]
     id: _base_types_pb2.LibraryIdentifier
     anchor: _base_types_pb2.Vector2
     attributes: FootprintAttributes
@@ -1792,10 +1884,11 @@ class Footprint(_message.Message):
     description_field: Field
     items: _containers.RepeatedCompositeFieldContainer[_any_pb2.Any]
     jumpers: JumperSettings
-    def __init__(self, id: _Optional[_Union[_base_types_pb2.LibraryIdentifier, _Mapping]] = ..., anchor: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., attributes: _Optional[_Union[FootprintAttributes, _Mapping]] = ..., overrides: _Optional[_Union[FootprintDesignRuleOverrides, _Mapping]] = ..., net_ties: _Optional[_Iterable[_Union[NetTieDefinition, _Mapping]]] = ..., private_layers: _Optional[_Iterable[_Union[BoardLayer, str]]] = ..., reference_field: _Optional[_Union[Field, _Mapping]] = ..., value_field: _Optional[_Union[Field, _Mapping]] = ..., datasheet_field: _Optional[_Union[Field, _Mapping]] = ..., description_field: _Optional[_Union[Field, _Mapping]] = ..., items: _Optional[_Iterable[_Union[_any_pb2.Any, _Mapping]]] = ..., jumpers: _Optional[_Union[JumperSettings, _Mapping]] = ...) -> None: ...
+    height: _base_types_pb2.Distance
+    def __init__(self, id: _Optional[_Union[_base_types_pb2.LibraryIdentifier, _Mapping]] = ..., anchor: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., attributes: _Optional[_Union[FootprintAttributes, _Mapping]] = ..., overrides: _Optional[_Union[FootprintDesignRuleOverrides, _Mapping]] = ..., net_ties: _Optional[_Iterable[_Union[NetTieDefinition, _Mapping]]] = ..., private_layers: _Optional[_Iterable[_Union[BoardLayer, str]]] = ..., reference_field: _Optional[_Union[Field, _Mapping]] = ..., value_field: _Optional[_Union[Field, _Mapping]] = ..., datasheet_field: _Optional[_Union[Field, _Mapping]] = ..., description_field: _Optional[_Union[Field, _Mapping]] = ..., items: _Optional[_Iterable[_Union[_any_pb2.Any, _Mapping]]] = ..., jumpers: _Optional[_Union[JumperSettings, _Mapping]] = ..., height: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ...) -> None: ...
 
 class FootprintInstance(_message.Message):
-    __slots__ = ("id", "position", "orientation", "layer", "locked", "definition", "reference_field", "value_field", "datasheet_field", "description_field", "attributes", "overrides", "symbol_path", "symbol_sheet_name", "symbol_sheet_filename", "symbol_footprint_filters", "parent", "embedded_files", "custom_properties", "variants")
+    __slots__ = ("id", "position", "orientation", "layer", "locked", "definition", "reference_field", "value_field", "datasheet_field", "description_field", "attributes", "overrides", "symbol_path", "symbol_sheet_name", "symbol_sheet_filename", "symbol_footprint_filters", "parent", "embedded_files", "custom_properties", "variants", "symbol_units")
     ID_FIELD_NUMBER: _ClassVar[int]
     POSITION_FIELD_NUMBER: _ClassVar[int]
     ORIENTATION_FIELD_NUMBER: _ClassVar[int]
@@ -1816,6 +1909,7 @@ class FootprintInstance(_message.Message):
     EMBEDDED_FILES_FIELD_NUMBER: _ClassVar[int]
     CUSTOM_PROPERTIES_FIELD_NUMBER: _ClassVar[int]
     VARIANTS_FIELD_NUMBER: _ClassVar[int]
+    SYMBOL_UNITS_FIELD_NUMBER: _ClassVar[int]
     id: _base_types_pb2.KIID
     position: _base_types_pb2.Vector2
     orientation: _base_types_pb2.Angle
@@ -1836,7 +1930,8 @@ class FootprintInstance(_message.Message):
     embedded_files: _embedded_files_pb2.EmbeddedFiles
     custom_properties: _containers.RepeatedCompositeFieldContainer[_base_types_pb2.CustomProperty]
     variants: _containers.RepeatedCompositeFieldContainer[FootprintVariant]
-    def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., position: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., orientation: _Optional[_Union[_base_types_pb2.Angle, _Mapping]] = ..., layer: _Optional[_Union[BoardLayer, str]] = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., definition: _Optional[_Union[Footprint, _Mapping]] = ..., reference_field: _Optional[_Union[Field, _Mapping]] = ..., value_field: _Optional[_Union[Field, _Mapping]] = ..., datasheet_field: _Optional[_Union[Field, _Mapping]] = ..., description_field: _Optional[_Union[Field, _Mapping]] = ..., attributes: _Optional[_Union[FootprintAttributes, _Mapping]] = ..., overrides: _Optional[_Union[FootprintDesignRuleOverrides, _Mapping]] = ..., symbol_path: _Optional[_Union[_base_types_pb2.SheetPath, _Mapping]] = ..., symbol_sheet_name: _Optional[str] = ..., symbol_sheet_filename: _Optional[str] = ..., symbol_footprint_filters: _Optional[str] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., embedded_files: _Optional[_Union[_embedded_files_pb2.EmbeddedFiles, _Mapping]] = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ..., variants: _Optional[_Iterable[_Union[FootprintVariant, _Mapping]]] = ...) -> None: ...
+    symbol_units: _containers.RepeatedCompositeFieldContainer[FootprintUnitInfo]
+    def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., position: _Optional[_Union[_base_types_pb2.Vector2, _Mapping]] = ..., orientation: _Optional[_Union[_base_types_pb2.Angle, _Mapping]] = ..., layer: _Optional[_Union[BoardLayer, str]] = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., definition: _Optional[_Union[Footprint, _Mapping]] = ..., reference_field: _Optional[_Union[Field, _Mapping]] = ..., value_field: _Optional[_Union[Field, _Mapping]] = ..., datasheet_field: _Optional[_Union[Field, _Mapping]] = ..., description_field: _Optional[_Union[Field, _Mapping]] = ..., attributes: _Optional[_Union[FootprintAttributes, _Mapping]] = ..., overrides: _Optional[_Union[FootprintDesignRuleOverrides, _Mapping]] = ..., symbol_path: _Optional[_Union[_base_types_pb2.SheetPath, _Mapping]] = ..., symbol_sheet_name: _Optional[str] = ..., symbol_sheet_filename: _Optional[str] = ..., symbol_footprint_filters: _Optional[str] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., embedded_files: _Optional[_Union[_embedded_files_pb2.EmbeddedFiles, _Mapping]] = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ..., variants: _Optional[_Iterable[_Union[FootprintVariant, _Mapping]]] = ..., symbol_units: _Optional[_Iterable[_Union[FootprintUnitInfo, _Mapping]]] = ...) -> None: ...
 
 class TableCell(_message.Message):
     __slots__ = ("text_box", "column_span", "row_span", "custom_properties")
@@ -1885,16 +1980,18 @@ class Table(_message.Message):
     def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., column_count: _Optional[int] = ..., column_widths: _Optional[_Iterable[int]] = ..., row_heights: _Optional[_Iterable[int]] = ..., layer: _Optional[_Union[BoardLayer, str]] = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., cells: _Optional[_Iterable[_Union[TableCell, _Mapping]]] = ..., external_border: _Optional[_Union[TableStrokeMode, str]] = ..., header_separator: _Optional[_Union[TableStrokeMode, str]] = ..., border_stroke: _Optional[_Union[_base_types_pb2.StrokeAttributes, _Mapping]] = ..., row_separators: _Optional[_Union[TableStrokeMode, str]] = ..., column_separators: _Optional[_Union[TableStrokeMode, str]] = ..., separators_stroke: _Optional[_Union[_base_types_pb2.StrokeAttributes, _Mapping]] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ...) -> None: ...
 
 class DrillChartColumn(_message.Message):
-    __slots__ = ("id", "heading", "align", "width")
+    __slots__ = ("id", "heading", "align", "width", "hidden")
     ID_FIELD_NUMBER: _ClassVar[int]
     HEADING_FIELD_NUMBER: _ClassVar[int]
     ALIGN_FIELD_NUMBER: _ClassVar[int]
     WIDTH_FIELD_NUMBER: _ClassVar[int]
+    HIDDEN_FIELD_NUMBER: _ClassVar[int]
     id: DrillChartColumnId
     heading: str
     align: _enums_pb2.HorizontalAlignment
     width: _base_types_pb2.Distance
-    def __init__(self, id: _Optional[_Union[DrillChartColumnId, str]] = ..., heading: _Optional[str] = ..., align: _Optional[_Union[_enums_pb2.HorizontalAlignment, str]] = ..., width: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ...) -> None: ...
+    hidden: bool
+    def __init__(self, id: _Optional[_Union[DrillChartColumnId, str]] = ..., heading: _Optional[str] = ..., align: _Optional[_Union[_enums_pb2.HorizontalAlignment, str]] = ..., width: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., hidden: bool = ...) -> None: ...
 
 class DrillChartFilter(_message.Message):
     __slots__ = ("plated", "non_plated", "vias", "slots", "backdrills", "castellated")
@@ -2169,3 +2266,38 @@ class ViaStack(_message.Message):
     members: _containers.RepeatedCompositeFieldContainer[_base_types_pb2.KIID]
     custom_properties: _containers.RepeatedCompositeFieldContainer[_base_types_pb2.CustomProperty]
     def __init__(self, id: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., start_layer: _Optional[_Union[BoardLayer, str]] = ..., end_layer: _Optional[_Union[BoardLayer, str]] = ..., style: _Optional[_Union[ViaStackStyle, str]] = ..., pitch: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., filled: bool = ..., capped: bool = ..., via_size: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., via_drill: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., use_netclass: bool = ..., preset_name: _Optional[str] = ..., hops: _Optional[_Union[_base_types_pb2.PolyLine, _Mapping]] = ..., net: _Optional[_Union[Net, _Mapping]] = ..., locked: _Optional[_Union[_base_types_pb2.LockedState, str]] = ..., parent: _Optional[_Union[_base_types_pb2.KIID, _Mapping]] = ..., members: _Optional[_Iterable[_Union[_base_types_pb2.KIID, _Mapping]]] = ..., custom_properties: _Optional[_Iterable[_Union[_base_types_pb2.CustomProperty, _Mapping]]] = ...) -> None: ...
+
+class StackupTableColumn(_message.Message):
+    __slots__ = ("id", "heading", "align", "width", "hidden")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    HEADING_FIELD_NUMBER: _ClassVar[int]
+    ALIGN_FIELD_NUMBER: _ClassVar[int]
+    WIDTH_FIELD_NUMBER: _ClassVar[int]
+    HIDDEN_FIELD_NUMBER: _ClassVar[int]
+    id: StackupTableColumnId
+    heading: str
+    align: _enums_pb2.HorizontalAlignment
+    width: _base_types_pb2.Distance
+    hidden: bool
+    def __init__(self, id: _Optional[_Union[StackupTableColumnId, str]] = ..., heading: _Optional[str] = ..., align: _Optional[_Union[_enums_pb2.HorizontalAlignment, str]] = ..., width: _Optional[_Union[_base_types_pb2.Distance, _Mapping]] = ..., hidden: bool = ...) -> None: ...
+
+class StackupTable(_message.Message):
+    __slots__ = ("table", "columns", "units", "precision", "row_keys")
+    class RowKeysEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: int
+        value: str
+        def __init__(self, key: _Optional[int] = ..., value: _Optional[str] = ...) -> None: ...
+    TABLE_FIELD_NUMBER: _ClassVar[int]
+    COLUMNS_FIELD_NUMBER: _ClassVar[int]
+    UNITS_FIELD_NUMBER: _ClassVar[int]
+    PRECISION_FIELD_NUMBER: _ClassVar[int]
+    ROW_KEYS_FIELD_NUMBER: _ClassVar[int]
+    table: Table
+    columns: _containers.RepeatedCompositeFieldContainer[StackupTableColumn]
+    units: _enums_pb2.Units
+    precision: int
+    row_keys: _containers.ScalarMap[int, str]
+    def __init__(self, table: _Optional[_Union[Table, _Mapping]] = ..., columns: _Optional[_Iterable[_Union[StackupTableColumn, _Mapping]]] = ..., units: _Optional[_Union[_enums_pb2.Units, str]] = ..., precision: _Optional[int] = ..., row_keys: _Optional[_Mapping[int, str]] = ...) -> None: ...

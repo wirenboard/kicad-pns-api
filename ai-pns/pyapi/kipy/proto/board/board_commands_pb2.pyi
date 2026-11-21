@@ -418,6 +418,22 @@ class ImportNetlistResponse(_message.Message):
     report: str
     def __init__(self, error_count: _Optional[int] = ..., warning_count: _Optional[int] = ..., new_footprint_count: _Optional[int] = ..., report: _Optional[str] = ...) -> None: ...
 
+class ImportSpecctraSession(_message.Message):
+    __slots__ = ("board", "session_path")
+    BOARD_FIELD_NUMBER: _ClassVar[int]
+    SESSION_PATH_FIELD_NUMBER: _ClassVar[int]
+    board: _base_types_pb2.DocumentSpecifier
+    session_path: str
+    def __init__(self, board: _Optional[_Union[_base_types_pb2.DocumentSpecifier, _Mapping]] = ..., session_path: _Optional[str] = ...) -> None: ...
+
+class ImportSpecctraSessionResponse(_message.Message):
+    __slots__ = ("skipped_count", "report")
+    SKIPPED_COUNT_FIELD_NUMBER: _ClassVar[int]
+    REPORT_FIELD_NUMBER: _ClassVar[int]
+    skipped_count: int
+    report: str
+    def __init__(self, skipped_count: _Optional[int] = ..., report: _Optional[str] = ...) -> None: ...
+
 class RefillZones(_message.Message):
     __slots__ = ("board", "zones")
     BOARD_FIELD_NUMBER: _ClassVar[int]
