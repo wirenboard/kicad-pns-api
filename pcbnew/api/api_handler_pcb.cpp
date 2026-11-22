@@ -3703,16 +3703,14 @@ HANDLER_RESULT<DragTrackResponse> API_HANDLER_PCB::handleDragTrack( const HANDLE
 HANDLER_RESULT<CleanupTracksResponse> API_HANDLER_PCB::handleCleanupTracks(
         const HANDLER_CONTEXT<CleanupTracks>& aCtx )
 {
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "CleanupTracks" ) )
         return tl::unexpected( *headless );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     if( m_commits.count( aCtx.ClientName ) )
         return apiError( ApiStatusCode::AS_BAD_REQUEST, "CleanupTracks cannot run inside an open commit" );
@@ -3784,16 +3782,14 @@ HANDLER_RESULT<CleanupTracksResponse> API_HANDLER_PCB::handleCleanupTracks(
 
 HANDLER_RESULT<RunDrcResponse> API_HANDLER_PCB::handleRunDrc( const HANDLER_CONTEXT<RunDrc>& aCtx )
 {
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "RunDrc" ) )
         return tl::unexpected( *headless );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     BOARD*                      board = frame()->GetBoard();
     BOARD_DESIGN_SETTINGS&      bds = board->GetDesignSettings();
