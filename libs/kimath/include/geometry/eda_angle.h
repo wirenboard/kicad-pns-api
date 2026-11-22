@@ -227,6 +227,8 @@ public:
 
     inline EDA_ANGLE Normalize()
     {
+        m_value = foldToTwoPeriods( m_value, 360.0 );
+
         while( m_value < -0.0 )
             m_value += 360.0;
 
@@ -244,6 +246,8 @@ public:
 
     inline EDA_ANGLE NormalizeNegative()
     {
+        m_value = foldToTwoPeriods( m_value, 360.0 );
+
         while( m_value <= -360.0 )
             m_value += 360.0;
 
@@ -255,6 +259,8 @@ public:
 
     inline EDA_ANGLE Normalize90()
     {
+        m_value = foldToTwoPeriods( m_value, 180.0 );
+
         while( m_value < -90.0 )
             m_value += 180.0;
 
@@ -266,6 +272,8 @@ public:
 
     inline EDA_ANGLE Normalize180()
     {
+        m_value = foldToTwoPeriods( m_value, 360.0 );
+
         while( m_value <= -180.0 )
             m_value += 360.0;
 
@@ -277,6 +285,8 @@ public:
 
     inline EDA_ANGLE Normalize720()
     {
+        m_value = foldToTwoPeriods( m_value, 360.0 );
+
         while( m_value < -360.0 )
             m_value += 360.0;
 
@@ -299,6 +309,30 @@ public:
 
     EDA_ANGLE KeepUpright() const;
 
+    /**
+     * Reflection, over a line with direction @a aAxisAngle, of the turn this angle stores.
+     *
+     * Assuming a y-down coordinate system, the turn is measured anti-clockwise from the
+     * positive x-axis (i.e. the same turn convention as RotatePoint()).
+     *
+     *       /45   |     \ 135
+     *      /___   |      \____
+     *        a    |        a'
+     *             |
+     *             |<- reflection axis, 90 or 270 degrees
+     *
+     * In this case, an angle a = 45 degrees is reflected over the y-axis to become
+     * a' = 135 degrees.
+     *
+     * Reflecting over aAxisAngle gives the same result as reflecting over
+     * aAxisAngle + 180 (or any value modulo 180), so the direction of the axis
+     * does not matter.
+     */
+    [[nodiscard]] EDA_ANGLE Reflect( const EDA_ANGLE& aAxisAngle ) const
+    {
+        return EDA_ANGLE( 2.0 * aAxisAngle.AsDegrees() - AsDegrees(), DEGREES_T );
+    }
+
     [[nodiscard]] EDA_ANGLE Round( int digits ) const
     {
         EDA_ANGLE angle( *this );
@@ -320,6 +354,23 @@ public:
     }
 
 private:
+    /**
+     * Exactly remove whole periods from values beyond two periods, keeping the sign, so the
+     * normalization loops run at most twice.  Repeated subtraction alone never terminates once
+     * the spacing between doubles exceeds the period.  Non-finite values become 0.
+     */
+    static double foldToTwoPeriods( double aValue, double aPeriod )
+    {
+        if( !std::isfinite( aValue ) )
+            return 0.0;
+
+        if( std::abs( aValue ) < 2.0 * aPeriod )
+            return aValue;
+
+        // Exact because |aValue| >= 2 * aPeriod keeps the remainder on a grid no finer than the sum
+        return std::fmod( aValue, aPeriod ) + std::copysign( aPeriod, aValue );
+    }
+
     double  m_value;           ///< value in degrees
 
 };
@@ -513,6 +564,17 @@ public:
         // Normalize -0 to 0 to avoid -0 in display and serialization.
         if( m_angle == ANGLE_0 )
             m_angle = ANGLE_0;
+    }
+
+    /**
+     * This orientation reflected over a line with direction @a aAxisAngle.
+     *
+     * The orientation counterpart of EDA_ANGLE::Reflect() with the normalized
+     * result.
+     */
+    [[nodiscard]] EDA_ORIENTATION Reflect( const EDA_ANGLE& aAxisAngle ) const
+    {
+        return EDA_ORIENTATION( m_angle.Reflect( aAxisAngle ) );
     }
 
 private:

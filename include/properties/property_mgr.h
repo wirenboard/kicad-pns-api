@@ -131,6 +131,12 @@ public:
      */
     std::vector<PROPERTY_BASE*> GetProperties( const INSPECTABLE* aObject ) const;
 
+    /**
+     * Return the dynamic properties of the first object whose names every other object also has,
+     * in the first object's order.  Each object's dynamic properties are queried once.
+     */
+    std::vector<PROPERTY_BASE*> GetCommonDynamicProperties( const std::vector<const INSPECTABLE*>& aObjects ) const;
+
     const std::map<PROPERTY_BASE*, int>& GetDisplayOrder( TYPE_ID aType ) const;
 
     const std::vector<wxString>& GetGroupDisplayOrder( TYPE_ID aType ) const;
@@ -260,9 +266,7 @@ public:
         std::vector<PROPERTY_BASE*> properties;
     };
 
-    typedef std::vector<CLASS_INFO> CLASSES_INFO;
-
-    CLASSES_INFO GetAllClasses();
+    std::vector<CLASS_INFO> GetAllClasses();
 
     /**
      * Callback to alert the notification system that a property has changed

@@ -596,7 +596,7 @@ protected:
     EDA_ITEM* findParent( KICAD_T aType ) const;
 
 public:
-    const KIID  m_Uuid;
+    const KIID     m_Uuid;
 
 private:
     /**
@@ -609,18 +609,17 @@ protected:
     EDA_ITEM*      m_parent;        ///< Owner.
     EDA_GROUP*     m_group;         ///< The group this item belongs to, if any.  No ownership implied.
 
-    VECTOR2I m_rolloverPos;
-    bool     m_isRollover;
-    bool     m_forceVisible;
-    bool     m_netHighlighted = false;
+    VECTOR2I       m_rolloverPos;
+    bool           m_isRollover;
+    bool           m_forceVisible;
+    bool           m_netHighlighted = false;
 
     std::map<wxString, wxString> m_customProperties;
 
-    /// Per-key cache of dynamic property descriptors for m_customProperties,
-    /// owned by this object. Mirrors the per-object field-property caches used
-    /// by FOOTPRINT / SCH_SYMBOL / SCH_SHEET; entries linger after a key is
-    /// removed but are simply not enumerated.
-    mutable std::map<wxString, std::unique_ptr<PROPERTY_BASE>> m_dynamicCustomPropsCache;
+    /// Per-key cache of dynamic property descriptors for m_customProperties, owned by this
+    /// object.  Mirrors the per-object caches used by FOOTPRINT, SCH_SYMBOL and SCH_SHEET.
+    /// Entries linger after a key is removed but are simply not enumerated.
+    mutable std::map<wxString, std::unique_ptr<PROPERTY_BASE>> m_customPropsStorageCache;
 };
 
 

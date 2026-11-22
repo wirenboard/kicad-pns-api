@@ -21,8 +21,15 @@
 #define PROJECT_GIT_UTILS_H
 
 #include <git2.h>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 #include <wx/string.h>
+#include <wx/filename.h>
 #include <import_export.h>
+
+class KIGIT_COMMON;
 
 namespace KIGIT
 {
@@ -35,9 +42,23 @@ public:
      * Discover and open the repository that contains the given file.
      *
      * @param aFilename Absolute path to a file inside the repository.
+     * @param aError Receives a reason worth showing when the repository cannot be opened.
+     * @param aTrustCommand Receives the git command that trusts a repository another user owns.
      * @return Newly opened git_repository or nullptr on failure.
      */
-    static git_repository* GetRepositoryForFile( const char* aFilename );
+    static git_repository* GetRepositoryForFile( const char* aFilename, wxString* aError = nullptr,
+                                                 wxString* aTrustCommand = nullptr );
+
+    // Writes core.longpaths into a new repository, as Windows refuses paths past MAX_PATH without it.
+    // Windows only
+    static int AllowLongPaths( git_repository* aRepo );
+
+    // Gives a handle core.longpaths from a separate config file, leaving the repository's own config alone.
+    // Windows only
+    static int AttachLongPaths( git_repository* aRepo );
+
+    // The file AttachLongPaths keeps its setting in
+    static wxString LongPathsConfigPath();
 
     /**
      * Create a new branch based on HEAD.
@@ -114,6 +135,91 @@ public:
      * @return True if aAbsPath is within the project directory.
      */
     static bool IsWithinProjectPath( const wxString& aAbsPath, const wxString& aProjectPath );
+
+    /**
+     * Free the session's repository handle without pulling it out from under a running
+     * operation. With the action mutex free it goes at once, otherwise the orphan registry
+     * frees it once the running operation releases the mutex.
+     *
+     * @param aLabel Names the orphan registry entry, for shutdown diagnostics.
+     */
+    static void SafeFreeRepository( std::shared_ptr<KIGIT_COMMON> aCommon, const std::string& aLabel );
+
+    /// Shared patterns for new .gitignore files and the untracked-file filter.
+    static const std::vector<wxString>& TransientGitIgnorePatterns();
+
+    /// Match a project-relative path against the shared transient patterns.
+    /// Callers must keep tracked and staged files visible even when their names match.
+    /// @param aIsDirectory The path is a directory git reported as one entry.
+    static bool IsTransientGitFile( const wxFileName& aFile, bool aIsDirectory = false );
+
+    /**
+     * Whether a changed file is left out of what the project has to commit. Only a file git does not know
+     * at all qualifies, inside the project and matching the transient patterns. A tracked or staged file is
+     * carried by a commit and blocks a merge, so hiding it would leave nothing to commit and no way forward.
+     *
+     * @param aRelativePath The file relative to the working directory, '/'-separated.
+     * @param aProjectPrefix The project's folder as ProjectPrefix gives it.
+     * @param aGitStatus The file's git_status_t flags.
+     * @param aIsDirectory Git reported the path as a directory or a submodule.
+     */
+    static bool IsHiddenTransient( const wxString& aRelativePath, const wxString& aProjectPrefix,
+                                   unsigned int aGitStatus, bool aIsDirectory = false );
+
+    /// Whether a commit stops tracking the nested repository at @p aRelativePath rather than recording it.
+    /// Its name matches a transient pattern and no submodule is configured for it.
+    static bool IsTransientGitlink( git_repository* aRepo, const wxString& aRelativePath );
+
+    /**
+     * The project's folder inside the repository, ending in a slash.
+     *
+     * An empty string means the repository root. No value means either path is
+     * missing or the project is outside the repository. Uses forward slashes for libgit2.
+     */
+    static std::optional<wxString> ProjectPrefix( const wxString& aWorkDir, const wxString& aProjectPath );
+
+    /// Whether git routes @p aPath through the Git LFS filter.
+    /// aCommit also includes that commit's attributes when judging a version before checkout,
+    /// with libgit2 1.3 or later. Older versions only check the index and working tree.
+    static bool PathUsesGitLfs( git_repository* aRepo, const wxString& aPath, const git_oid* aCommit = nullptr );
+
+    /// The filter driver git add would run on @p aPath, such as lfs, which libgit2 cannot run. Empty for
+    /// none, nothing when the attributes cannot be read.
+    static std::optional<wxString> FilterDriver( git_repository* aRepo, const wxString& aPath );
+
+    /**
+     * Whether any committed file in the project's folder goes through Git LFS.
+     *
+     * libgit2 runs no filter program, so every operation that writes such a file writes the
+     * placeholder text instead of the file. @p aExample receives the first one found.
+     */
+    static bool ProjectUsesGitLfs( const KIGIT_COMMON& aCommon, wxString* aExample = nullptr,
+                                   const git_oid* aCommit = nullptr );
+
+    /**
+     * Return a refusal message for LFS files or an unknown project folder, otherwise empty.
+     * The caller holds the session's action lock.
+     */
+    static wxString LfsRefusal( KIGIT_COMMON* aCommon );
+
+    /**
+     * Write a file as it exists at a git ref to a path on disk, so a committed version can
+     * be diffed. False for an empty ref or path, or one that is not a blob.
+     *
+     * @param aRef Branch, tag or commit to read from, for example "HEAD".
+     * @param aPath Path inside the repository, relative to its root.
+     */
+    static bool WriteBlobToFile( git_repository* aRepo, const wxString& aRef, const wxString& aPath,
+                                 const wxString& aDestPath );
+
+    /**
+     * Check out a whole tree into a directory, leaving the repository's working copy and
+     * index alone. A hierarchical schematic needs this rather than a lone blob, because its
+     * root sheet references sub-sheet files.
+     *
+     * @param aDestDir Destination directory, created if needed.
+     */
+    static bool WriteTreeToDir( git_repository* aRepo, const wxString& aRef, const wxString& aDestDir );
 };
 
 } // namespace KIGIT

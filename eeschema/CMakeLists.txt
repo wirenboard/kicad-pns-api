@@ -105,10 +105,20 @@ set( EESCHEMA_SCH_IO
     sch_io/pads/pads_sch_sdb.cpp
     sch_io/ole_emf.cpp
     sch_io/ole_image.cpp
+    sch_io/sch_io_wire_detour.cpp
 
     # DipTrace IO plugin
     sch_io/diptrace/sch_io_diptrace.cpp
     sch_io/diptrace/diptrace_sch_parser.cpp
+
+    # Easy-PC / DesignSpark PCB IO plugin
+    sch_io/easypc/sch_io_easypc.cpp
+    sch_io/easypc/easypc_sch_builder.cpp
+    sch_io/easypc/easypc_sch_items.cpp
+
+    # TARGET 3001! IO plugin
+    sch_io/target3001/sch_io_target3001.cpp
+    sch_io/target3001/target3001_sch_builder.cpp
 
     # P-CAD 2006 ASCII IO plugin
     sch_io/pcad/sch_io_pcad.cpp
@@ -310,6 +320,7 @@ set( EESCHEMA_SIM_SRCS
     sim/kibis/ibis_parser.cpp
     sim/kibis/kibis.cpp
 
+    sim/operating_point.cpp
     sim/spice_circuit_model.cpp
     sim/ngspice.cpp
     sim/simulator_frame.cpp
@@ -318,6 +329,7 @@ set( EESCHEMA_SIM_SRCS
     sim/sim_plot_colors.cpp
     sim/sim_plot_tab.cpp
     sim/sim_property.cpp
+    sim/sim_signal_utils.cpp
     sim/sim_tab.cpp
     sim/spice_simulator.cpp
     sim/spice_value.cpp
@@ -344,6 +356,7 @@ set( EESCHEMA_WIDGETS
     widgets/sch_search_pane.cpp
     widgets/search_handlers.cpp
     widgets/symbol_filter_combobox.cpp
+    widgets/db_lib_preview_panel.cpp
     widgets/symbol_preview_widget.cpp
     widgets/symbol_tree_pane.cpp
     )
@@ -365,8 +378,6 @@ set ( EESCHEMA_LIBEDIT_SRCS
     )
 
 set( EESCHEMA_IMPORT_GFX
-    import_gfx/dialog_import_gfx_sch_base.cpp
-    import_gfx/dialog_import_gfx_sch.cpp
     import_gfx/graphics_importer_lib_symbol.cpp
     import_gfx/graphics_importer_sch.cpp
     )
@@ -460,10 +471,12 @@ set( EESCHEMA_SRCS
     files-io.cpp
     generate_alias_info.cpp
     gfx_import_utils.cpp
+    import_local_symbol_libs.cpp
     import_net_map.cpp
     junction_helpers.cpp
     lib_fields_data_model.cpp
     lib_symbol.cpp
+    link_imported_footprints.cpp
     menubar.cpp
     net_navigator.cpp
     picksymbol.cpp
@@ -497,6 +510,9 @@ set( EESCHEMA_SRCS
     sch_preview_panel.cpp
     sch_reference_list.cpp
     sch_render_settings.cpp
+    downgrade/sch_downgrade.cpp
+    sch_io/kicad_sexpr/writers/sch_writer_v9.cpp
+    sch_io/kicad_sexpr/writers/sch_writer_v10.cpp
     sch_screen.cpp
     sch_shape.cpp
     sch_rule_area.cpp
@@ -535,9 +551,13 @@ set( EESCHEMA_SRCS
     api/api_sch_utils.cpp
     api/api_handler_sch_libraries.cpp
     api/api_handler_sch.cpp
+    api/api_handler_sch_tasks.cpp
+    api/api_handler_symbol.cpp
     api/headless_sch_context.cpp
+    api/headless_symbol_editor_context.cpp
     api/sch_api_save.cpp
     api/sch_context.cpp
+    api/symbol_editor_context.cpp
 
     libraries/legacy_cache_reconcile.cpp
     libraries/legacy_symbol_library.cpp
@@ -699,6 +719,10 @@ if( KICAD_USE_PCH )
             <pgm_base.h>
             <wx/wx.h> )
 endif()
+
+# Its header redefines the control ID macros of dialog_annotate_base.h with different values
+set_source_files_properties( dialogs/panel_eeschema_annotation_options_base.cpp
+    PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON )
 
 target_include_directories( eeschema_kiface_objects
     PUBLIC

@@ -594,9 +594,13 @@ void PANEL_SETUP_LAYERS::SyncCopperLayers( int aNumCopperLayers )
     m_pcb = &temp;
     transferDataFromWindow();
 
-    for( size_t ii = 0; ii < m_enabledLayers.size(); ii++ )
+    for( int ii = 0; ii < (int) m_enabledLayers.size(); ii++ )
     {
-        if( IsCopperLayer( int( ii ) ) )
+        if( IsCopperLayer( ToLAYER_ID( ii ) ) )
+            m_enabledLayers.reset( ii );
+        else if( getCheckBox( ToLAYER_ID( ii ) ) && getCheckBox( ToLAYER_ID( ii ) )->IsChecked() )
+            m_enabledLayers.set( ii );
+        else
             m_enabledLayers.reset( ii );
     }
 
@@ -823,6 +827,10 @@ bool PANEL_SETUP_LAYERS::transferDataFromWindow()
             case 2:  t = LT_BACK;      break;
             default: t = LT_UNDEFINED; break;
             }
+
+            // A user layer loaded as "user" has no type and is shown as auxiliary, so keep it as loaded
+            if( t == LT_AUX && m_pcb->GetLayerType( layer ) == LT_UNDEFINED )
+                t = LT_UNDEFINED;
 
             if( m_pcb->GetLayerType( layer ) != t )
             {

@@ -35,8 +35,7 @@
 #include "netlist_exporter_orcadpcb2.h"
 
 
-bool NETLIST_EXPORTER_ORCADPCB2::writeNetlist( const wxString& aOutFileName,
-                                               unsigned /* aNetlistOptions */,
+bool NETLIST_EXPORTER_ORCADPCB2::writeNetlist( const wxString& aOutFileName, unsigned /* aNetlistOptions */,
                                                REPORTER& aReporter )
 {
     FILE* f = nullptr;
@@ -63,6 +62,8 @@ bool NETLIST_EXPORTER_ORCADPCB2::writeNetlist( const wxString& aOutFileName,
         // Create netlist footprints section
         m_referencesAlreadyFound.Clear();
 
+        const EXPORT_EXCLUSION excluded = boardExclusion();
+
         for( const SCH_SHEET_PATH& sheet : m_exportSheets )
         {
             // The rtree returns items in a non-deterministic order (platform-dependent)
@@ -73,22 +74,20 @@ bool NETLIST_EXPORTER_ORCADPCB2::writeNetlist( const wxString& aOutFileName,
             for( EDA_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
                 sheetItems.push_back( item );
 
-            auto pred = []( const EDA_ITEM* item1, const EDA_ITEM* item2 )
-            {
-                return item1->m_Uuid < item2->m_Uuid;
-            };
+            auto pred =
+                    []( const EDA_ITEM* item1, const EDA_ITEM* item2 )
+                    {
+                        return item1->m_Uuid < item2->m_Uuid;
+                    };
 
             std::sort( sheetItems.begin(), sheetItems.end(), pred );
 
             // Process symbol attributes
             for( EDA_ITEM* item : sheetItems )
             {
-                SCH_SYMBOL* symbol = findNextSymbol( item, sheet );
+                SCH_SYMBOL* symbol = findNextSymbol( item, sheet, excluded );
 
                 if( !symbol )
-                    continue;
-
-                if( symbol->GetExcludedFromBoard() )
                     continue;
 
                 std::vector<PIN_INFO> pins = CreatePinList( symbol, sheet );
@@ -99,7 +98,7 @@ bool NETLIST_EXPORTER_ORCADPCB2::writeNetlist( const wxString& aOutFileName,
                     cmpList.push_back( SCH_REFERENCE( symbol, sheet ) );
                 }
 
-                footprint = symbol->GetFootprintFieldText( &sheet, RESOLVED );
+                footprint = symbol->GetFootprintFieldText( &sheet, RESOLVED, m_exportVariant );
                 footprint.Replace( wxT( " " ), wxT( "_" ) );
 
                 if( footprint.IsEmpty() )
@@ -112,7 +111,7 @@ bool NETLIST_EXPORTER_ORCADPCB2::writeNetlist( const wxString& aOutFileName,
                 field = symbol->GetRef( &sheet );
                 fmt::print( f, "  {}", TO_UTF8( field ) );
 
-                field = symbol->GetValue( &sheet, RESOLVED );
+                field = symbol->GetValue( &sheet, RESOLVED, m_exportVariant );
                 field.Replace( wxT( " " ), wxT( "_" ) );
                 fmt::print( f, " {}", TO_UTF8( field ) );
 
@@ -148,7 +147,8 @@ bool NETLIST_EXPORTER_ORCADPCB2::writeNetlist( const wxString& aOutFileName,
     }
     catch( const fmt::format_error& e )
     {
-        aReporter.Report( wxString::Format( _( "Formatting error writing netlist: %s" ), e.what() ), RPT_SEVERITY_ERROR );
+        aReporter.Report( wxString::Format( _( "Formatting error writing netlist: %s" ), e.what() ),
+                          RPT_SEVERITY_ERROR );
 
         success = false;
     }

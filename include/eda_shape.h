@@ -26,6 +26,7 @@
 #include <bezier_curves.h>
 #include <core/mirror.h>
 #include <geometry/ellipse.h>
+#include <geometry/seg.h>
 #include <geometry/shape_poly_set.h>
 #include <geometry/approximation.h>
 #include <geometry/shape_ellipse.h>
@@ -96,6 +97,8 @@ public:
     EDA_SHAPE& operator=( EDA_SHAPE&& ) noexcept = default;
 
     virtual ~EDA_SHAPE();
+
+    virtual EDA_ITEM* AsEdaItem() { return nullptr; }
 
     void SwapShape( EDA_SHAPE* aImage );
 
@@ -174,11 +177,17 @@ public:
     virtual void SetShape( SHAPE_T aShape )    { m_shape = aShape; }
     SHAPE_T      GetShape() const              { return m_shape; }
 
-    const LINE_ENDING& GetStartEnding() const { return m_startEnding; }
-    void               SetStartEnding( const LINE_ENDING& aEnding ) { m_startEnding = aEnding; }
+    const LINE_ENDING& GetStartEnding() const
+    {
+        return IsClosed() ? m_blankEnding : m_startEnding;
+    }
+    void SetStartEnding( const LINE_ENDING& aEnding ) { m_startEnding = aEnding; }
 
-    const LINE_ENDING& GetEndEnding() const { return m_endEnding; }
-    void               SetEndEnding( const LINE_ENDING& aEnding ) { m_endEnding = aEnding; }
+    const LINE_ENDING& GetEndEnding() const
+    {
+        return IsClosed() ? m_blankEnding : m_endEnding;
+    }
+    void SetEndEnding( const LINE_ENDING& aEnding ) { m_endEnding = aEnding; }
 
     LINE_ENDING_STYLE GetStartEndingStyle() const { return m_startEnding.GetStyle(); }
     void              SetStartEndingStyle( LINE_ENDING_STYLE aStyle ) { m_startEnding.SetStyle( aStyle ); }
@@ -258,7 +267,7 @@ public:
      *
      * @return false if the outline is invalid or the line endings consume its body.
      */
-    bool ShortenBodyPolyPoints( std::vector<VECTOR2I>& aPoints, bool aClosed, int aOutlineIdx, int aLineWidth ) const;
+    bool ShortenBodyPolyPoints( std::vector<VECTOR2I>& aPoints, int aOutlineIdx, int aLineWidth ) const;
 
     /**
      * Copy an outline and apply line-ending body shortening when applicable.
@@ -427,7 +436,7 @@ public:
     const ELLIPSE<int>& GetEllipse() const { return m_ellipse; }
 
     VECTOR2I getCenter() const;
-    void     SetCenter( const VECTOR2I& aCenter );
+    virtual void SetCenter( const VECTOR2I& aCenter );
 
     /**
      * Set the end point from the angle center and start.
@@ -473,6 +482,12 @@ public:
      * the scenes.  However, they are what SHOULD be stored.
      */
     virtual void SetArcGeometry( const VECTOR2I& aStart, const VECTOR2I& aMid, const VECTOR2I& aEnd );
+
+    /**
+     * Set the shape from three points, falling back to a SEGMENT from \a aStart to \a aEnd when the points
+     * are collinear and so have no finite arc center.
+     */
+    void SetArcOrSegment( const VECTOR2I& aStart, const VECTOR2I& aMid, const VECTOR2I& aEnd );
 
     /**
      * Set the data used for mid point caching.
@@ -523,6 +538,8 @@ public:
                 break;
             }
         }
+
+        m_hatchingDirty = true;
     }
 
     void SetPolyPoints( const std::vector<VECTOR2I>& aPoints );
@@ -597,7 +614,7 @@ public:
 
     void SetRectangle( const long long int& aHeight, const long long int& aWidth );
 
-    void SetCornerRadius( int aRadius );
+    virtual void SetCornerRadius( int aRadius );
     int GetCornerRadius() const;
 
     bool IsClockwiseArc() const;
@@ -667,6 +684,7 @@ protected:
     void move( const VECTOR2I& aMoveVector );
     void rotate( const VECTOR2I& aRotCentre, const EDA_ANGLE& aAngle );
     void flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection );
+    void mirror( const SEG& aAxis );
     void scale( double aScale );
 
     virtual EDA_ANGLE getDrawRotation() const { return ANGLE_0; }
@@ -737,6 +755,7 @@ protected:
     STROKE_PARAMS          m_stroke;       // Line style, width, etc.
     LINE_ENDING            m_startEnding;  // Line ending at start point
     LINE_ENDING            m_endEnding;    // Line ending at end point
+    LINE_ENDING            m_blankEnding;  // Used to return a blank ending for closed shapes
     FILL_T                 m_fill;
     COLOR4D                m_fillColor;
 
@@ -769,4 +788,3 @@ DECLARE_ENUM_TO_WXANY( SHAPE_T );
 DECLARE_ENUM_TO_WXANY( LINE_STYLE );
 DECLARE_ENUM_TO_WXANY( LINE_ENDING_STYLE );
 DECLARE_ENUM_TO_WXANY( UI_FILL_MODE );
-

@@ -26,6 +26,8 @@ VARIANT_PROXY_UNDO_ITEM::VARIANT_PROXY_UNDO_ITEM( const SCHEMATIC* aSchematic ) 
 {
     for( const wxString& variant : aSchematic->GetVariantNames() )
         m_variants[variant] = aSchematic->GetVariantDescription( variant );
+
+    m_currentVariant = aSchematic->GetCurrentVariant();
 }
 
 
@@ -44,6 +46,9 @@ void VARIANT_PROXY_UNDO_ITEM::Restore( SCHEMATIC* aSchematic )
     }
 
     for( const wxString& excessVariant : currentVariants )
-        aSchematic->DeleteVariant( excessVariant );
+        aSchematic->DeleteVariantDefinition( excessVariant );
+
+    if( m_currentVariant != aSchematic->GetCurrentVariant() )
+        aSchematic->SetCurrentVariant( m_currentVariant );
 }
 

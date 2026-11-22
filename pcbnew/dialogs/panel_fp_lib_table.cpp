@@ -109,10 +109,10 @@ protected:
         {
             wxString filter = _( "Footprint Library Tables" );
 #ifndef __WXOSX__
-            filter << wxString::Format( _( " (%s)|%s" ), FILEEXT::FootprintLibraryTableFileName,
+            filter << wxString::Format( wxS( " (%s)|%s" ), FILEEXT::FootprintLibraryTableFileName,
                                         FILEEXT::FootprintLibraryTableFileName );
 #else
-            filter << wxString::Format( _( " (%s)|%s" ), wxFileSelectorDefaultWildcardStr,
+            filter << wxString::Format( wxS( " (%s)|%s" ), wxFileSelectorDefaultWildcardStr,
                                         wxFileSelectorDefaultWildcardStr );
 #endif
             return filter;
@@ -337,11 +337,12 @@ PANEL_FP_LIB_TABLE::PANEL_FP_LIB_TABLE( DIALOG_EDIT_LIBRARY_TABLES* aParent, PRO
     for( auto& [fileType, desc] : m_supportedFpFiles )
         m_pluginChoices.Add( PCB_IO_MGR::ShowType( fileType ) );
 
+    Pgm().GetLibraryManager().ReloadChangedTables( LIBRARY_TABLE_TYPE::FOOTPRINT );
+
     std::optional<LIBRARY_TABLE*> table = Pgm().GetLibraryManager().Table( LIBRARY_TABLE_TYPE::FOOTPRINT,
                                                                            LIBRARY_TABLE_SCOPE::GLOBAL );
-    wxASSERT( table.has_value() );
-
-    AddTable( table.value(), _( "Global Libraries" ), false /* closable */ );
+    if( table.has_value() )
+        AddTable( table.value(), _( "Global Libraries" ), false /* closable */ );
 
     std::optional<LIBRARY_TABLE*> projectTable = Pgm().GetLibraryManager().Table( LIBRARY_TABLE_TYPE::FOOTPRINT,
                                                                                   LIBRARY_TABLE_SCOPE::PROJECT );
@@ -761,10 +762,10 @@ void PANEL_FP_LIB_TABLE::onNotebookPageCloseRequest( wxAuiNotebookEvent& aEvent 
 
     if( LIB_TABLE_NOTEBOOK_PANEL* panel = dynamic_cast<LIB_TABLE_NOTEBOOK_PANEL*>( page ) )
     {
-        if( panel->GetClosable() )
+        if( panel->GetClosable() && panel->GetCanClose() )
         {
-            if( !panel->GetCanClose() )
-                aEvent.Veto();
+            m_parent->m_ProjectTableChanged = true;
+            m_parent->m_GlobalTableChanged = true;
         }
         else
         {
@@ -892,10 +893,13 @@ bool PANEL_FP_LIB_TABLE::TransferDataFromWindow()
 
     if( globalTable.has_value() && get_model( 0 )->Table() != *globalTable.value() )
     {
+        if( !m_parent->ConfirmOverwrite( *globalTable.value() ) )
+            return false;
+
         m_parent->m_GlobalTableChanged = true;
         *globalTable.value() = get_model( 0 )->Table();
 
-        globalTable.value()->Save().map_error(
+        globalTable.value()->Save( true ).map_error(
                 [&success]( const LIBRARY_ERROR& aError )
                 {
                     wxMessageBox( _( "Error saving global library table:\n\n" ) + aError.message,
@@ -913,10 +917,13 @@ bool PANEL_FP_LIB_TABLE::TransferDataFromWindow()
 
         if( get_model( 1 )->Table() != *projectTable.value() )
         {
+            if( !m_parent->ConfirmOverwrite( *projectTable.value() ) )
+                return false;
+
             m_parent->m_ProjectTableChanged = true;
             *projectTable.value() = get_model( 1 )->Table();
 
-            projectTable.value()->Save().map_error(
+            projectTable.value()->Save( true ).map_error(
                     [&success]( const LIBRARY_ERROR& aError )
                     {
                         wxMessageBox( _( "Error saving project library table:\n\n" ) + aError.message,
@@ -931,7 +938,12 @@ bool PANEL_FP_LIB_TABLE::TransferDataFromWindow()
         LIB_TABLE_NOTEBOOK_PANEL* panel = static_cast<LIB_TABLE_NOTEBOOK_PANEL*>( m_notebook->GetPage( ii ) );
 
         if( panel->TableModified() )
+        {
             success &= panel->SaveTable();
+
+            m_parent->m_ProjectTableChanged = true;
+            m_parent->m_GlobalTableChanged = true;
+        }
     }
 
     m_suppressNotebookPageEvents = success;

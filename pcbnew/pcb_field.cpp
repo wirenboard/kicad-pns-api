@@ -47,9 +47,12 @@ PCB_FIELD::PCB_FIELD( FOOTPRINT* aParent, FIELD_T aFieldId, const wxString& aNam
 PCB_FIELD::PCB_FIELD( const PCB_TEXT& aText, FIELD_T aFieldId, const wxString& aName ) :
         PCB_TEXT( aText.GetParent(), PCB_FIELD_T ),
         m_id( aFieldId ),
-        m_ordinal( static_cast<int>( aFieldId ) ),
+        m_ordinal( 0 ),
         m_name( aName )
 {
+    if( m_id == FIELD_T::USER && GetParentFootprint() )
+        m_ordinal = GetParentFootprint()->GetNextFieldOrdinal();
+
     PCB_TEXT::operator=( aText );
 }
 
@@ -58,6 +61,9 @@ PCB_FIELD::PCB_FIELD( const PCB_FIELD& aField ):
         PCB_TEXT( aField.GetParent(), PCB_FIELD_T )
 {
     *this = aField;
+
+    // Assignment keeps the new KIID, and a copy must not churn the uuid written to the file
+    SetUuidDirect( aField.m_Uuid );
 }
 
 
@@ -76,7 +82,9 @@ void PCB_FIELD::Serialize( google::protobuf::Any &aContainer ) const
 {
     kiapi::board::types::Field field;
     Serialize( field );
-    aContainer.PackFrom( field );
+
+    if( !aContainer.PackFrom( field ) )
+        wxFAIL_MSG( wxT( "Failed to pack PCB_FIELD" ) );
 }
 
 
@@ -135,6 +143,14 @@ wxString PCB_FIELD::GetUntranslatedName() const
 
 wxString PCB_FIELD::GetShownText( RESOLUTION_CONTEXT aContext, int aDepth ) const
 {
+    const BOARD* board = GetBoard();
+    return GetShownText( board ? board->GetCurrentVariant() : wxString(), aContext, aDepth );
+}
+
+
+wxString PCB_FIELD::GetShownText( const wxString& aVariantName, RESOLUTION_CONTEXT aContext,
+                                   int aDepth ) const
+{
     const FOOTPRINT* parentFootprint = GetParentFootprint();
     const BOARD*     board = GetBoard();
     wxString         text;
@@ -143,15 +159,13 @@ wxString PCB_FIELD::GetShownText( RESOLUTION_CONTEXT aContext, int aDepth ) cons
 
     if( parentFootprint && board )
     {
-        const wxString& variantName = board->GetCurrentVariant();
-
-        if( !variantName.IsEmpty() && variantName.CmpNoCase( GetDefaultVariantName() ) != 0 )
+        if( !aVariantName.IsEmpty() && aVariantName.CmpNoCase( GetDefaultVariantName() ) != 0 )
         {
-            if( const FOOTPRINT_VARIANT* variant = parentFootprint->GetVariant( variantName ) )
+            if( const FOOTPRINT_VARIANT* variant = parentFootprint->GetVariant( aVariantName ) )
             {
                 if( variant->HasFieldValue( GetName() ) )
                 {
-                    text = parentFootprint->GetFieldValueForVariant( variantName, GetName() );
+                    text = parentFootprint->GetFieldValueForVariant( aVariantName, GetName() );
 
                     // Variable references in variant values are considered to be in schematic scope,
                     // and are thus resolved before the footprint gets them.
@@ -177,10 +191,10 @@ wxString PCB_FIELD::GetShownText( RESOLUTION_CONTEXT aContext, int aDepth ) cons
                     return true;
                 }
 
-                if( parentFootprint && parentFootprint->ResolveTextVar( token, aDepth + 1 ) )
+                if( parentFootprint && parentFootprint->ResolveTextVar( token, aVariantName, aDepth + 1 ) )
                     return true;
 
-                if( board && board->ResolveTextVar( token, aDepth + 1 ) )
+                if( board && board->ResolveTextVar( token, aVariantName, aDepth + 1 ) )
                     return true;
 
                 return false;
@@ -352,10 +366,11 @@ double PCB_FIELD::Similarity( const BOARD_ITEM& aOther ) const
             return 0.0;
     }
 
-    if( m_name == other.m_name )
-        return 1.0;
+    // Fields are identified by name, so differing names never pair
+    if( m_name != other.m_name )
+        return 0.0;
 
-    return EDA_TEXT::Similarity( other );
+    return 1.0;
 }
 
 static struct PCB_FIELD_DESC

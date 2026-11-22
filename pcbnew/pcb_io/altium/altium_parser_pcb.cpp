@@ -694,6 +694,7 @@ ACOMPONENT6::ACOMPONENT6( ALTIUM_BINARY_PARSER& aReader )
     locked           = ALTIUM_PROPS_UTILS::ReadBool( props, wxT( "LOCKED" ), false );
     nameon           = ALTIUM_PROPS_UTILS::ReadBool( props, wxT( "NAMEON" ), true );
     commenton        = ALTIUM_PROPS_UTILS::ReadBool( props, wxT( "COMMENTON" ), false );
+    height           = ALTIUM_PROPS_UTILS::ReadKicadUnit( props, wxT( "HEIGHT" ), wxT( "0mil" ) );
     sourcedesignator = ALTIUM_PROPS_UTILS::ReadString( props, wxT( "SOURCEDESIGNATOR" ), wxT( "" ) );
 
     sourceUniqueID = ALTIUM_PROPS_UTILS::ReadString( props, wxT( "SOURCEUNIQUEID" ), wxT( "" ) );
@@ -748,8 +749,6 @@ ADIMENSION6::ADIMENSION6( ALTIUM_BINARY_PARSER& aReader )
     textgap        = ALTIUM_PROPS_UTILS::ReadKicadUnit( props, wxT( "TEXTGAP" ), wxT( "10mil" ) );
 
     arrowsize = ALTIUM_PROPS_UTILS::ReadKicadUnit( props, wxT( "ARROWSIZE" ), wxT( "60mil" ) );
-
-    wxString text_position_raw = ALTIUM_PROPS_UTILS::ReadString( props, wxT( "TEXTPOSITION" ), wxT( "" ) );
 
     xy1 = VECTOR2I( ALTIUM_PROPS_UTILS::ReadKicadUnit( props, wxT( "X1" ), wxT( "0mil" ) ),
                     -ALTIUM_PROPS_UTILS::ReadKicadUnit( props, wxT( "Y1" ), wxT( "0mil" ) ) );
@@ -1308,7 +1307,9 @@ AVIA6::AVIA6( ALTIUM_BINARY_PARSER& aReader )
     is_test_fab_bottom = ( flags2 & 0x01 ) != 0;
 
     net = aReader.Read<uint16_t>();
-    aReader.Skip( 8 );
+    aReader.Skip( 2 ); // polygon
+    component = aReader.Read<uint16_t>();
+    aReader.Skip( 4 );
     position = aReader.ReadVector2IPos();
     diameter = aReader.ReadKicadUnit();
     holesize = aReader.ReadKicadUnit();

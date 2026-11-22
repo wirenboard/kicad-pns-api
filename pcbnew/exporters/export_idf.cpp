@@ -27,6 +27,7 @@
 #include <board.h>
 #include <board_design_settings.h>
 #include <footprint.h>
+#include <pcb_3d_body.h>
 #include <footprint_library_adapter.h>
 #include <io/idf/idf_parser.h>
 #include <pad.h>
@@ -621,14 +622,14 @@ IDF3_COMP_OUTLINE* IDF_EXPORTER::createOutlineFromExtrudedBody( const FOOTPRINT*
     }
 
     auto cleanup =
-        [&lines]()
-        {
-            while( !lines.empty() )
+            [&lines]()
             {
-                delete lines.front();
-                lines.pop_front();
-            }
-        };
+                while( !lines.empty() )
+                {
+                    delete lines.front();
+                    lines.pop_front();
+                }
+            };
 
     const PCB_FIELD* field = aFootprint->GetField( m_settings->m_partNumberField );
 
@@ -807,7 +808,7 @@ void IDF_EXPORTER::exportFootprint( FOOTPRINT* aFootprint, IDF3_BOARD& aIDFBoard
             delete cutout;
     }
 
-    for( auto pad : aFootprint->Pads() )
+    for( PAD* pad : aFootprint->Pads() )
     {
         drill = (double) pad->GetDrillSize().x * scale;
         x     = pad->GetPosition().x * scale + dx;
@@ -909,21 +910,26 @@ void IDF_EXPORTER::exportFootprint( FOOTPRINT* aFootprint, IDF3_BOARD& aIDFBoard
     {
         // No explicit models found: use the existing extruded body, or generate one
         IDF3_COMP_OUTLINE* libOutline = nullptr;
-        EXTRUDED_3D_BODY generatedBody;
-        EXTRUDED_3D_BODY* body = nullptr;
+        EXTRUDED_3D_BODY   generatedBody;
+        EXTRUDED_3D_BODY*  body = nullptr;
 
-        if( EXTRUDED_3D_BODY* extruded = aFootprint->GetExtrudedBody() )
+        if( PCB_3D_BODY* bodyItem = aFootprint->GetBody() )
         {
-            if( extruded->m_height <= 0 )
-                return;
+            EXTRUDED_3D_BODY* extruded = bodyItem->MutableExtruded();
 
-            standoffHeight = extruded->m_standoff;
-            body = extruded;
+            if( extruded->m_height > 0 )
+            {
+                standoffHeight = extruded->m_standoff;
+                body = extruded;
+            }
         }
 
         if( !body )
         {
-            int height = getMaxModelHeight( aFootprint );
+            int height = aFootprint->GetHeight();
+
+            if( height == 0 && m_settings->m_calculateHeightFromModels )
+                height = getMaxModelHeight( aFootprint );
 
             if( height == 0 )
                 return;

@@ -117,6 +117,8 @@ void InitializeBoardStatisticsData( BOARD_STATISTICS_DATA& aData )
     aData.padEntries.push_back(
             BOARD_STATISTICS_INFO_ENTRY<PAD_ATTRIB>( PAD_ATTRIB::CONN, _( "Connector:" ), "connector" ) );
     aData.padEntries.push_back( BOARD_STATISTICS_INFO_ENTRY<PAD_ATTRIB>( PAD_ATTRIB::NPTH, _( "NPTH:" ), "npth" ) );
+    aData.padEntries.push_back(
+            BOARD_STATISTICS_INFO_ENTRY<PAD_ATTRIB>( PAD_ATTRIB::NON_COMPONENT, _( "Non-component:" ), "non_component" ) );
 
     aData.padPropertyEntries.push_back(
             BOARD_STATISTICS_INFO_ENTRY<PAD_PROP>( PAD_PROP::CASTELLATED, _( "Castellated:" ), "castellated" ) );
@@ -192,23 +194,49 @@ void ComputeBoardStatistics( BOARD* aBoard, const BOARD_STATISTICS_OPTIONS& aOpt
         updatePadCounts( footprint, aData );
     }
 
-    for( PCB_TRACK* track : aBoard->Tracks() )
+    const TRACKS& tracks = aBoard->Tracks();
+
+    // An arc has to build its shape to know its extents, which is far too expensive to
+    // repeat for every pair it is compared against.
+    std::vector<BOX2I> bboxes;
+    bboxes.reserve( tracks.size() );
+
+    for( PCB_TRACK* track : tracks )
+        bboxes.push_back( track->GetBoundingBox() );
+
+    for( size_t ii = 0; ii < tracks.size(); ++ii )
     {
+        PCB_TRACK* track = tracks[ii];
+
         if( track->Type() == PCB_TRACE_T || track->Type() == PCB_ARC_T )
             aData.minTrackWidth = std::min( aData.minTrackWidth, track->GetWidth() );
 
         if( !track->IsType( trackTypes ) )
             continue;
 
-        for( PCB_TRACK* otherTrack : aBoard->Tracks() )
+        const LSET  trackLayers = track->GetLayerSet() & LSET::AllCuMask();
+        const BOX2I trackBBox = bboxes[ii];
+
+        // The gap between two tracks is the same whichever one is asked first, so each
+        // pair only needs visiting once.
+        for( size_t jj = ii + 1; jj < tracks.size(); ++jj )
         {
+            PCB_TRACK* otherTrack = tracks[jj];
+
             if( track->GetNetCode() == otherTrack->GetNetCode() )
                 continue;
 
             if( !otherTrack->IsType( trackTypes ) )
                 continue;
 
-            LSET commonLayers = track->GetLayerSet() & otherTrack->GetLayerSet() & LSET::AllCuMask();
+            // The boxes enclose the copper, so anything further apart than the smallest gap
+            // found so far cannot improve on it. Squared, to keep this to integer work.
+            BOX2I::ecoord_type best = aData.minClearanceTrackToTrack;
+
+            if( trackBBox.SquaredDistance( bboxes[jj] ) >= best * best )
+                continue;
+
+            LSET commonLayers = trackLayers & otherTrack->GetLayerSet();
 
             for( PCB_LAYER_ID layer : commonLayers.CuStack() )
             {
@@ -383,7 +411,8 @@ void ComputeBoardStatistics( BOARD* aBoard, const BOARD_STATISTICS_OPTIONS& aOpt
             {
                 if( child->Type() == PCB_FOOTPRINT_T
                     || child->Type() == PCB_GROUP_T
-                    || child->Type() == PCB_GENERATOR_T )
+                    || child->Type() == PCB_GENERATOR_T
+                    || child->Type() == PCB_REFERENCE_IMAGE_T )
                 {
                     return;
                 }
@@ -542,6 +571,15 @@ static void appendTable( const std::vector<std::vector<wxString>>& aRows, bool a
 }
 
 
+wxString FormatBoardStatisticsMinimum( int aValue, const UNITS_PROVIDER& aUnitsProvider )
+{
+    if( aValue == std::numeric_limits<int>::max() )
+        return _( "unknown" );
+
+    return aUnitsProvider.MessageTextFromValue( aValue, true, EDA_DATA_TYPE::DISTANCE );
+}
+
+
 wxString FormatBoardStatisticsReport( const BOARD_STATISTICS_DATA& aData, BOARD* aBoard,
                                       const UNITS_PROVIDER& aUnitsProvider, const wxString& aProjectName,
                                       const wxString& aBoardName )
@@ -576,16 +614,13 @@ wxString FormatBoardStatisticsReport( const BOARD_STATISTICS_DATA& aData, BOARD*
            << aUnitsProvider.MessageTextFromValue( aData.backCopperArea, true, EDA_DATA_TYPE::AREA ) << wxS( "\n" );
 
     report << wxS( "- " ) << _( "Min track clearance" ) << wxS( ": " )
-           << aUnitsProvider.MessageTextFromValue( aData.minClearanceTrackToTrack, true, EDA_DATA_TYPE::DISTANCE )
-           << wxS( "\n" );
+           << FormatBoardStatisticsMinimum( aData.minClearanceTrackToTrack, aUnitsProvider ) << wxS( "\n" );
 
     report << wxS( "- " ) << _( "Min track width" ) << wxS( ": " )
-           << aUnitsProvider.MessageTextFromValue( aData.minTrackWidth, true, EDA_DATA_TYPE::DISTANCE ) << wxS( "\n" );
-
-    int minDrill = aData.minDrillSize;
+           << FormatBoardStatisticsMinimum( aData.minTrackWidth, aUnitsProvider ) << wxS( "\n" );
 
     report << wxS( "- " ) << _( "Min drill diameter" ) << wxS( ": " )
-           << aUnitsProvider.MessageTextFromValue( minDrill, true, EDA_DATA_TYPE::DISTANCE ) << wxS( "\n" );
+           << FormatBoardStatisticsMinimum( aData.minDrillSize, aUnitsProvider ) << wxS( "\n" );
 
     report << wxS( "- " ) << _( "Board stackup thickness" ) << wxS( ": " )
            << aUnitsProvider.MessageTextFromValue( aData.boardThickness, true, EDA_DATA_TYPE::DISTANCE )
@@ -732,6 +767,14 @@ wxString FormatBoardStatisticsJson( const BOARD_STATISTICS_DATA& aData, BOARD* a
                                     const UNITS_PROVIDER& aUnitsProvider, const wxString& aProjectName,
                                     const wxString& aBoardName )
 {
+    const auto formatMinimum = [&aUnitsProvider]( int aValue ) -> nlohmann::json
+    {
+        if( aValue == std::numeric_limits<int>::max() )
+            return nlohmann::json();
+
+        return aUnitsProvider.MessageTextFromValue( aValue );
+    };
+
     nlohmann::ordered_json root;
 
     nlohmann::ordered_json metadata;
@@ -765,9 +808,9 @@ wxString FormatBoardStatisticsJson( const BOARD_STATISTICS_DATA& aData, BOARD* a
                                                                       EDA_DATA_TYPE::AREA );
     board["back_copper_area"] = aUnitsProvider.MessageTextFromValue( aData.backCopperArea, true,
                                                                      EDA_DATA_TYPE::AREA );
-    board["min_track_clearance"] = aUnitsProvider.MessageTextFromValue( aData.minClearanceTrackToTrack );
-    board["min_track_width"] = aUnitsProvider.MessageTextFromValue( aData.minTrackWidth );
-    board["min_drill_diameter"] = aUnitsProvider.MessageTextFromValue( aData.minDrillSize );
+    board["min_track_clearance"] = formatMinimum( aData.minClearanceTrackToTrack );
+    board["min_track_width"] = formatMinimum( aData.minTrackWidth );
+    board["min_drill_diameter"] = formatMinimum( aData.minDrillSize );
     board["board_thickness"] = aUnitsProvider.MessageTextFromValue( aData.boardThickness );
     board["front_footprint_area"] = aUnitsProvider.MessageTextFromValue( aData.frontFootprintCourtyardArea, true,
                                                                          EDA_DATA_TYPE::AREA );

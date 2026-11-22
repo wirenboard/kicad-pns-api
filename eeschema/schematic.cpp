@@ -44,6 +44,7 @@
 #include <settings/common_settings.h>
 #include <refdes_tracker.h>
 #include <schematic.h>
+#include <mail_type.h>
 #include <schematic_text_var_adapter.h>
 #include <sch_bus_entry.h>
 #include <sch_commit.h>
@@ -67,6 +68,7 @@
 #include <text_eval/text_eval_wrapper.h>
 #include <tool/tool_manager.h>
 #include <undo_redo_container.h>
+#include <wildcards_and_files_ext.h>
 #include <local_history.h>
 #include <richio.h>
 #include <sch_io/sch_io_mgr.h>
@@ -74,6 +76,7 @@
 #include <sch_io/sch_io.h>
 
 #include <connectivity/conn_facade.h>
+#include <wx/filename.h>
 #include <wx/log.h>
 
 SCHEMATIC::SCHEMATIC( PROJECT* aPrj ) :
@@ -118,7 +121,12 @@ SCHEMATIC::SCHEMATIC( PROJECT* aPrj ) :
 
                 if( field->GetId() == FIELD_T::REFERENCE )
                 {
-                    symbol->SetRef( &sheetPath, newValue );
+                    wxString base;
+
+                    if( symbol->BaseRefFromUser( sheetPath, newValue, base ).IsEmpty() )
+                        symbol->SetUserRef( sheetPath, base );
+                    else
+                        symbol->SetRef( &sheetPath, newValue );
 
                     // The user might want to change all the units to the new ref.  Or they
                     // might not.  Since we have no way of knowing, we default to the most
@@ -183,6 +191,7 @@ void SCHEMATIC::Reset()
     m_rootSheet = nullptr;
     m_topLevelSheets.clear();
     m_hierarchy.clear();
+    RefreshRefSuffixes();
 
     m_connectionGraph->Reset();
     m_currentSheet->clear();
@@ -243,7 +252,7 @@ void SCHEMATIC::CacheExistingAnnotation()
     SCH_SHEET_LIST     sheets = Hierarchy();
     SCH_REFERENCE_LIST references;
 
-    sheets.GetSymbols( references, SYMBOL_FILTER_ALL );
+    sheets.GetSymbols( references, SYMBOL_FILTER_NON_POWER );
 
     for( const SCH_REFERENCE& ref : references )
     {
@@ -261,12 +270,21 @@ bool SCHEMATIC::Contains( const SCH_REFERENCE& aRef ) const
     /// REFDES_TRACKER will need to be extended to track if a reference is currently present in the schematic
     /// as well as the units.  For now, this is relatively fast for reasonably sized schematics
     /// Famous last words...
-    sheets.GetSymbols( references, SYMBOL_FILTER_ALL );
+    sheets.GetSymbols( references, SYMBOL_FILTER_NON_POWER );
+
+    // Bases can differ where composed references meet, as U1 on _M2 and U1_M2 on the root, so the
+    // package is the composed reference and the unit is compared by number
+    auto packageUnit =
+            []( const SCH_REFERENCE& aReference )
+            {
+                int unit = aReference.GetSymbol()->GetUnitCount() > 1 ? aReference.GetUnit() : 0;
+                return std::make_pair( aReference.GetComposedRef(), unit );
+            };
 
     return std::any_of( references.begin(), references.end(),
                         [&]( const SCH_REFERENCE& ref )
                         {
-                            return ref.GetCanonicalRef( true ) == aRef.GetCanonicalRef( true );
+                            return packageUnit( ref ) == packageUnit( aRef );
                         } );
 }
 
@@ -437,6 +455,10 @@ void SCHEMATIC::SetTopLevelSheets( const std::vector<SCH_SHEET*>& aSheets )
     ensureCurrentSheetIsTopLevel();
     rebuildHierarchyState( true );
 
+    // A single top level sheet recovered its packages when it loaded
+    if( validSheets.size() > 1 )
+        m_hierarchy.RecoverPackageRefs();
+
     m_settingTopLevelSheets = wasAlreadySetting;
 }
 
@@ -501,6 +523,7 @@ void SCHEMATIC::AdoptContent( SCHEMATIC_CONTENT&& aContent ) noexcept
     }
 
     m_hierarchy.swap( aContent.hierarchy );
+    RefreshRefSuffixes();
 
     if( aContent.currentSheet )
         m_currentSheet->Swap( *aContent.currentSheet );
@@ -590,6 +613,12 @@ SCH_SHEET_LIST SCHEMATIC::Hierarchy() const
 }
 
 
+bool SCHEMATIC::IsHierarchyModified() const
+{
+    return !m_hierarchy.empty() && m_hierarchy.IsModified();
+}
+
+
 void SCHEMATIC::RefreshHierarchy()
 {
     ensureDefaultTopLevelSheet();
@@ -597,16 +626,321 @@ void SCHEMATIC::RefreshHierarchy()
 
     if( m_textVarAdapter )
         m_textVarAdapter->SyncToHierarchy();
+
+    RefreshRefSuffixes();
+}
+
+
+void SCHEMATIC::RefreshRefSuffixes()
+{
+    SCH_SYMBOL::BumpRefGeneration();
+
+    m_refSuffixes.clear();
+    m_refSuffixesBySheetHash.clear();
+    m_hasRefSuffixFields = false;
+
+    for( const SCH_SHEET_PATH& path : m_hierarchy )
+    {
+        if( const SCH_FIELD* field = std::as_const( *path.Last() ).GetField( FIELD_T::SHEET_REF_SUFFIX ) )
+            m_hasRefSuffixFields |= !field->GetText().IsEmpty();
+
+        wxString suffix = path.ComposeRefSuffix();
+
+        m_refSuffixesBySheetHash.emplace( path.GetCurrentHash(), suffix );
+
+        if( !suffix.IsEmpty() )
+            m_refSuffixes.emplace( path.Path(), std::move( suffix ) );
+    }
+}
+
+
+const wxString* SCHEMATIC::findRefSuffix( const SCH_SHEET_PATH& aPath ) const
+{
+    if( !HasRefSuffixes() )
+        return nullptr;
+
+    if( auto it = m_refSuffixesBySheetHash.find( aPath.GetCurrentHash() ); it != m_refSuffixesBySheetHash.end() )
+        return &it->second;
+
+    // A path built apart from the hierarchy may hash differently, as one differing only in the virtual root does
+    auto it = m_refSuffixes.find( aPath.PathRef() );
+
+    return it == m_refSuffixes.end() ? nullptr : &it->second;
+}
+
+
+wxString SCHEMATIC::GetRefSuffix( const SCH_SHEET_PATH& aPath ) const
+{
+    const wxString* suffix = findRefSuffix( aPath );
+
+    return suffix ? *suffix : wxString();
+}
+
+
+void SCHEMATIC::AppendRefSuffix( wxString& aRef, const SCH_SHEET_PATH& aPath ) const
+{
+    if( const wxString* suffix = findRefSuffix( aPath ) )
+        aRef += *suffix;
+}
+
+
+wxString SCHEMATIC::GetRefSuffix( const KIID_PATH& aPath ) const
+{
+    // Designs without suffixes skip the path hash
+    if( !HasRefSuffixes() )
+        return wxEmptyString;
+
+    auto it = m_refSuffixes.find( aPath );
+
+    return it == m_refSuffixes.end() ? wxString() : it->second;
+}
+
+
+std::optional<wxString> SCHEMATIC::spanningPackageSuffix( const SCH_SYMBOL* aSymbol, const KIID_PATH& aPath ) const
+{
+    if( aSymbol->GetUnitCount() <= 1 )
+        return std::nullopt;
+
+    std::lock_guard<std::mutex> lock( m_packageSuffixesMutex );
+    updatePackageSuffixes();
+
+    if( m_packageSuffixes.empty() )
+        return std::nullopt;
+
+    if( auto it = m_packageSuffixes.find( { aSymbol->m_Uuid, aPath } ); it != m_packageSuffixes.end() )
+        return it->second;
+
+    return std::nullopt;
+}
+
+
+wxString SCHEMATIC::GetPackageRefSuffix( const SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& aPath ) const
+{
+    if( !HasRefSuffixes() )
+        return wxEmptyString;
+
+    if( std::optional<wxString> suffix = spanningPackageSuffix( aSymbol, aPath.PathRef() ) )
+        return *suffix;
+
+    return GetRefSuffix( aPath );
+}
+
+
+wxString SCHEMATIC::GetPackageRefSuffix( const SCH_SYMBOL* aSymbol, const KIID_PATH& aPath ) const
+{
+    if( !HasRefSuffixes() )
+        return wxEmptyString;
+
+    if( std::optional<wxString> suffix = spanningPackageSuffix( aSymbol, aPath ) )
+        return *suffix;
+
+    return GetRefSuffix( aPath );
+}
+
+
+wxString SCHEMATIC::GetUnitRefSuffix( const SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& aPath, int aUnit ) const
+{
+    if( !HasRefSuffixes() )
+        return wxEmptyString;
+
+    {
+        std::lock_guard<std::mutex> lock( m_packageSuffixesMutex );
+        updatePackageSuffixes();
+
+        auto group = m_packageUnitSuffixes.find( { aSymbol->GetBaseRef( &aPath ), aSymbol->GetLibId().Format() } );
+
+        if( group != m_packageUnitSuffixes.end() )
+        {
+            if( auto unit = group->second.find( aUnit ); unit != group->second.end() )
+                return unit->second;
+        }
+    }
+
+    // An unplaced unit belongs to the package as a whole
+    return GetPackageRefSuffix( aSymbol, aPath );
+}
+
+
+bool SCHEMATIC::CopiesSelectDifferentUnits( const SCH_SYMBOL* aSymbol ) const
+{
+    if( aSymbol->GetUnitCount() < 2 )
+        return false;
+
+    std::lock_guard<std::mutex> lock( m_packageSuffixesMutex );
+    updatePackageSuffixes();
+    return m_unitSplitSymbols.contains( aSymbol->m_Uuid );
+}
+
+
+std::string SCHEMATIC::FormatRefSuffixes() const
+{
+    std::map<KIID_PATH, std::vector<std::pair<KIID, wxString>>> packagesOn;
+
+    for( const auto& [key, suffix] : PackageRefSuffixes() )
+        packagesOn[key.second].emplace_back( key.first, suffix );
+
+    std::string reply = std::string( MAIL_SCH_REF_SUFFIXES_TAG ) + "\n";
+
+    for( const SCH_SHEET_PATH& path : m_hierarchy )
+    {
+        const wxString sheet = path.PathAsString();
+        reply += sheet.ToStdString() + "\t" + std::string( GetRefSuffix( path ).ToUTF8() ) + "\n";
+
+        // A footprint placed from such an instance carries the package suffix in its reference
+        for( const auto& [symbol, suffix] : packagesOn[path.Path()] )
+            reply += ( sheet + symbol.AsString() ).ToStdString() + "\t" + std::string( suffix.ToUTF8() ) + "\n";
+    }
+
+    return reply;
+}
+
+
+std::set<KIID> SCHEMATIC::SplitUnitSymbols() const
+{
+    std::lock_guard<std::mutex> lock( m_packageSuffixesMutex );
+    updatePackageSuffixes();
+    return m_unitSplitSymbols;
+}
+
+
+std::map<std::pair<KIID, KIID_PATH>, wxString> SCHEMATIC::PackageRefSuffixes() const
+{
+    if( !HasRefSuffixes() )
+        return {};
+
+    std::lock_guard<std::mutex> lock( m_packageSuffixesMutex );
+    updatePackageSuffixes();
+    return m_packageSuffixes;
+}
+
+
+void SCHEMATIC::updatePackageSuffixes() const
+{
+    const uint64_t generation = SCH_SYMBOL::RefGeneration();
+
+    if( m_packageSuffixesGeneration == generation )
+        return;
+
+    struct MEMBER
+    {
+        KIID      symbol;
+        KIID_PATH path;
+        int       unit;
+        wxString  suffix;
+    };
+
+    std::map<std::pair<wxString, wxString>, std::vector<MEMBER>> groups;
+    std::map<std::pair<wxString, wxString>, std::set<int>>       units;
+    std::set<std::pair<wxString, wxString>>                      repeated;
+    std::map<KIID, int>                                          firstUnit;
+
+    // Reused sheets share a screen, so scan each screen once
+    std::unordered_map<const SCH_SCREEN*, std::vector<const SCH_SYMBOL*>> multiUnitSymbols;
+
+    m_unitSplitSymbols.clear();
+
+    for( const SCH_SHEET_PATH& path : m_hierarchy )
+    {
+        auto [screenSymbols, scan] = multiUnitSymbols.try_emplace( path.LastScreen() );
+
+        if( scan )
+        {
+            for( SCH_ITEM* item : path.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
+            {
+                const SCH_SYMBOL* symbol = static_cast<const SCH_SYMBOL*>( item );
+
+                if( symbol->GetUnitCount() > 1 )
+                    screenSymbols->second.push_back( symbol );
+            }
+        }
+
+        for( const SCH_SYMBOL* symbol : screenSymbols->second )
+        {
+            SCH_SYMBOL_INSTANCE instance;
+
+            if( !symbol->GetInstance( instance, path.PathRef() ) )
+                continue;
+
+            if( auto [it, inserted] = firstUnit.emplace( symbol->m_Uuid, instance.m_Unit );
+                    !inserted && it->second != instance.m_Unit )
+            {
+                m_unitSplitSymbols.insert( symbol->m_Uuid );
+            }
+
+            if( instance.m_Reference.IsEmpty() || instance.m_Reference.EndsWith( wxS( "?" ) ) )
+                continue;
+
+            std::pair<wxString, wxString> key( instance.m_Reference, symbol->GetLibId().Format() );
+
+            if( !units[key].insert( instance.m_Unit ).second )
+                repeated.insert( key );
+
+            const wxString* suffix = findRefSuffix( path );
+
+            groups[key].push_back( { symbol->m_Uuid, path.PathRef(), instance.m_Unit, suffix ? *suffix : wxString() } );
+        }
+    }
+
+    m_packageSuffixes.clear();
+    m_packageUnitSuffixes.clear();
+
+    for( const auto& [key, members] : groups )
+    {
+        if( repeated.count( key ) )
+            continue;
+
+        wxString lowest = members.front().suffix;
+
+        for( const MEMBER& member : members )
+            lowest = std::min( lowest, member.suffix );
+
+        for( const MEMBER& member : members )
+        {
+            if( member.suffix != lowest )
+                m_packageSuffixes[{ member.symbol, member.path }] = lowest;
+        }
+
+        if( std::ranges::any_of( members, [&]( const MEMBER& m ) { return m.suffix != lowest; } ) )
+        {
+            for( const MEMBER& member : members )
+                m_packageUnitSuffixes[key][member.unit] = member.suffix;
+        }
+    }
+
+    m_packageSuffixesGeneration = generation;
+}
+
+
+std::vector<std::pair<SCH_SHEET_PATH, SCH_SHEET_PATH>> SCHEMATIC::RefSuffixCollisions( bool aIncludeEmpty ) const
+{
+    std::vector<std::pair<SCH_SHEET_PATH, SCH_SHEET_PATH>>                  collisions;
+    std::map<std::pair<const SCH_SCREEN*, wxString>, const SCH_SHEET_PATH*> firstUse;
+
+    for( const SCH_SHEET_PATH& path : m_hierarchy )
+    {
+        const wxString suffix = GetRefSuffix( path );
+
+        if( suffix.IsEmpty() && !aIncludeEmpty )
+            continue;
+
+        auto [it, inserted] = firstUse.emplace( std::make_pair( path.LastScreen(), suffix ), &path );
+
+        if( !inserted )
+            collisions.emplace_back( path, *it->second );
+    }
+
+    return collisions;
 }
 
 
 void SCHEMATIC::GetContextualTextVars( wxArrayString* aVars ) const
 {
-    auto add = [&]( const wxString& aVar )
-    {
-        if( !alg::contains( *aVars, aVar ) )
-            aVars->push_back( aVar );
-    };
+    auto add =
+            [&]( const wxString& aVar )
+            {
+                if( !alg::contains( *aVars, aVar ) )
+                    aVars->push_back( aVar );
+            };
 
     add( wxT( "#" ) );
     add( wxT( "##" ) );
@@ -772,270 +1106,297 @@ std::vector<SCH_MARKER*> SCHEMATIC::ResolveERCExclusions()
     std::optional<std::map<GROUP_KEY, KIID>> hierarchyGroups;
     std::optional<std::vector<SCH_CONNECTIVITY::LABEL_WIRE_CONFLICT>> labelWireGroups;
     std::optional<std::vector<SCH_CONNECTIVITY::FOUR_WAY_JUNCTION>> fourWayGroups;
-    const auto groupKey = [&]( const SCH_MARKER& aMarker ) -> std::optional<GROUP_KEY>
-    {
-        const auto error = std::static_pointer_cast<ERC_ITEM>( aMarker.GetRCItem() );
 
-        const bool ncPin = error->GetErrorCode() == ERCE_NOCONNECT_CONNECTED
-                           && !error->MainItemHasSheetPath() && !error->AuxItemHasSheetPath();
-
-        static const std::set<int> groupedCodes = { ERCE_WIRE_DANGLING, ERCE_BUS_TO_NET_CONFLICT,
-                                                    ERCE_BUS_TO_BUS_CONFLICT, ERCE_NOCONNECT_CONNECTED,
-                                                    ERCE_NOCONNECT_NOT_CONNECTED, ERCE_PIN_NOT_CONNECTED,
-                                                    ERCE_LABEL_MULTIPLE_WIRES, ERCE_FOUR_WAY_JUNCTION,
-                                                    ERCE_HIERACHICAL_LABEL };
-
-        if( !ADVANCED_CFG::GetCfg().m_ConnectivityEngine || !groupedCodes.contains( error->GetErrorCode() )
-            || !error->IsSheetSpecific() )
-        {
-            return std::nullopt;
-        }
-
-        if( error->GetErrorCode() == ERCE_FOUR_WAY_JUNCTION )
-        {
-            if( error->MainItemHasSheetPath() || error->AuxItemHasSheetPath() )
-                return std::nullopt;
-
-            if( !fourWayGroups )
-                fourWayGroups = m_connectivity->Engine().FourWayJunctions();
-
-            const KIID_PATH& path = error->GetSpecificSheetPath().PathRef();
-            const VECTOR2I position = aMarker.GetPosition();
-            const auto group = std::lower_bound( fourWayGroups->begin(), fourWayGroups->end(),
-                    std::tie( path, position.x, position.y ),
-                    []( const auto& junction, const auto& location )
-                    {
-                        return std::tie( junction.sheet, junction.position.x, junction.position.y ) < location;
-                    } );
-
-            if( group == fourWayGroups->end() || group->sheet != path || group->position != position )
-                return std::nullopt;
-
-            for( const KIID& id : error->GetIDs() )
+    const auto groupKey =
+            [&]( const SCH_MARKER& aMarker ) -> std::optional<GROUP_KEY>
             {
-                if( !std::binary_search( group->equivalentItems.begin(), group->equivalentItems.end(), id ) )
-                    return std::nullopt;
-            }
+                const auto error = std::static_pointer_cast<ERC_ITEM>( aMarker.GetRCItem() );
 
-            return GROUP_KEY{ ERCE_FOUR_WAY_JUNCTION, path, std::pair{ position.x, position.y } };
-        }
+                const bool ncPin = error->GetErrorCode() == ERCE_NOCONNECT_CONNECTED
+                                   && !error->MainItemHasSheetPath() && !error->AuxItemHasSheetPath();
 
-        const SCH_ITEM* main = ResolveItem( error->GetMainItemID(), nullptr, true );
+                static const std::set<int> groupedCodes = { ERCE_WIRE_DANGLING, ERCE_BUS_TO_NET_CONFLICT,
+                                                            ERCE_BUS_TO_BUS_CONFLICT, ERCE_NOCONNECT_CONNECTED,
+                                                            ERCE_NOCONNECT_NOT_CONNECTED, ERCE_PIN_NOT_CONNECTED,
+                                                            ERCE_LABEL_MULTIPLE_WIRES, ERCE_FOUR_WAY_JUNCTION,
+                                                            ERCE_HIERACHICAL_LABEL };
 
-        if( !main || main->GetPosition() != aMarker.GetPosition() )
-            return std::nullopt;
-
-        if( error->GetErrorCode() == ERCE_PIN_NOT_CONNECTED )
-        {
-            if( main->Type() != SCH_PIN_T )
-                return std::nullopt;
-
-            // Power-symbol errors identify individual pins, not a canonical witness for an island
-            if( static_cast<const SCH_PIN*>( main )->GetParentSymbol()->IsPower() )
-                return std::nullopt;
-        }
-
-        const KIID_PATH& path = error->GetSpecificSheetPath().PathRef();
-        const auto instance = m_connectivity->Keys().FindInstance( path );
-
-        if( !instance )
-            return std::nullopt;
-
-        if( error->GetErrorCode() == ERCE_LABEL_MULTIPLE_WIRES )
-        {
-            if( ( main->Type() != SCH_LABEL_T && main->Type() != SCH_GLOBAL_LABEL_T
-                  && main->Type() != SCH_HIER_LABEL_T )
-                || error->MainItemHasSheetPath() || error->AuxItemHasSheetPath() )
-                return std::nullopt;
-
-            if( !labelWireGroups )
-                labelWireGroups = m_connectivity->Engine().LabelWireConflicts();
-
-            const auto group = std::find_if( labelWireGroups->begin(), labelWireGroups->end(),
-                    [&]( const auto& conflict )
-                    {
-                        return conflict.sheet == path && conflict.position == aMarker.GetPosition();
-                    } );
-
-            if( group == labelWireGroups->end() )
-                return std::nullopt;
-
-            for( const KIID& id : error->GetIDs() )
-            {
-                if( id != main->m_Uuid && !std::binary_search( group->wires.begin(), group->wires.end(), id ) )
-                    return std::nullopt;
-            }
-
-            return GROUP_KEY{ ERCE_LABEL_MULTIPLE_WIRES, path, group->label };
-        }
-
-        if( error->GetErrorCode() == ERCE_HIERACHICAL_LABEL )
-        {
-            if( !error->MainItemHasSheetPath() || error->AuxItemHasSheetPath()
-                || error->GetMainItemSheetPath().PathRef() != path )
-                return std::nullopt;
-
-            if( !hierarchyGroups )
-            {
-                hierarchyGroups.emplace();
-
-                for( const auto& diagnostic : m_connectivity->Engine().HierarchyErrors() )
+                if( !ADVANCED_CFG::GetCfg().m_ConnectivityEngine || !groupedCodes.contains( error->GetErrorCode() )
+                    || !error->IsSheetSpecific() )
                 {
-                    for( const KIID& id : diagnostic.equivalentItems )
-                        hierarchyGroups->emplace( GROUP_KEY{ ERCE_HIERACHICAL_LABEL, diagnostic.sheet, id },
-                                                  diagnostic.item );
+                    return std::nullopt;
                 }
-            }
 
-            const auto found = hierarchyGroups->find( { ERCE_HIERACHICAL_LABEL, path, main->m_Uuid } );
-
-            if( found == hierarchyGroups->end() )
-                return std::nullopt;
-
-            return GROUP_KEY{ ERCE_HIERACHICAL_LABEL, path, found->second };
-        }
-
-        if( ncPin )
-        {
-            if( !ncGroups )
-            {
-                ncGroups.emplace();
-
-                for( auto& group : m_connectivity->Engine().NoConnectPinConflicts() )
-                    ncGroups->emplace( std::make_pair( group.sheet, group.position ), std::move( group ) );
-            }
-
-            const auto found = ncGroups->find( { path, aMarker.GetPosition() } );
-
-            if( found == ncGroups->end() )
-                return std::nullopt;
-
-            const auto& group = found->second;
-            const auto isPin = [&]( const KIID& id )
-            {
-                return std::binary_search( group.pins.begin(), group.pins.end(), id );
-            };
-
-            if( !isPin( error->GetMainItemID() ) )
-                return std::nullopt;
-
-            for( const KIID& id : error->GetIDs() )
-            {
-                if( id == niluuid )
-                    continue;
-
-                if( !m_connectivity->GetSubgraphForItem( id, path )
-                    || ( !isPin( id ) && !std::binary_search( group.others.begin(), group.others.end(), id ) ) )
-                    return std::nullopt;
-            }
-
-            return GROUP_KEY{ error->GetErrorCode(), path, group.pins.front() };
-        }
-
-        if( error->GetErrorCode() == ERCE_NOCONNECT_CONNECTED
-            || error->GetErrorCode() == ERCE_NOCONNECT_NOT_CONNECTED )
-        {
-            if( !error->MainItemHasSheetPath() || error->AuxItemHasSheetPath()
-                || error->GetMainItemSheetPath().PathRef() != path )
-                return std::nullopt;
-
-            KIID flag = niluuid;
-
-            for( const KIID& id : error->GetIDs() )
-            {
-                const SCH_ITEM* item = ResolveItem( id, nullptr, true );
-
-                if( item && item->Type() == SCH_NO_CONNECT_T )
-                    flag = id;
-            }
-
-            const auto& islandOf = m_connectivity->Published().Auxiliary().IslandOf();
-            const auto flagIsland = islandOf.find( { flag, *instance } );
-
-            if( flagIsland == islandOf.end() )
-                return std::nullopt;
-
-            if( !ncFlagGroups )
-            {
-                ncFlagGroups.emplace();
-
-                for( const auto& diagnostic : m_connectivity->Engine().NoConnectFlagErrors() )
+                if( error->GetErrorCode() == ERCE_FOUR_WAY_JUNCTION )
                 {
-                    const auto inst = m_connectivity->Keys().FindInstance( diagnostic.sheet );
-                    const auto record = inst ? islandOf.find( { diagnostic.flag, *inst } ) : islandOf.end();
+                    if( error->MainItemHasSheetPath() || error->AuxItemHasSheetPath() )
+                        return std::nullopt;
 
-                    if( record == islandOf.end() )
+                    if( !fourWayGroups )
+                        fourWayGroups = m_connectivity->Engine().FourWayJunctions();
+
+                    const KIID_PATH& path = error->GetSpecificSheetPath().PathRef();
+                    const VECTOR2I position = aMarker.GetPosition();
+                    const auto group = std::lower_bound( fourWayGroups->begin(), fourWayGroups->end(),
+                            std::tie( path, position.x, position.y ),
+                            []( const auto& junction, const auto& location )
+                            {
+                                return std::tie( junction.sheet, junction.position.x, junction.position.y ) < location;
+                            } );
+
+                    if( group == fourWayGroups->end() || group->sheet != path || group->position != position )
+                        return std::nullopt;
+
+                    for( const KIID& id : error->GetIDs() )
+                    {
+                        if( !std::binary_search( group->equivalentItems.begin(), group->equivalentItems.end(), id ) )
+                            return std::nullopt;
+                    }
+
+                    return GROUP_KEY{ ERCE_FOUR_WAY_JUNCTION, path, std::pair{ position.x, position.y } };
+                }
+
+                const SCH_ITEM* main = ResolveItem( error->GetMainItemID(), nullptr, true );
+
+                if( !main || main->GetPosition() != aMarker.GetPosition() )
+                    return std::nullopt;
+
+                if( error->GetErrorCode() == ERCE_PIN_NOT_CONNECTED )
+                {
+                    if( main->Type() != SCH_PIN_T )
+                        return std::nullopt;
+
+                    // Power-symbol errors identify individual pins, not a canonical witness for an island
+                    if( static_cast<const SCH_PIN*>( main )->GetParentSymbol()->IsPower() )
+                        return std::nullopt;
+                }
+
+                const KIID_PATH& path = error->GetSpecificSheetPath().PathRef();
+                const auto instance = m_connectivity->Keys().FindInstance( path );
+
+                if( !instance )
+                    return std::nullopt;
+
+                if( error->GetErrorCode() == ERCE_LABEL_MULTIPLE_WIRES )
+                {
+                    if( ( main->Type() != SCH_LABEL_T
+                            && main->Type() != SCH_GLOBAL_LABEL_T
+                            && main->Type() != SCH_HIER_LABEL_T )
+                        || error->MainItemHasSheetPath()
+                        || error->AuxItemHasSheetPath() )
+                    {
+                        return std::nullopt;
+                    }
+
+                    if( !labelWireGroups )
+                        labelWireGroups = m_connectivity->Engine().LabelWireConflicts();
+
+                    const auto group = std::find_if( labelWireGroups->begin(), labelWireGroups->end(),
+                                                     [&]( const auto& conflict )
+                                                     {
+                                                         return conflict.sheet == path
+                                                                 && conflict.position == aMarker.GetPosition();
+                                                     } );
+
+                    if( group == labelWireGroups->end() )
+                        return std::nullopt;
+
+                    for( const KIID& id : error->GetIDs() )
+                    {
+                        if( id != main->m_Uuid && !std::binary_search( group->wires.begin(), group->wires.end(), id ) )
+                            return std::nullopt;
+                    }
+
+                    return GROUP_KEY{ ERCE_LABEL_MULTIPLE_WIRES, path, group->label };
+                }
+
+                if( error->GetErrorCode() == ERCE_HIERACHICAL_LABEL )
+                {
+                    if( !error->MainItemHasSheetPath()
+                        || error->AuxItemHasSheetPath()
+                        || error->GetMainItemSheetPath().PathRef() != path )
+                    {
+                        return std::nullopt;
+                    }
+
+                    if( !hierarchyGroups )
+                    {
+                        hierarchyGroups.emplace();
+
+                        for( const auto& diagnostic : m_connectivity->Engine().HierarchyErrors() )
+                        {
+                            for( const KIID& id : diagnostic.equivalentItems )
+                            {
+                                hierarchyGroups->emplace( GROUP_KEY{ ERCE_HIERACHICAL_LABEL, diagnostic.sheet, id },
+                                                          diagnostic.item );
+                            }
+                        }
+                    }
+
+                    const auto found = hierarchyGroups->find( { ERCE_HIERACHICAL_LABEL, path, main->m_Uuid } );
+
+                    if( found == hierarchyGroups->end() )
+                        return std::nullopt;
+
+                    return GROUP_KEY{ ERCE_HIERACHICAL_LABEL, path, found->second };
+                }
+
+                if( ncPin )
+                {
+                    if( !ncGroups )
+                    {
+                        ncGroups.emplace();
+
+                        for( auto& group : m_connectivity->Engine().NoConnectPinConflicts() )
+                            ncGroups->emplace( std::make_pair( group.sheet, group.position ), std::move( group ) );
+                    }
+
+                    const auto found = ncGroups->find( { path, aMarker.GetPosition() } );
+
+                    if( found == ncGroups->end() )
+                        return std::nullopt;
+
+                    const auto& group = found->second;
+                    const auto isPin =
+                            [&]( const KIID& id )
+                            {
+                                return std::binary_search( group.pins.begin(), group.pins.end(), id );
+                            };
+
+                    if( !isPin( error->GetMainItemID() ) )
+                        return std::nullopt;
+
+                    for( const KIID& id : error->GetIDs() )
+                    {
+                        if( id == niluuid )
+                            continue;
+
+                        if( !m_connectivity->GetSubgraphForItem( id, path )
+                            || ( !isPin( id ) && !std::binary_search( group.others.begin(), group.others.end(), id ) ) )
+                        {
+                            return std::nullopt;
+                        }
+                    }
+
+                    return GROUP_KEY{ error->GetErrorCode(), path, group.pins.front() };
+                }
+
+                if( error->GetErrorCode() == ERCE_NOCONNECT_CONNECTED
+                    || error->GetErrorCode() == ERCE_NOCONNECT_NOT_CONNECTED )
+                {
+                    if( !error->MainItemHasSheetPath()
+                        || error->AuxItemHasSheetPath()
+                        || error->GetMainItemSheetPath().PathRef() != path )
+                    {
+                        return std::nullopt;
+                    }
+
+                    KIID flag = niluuid;
+
+                    for( const KIID& id : error->GetIDs() )
+                    {
+                        const SCH_ITEM* item = ResolveItem( id, nullptr, true );
+
+                        if( item && item->Type() == SCH_NO_CONNECT_T )
+                            flag = id;
+                    }
+
+                    const auto& islandOf = m_connectivity->Published().Auxiliary().IslandOf();
+                    const auto flagIsland = islandOf.find( { flag, *instance } );
+
+                    if( flagIsland == islandOf.end() )
+                        return std::nullopt;
+
+                    if( !ncFlagGroups )
+                    {
+                        ncFlagGroups.emplace();
+
+                        for( const auto& diagnostic : m_connectivity->Engine().NoConnectFlagErrors() )
+                        {
+                            const auto inst = m_connectivity->Keys().FindInstance( diagnostic.sheet );
+                            const auto record = inst ? islandOf.find( { diagnostic.flag, *inst } ) : islandOf.end();
+
+                            if( record == islandOf.end() )
+                                continue;
+
+                            const int code = diagnostic.connected ? ERCE_NOCONNECT_CONNECTED
+                                                                  : ERCE_NOCONNECT_NOT_CONNECTED;
+                            ncFlagGroups->emplace( GROUP_KEY{ code, diagnostic.sheet, record->second.anchor },
+                                                   diagnostic.flag );
+                        }
+                    }
+
+                    const auto group = ncFlagGroups->find( { error->GetErrorCode(), path, flagIsland->second.anchor } );
+
+                    if( group == ncFlagGroups->end() )
+                        return std::nullopt;
+
+                    const auto& rows = m_connectivity->Published().Rows();
+                    const auto flagRow = rows.find( { flag, *instance } );
+
+                    if( flagRow == rows.end() )
+                        return std::nullopt;
+
+                    for( const KIID& id : error->GetIDs() )
+                    {
+                        if( id == niluuid || id == flag )
+                            continue;
+
+                        const SCH_ITEM* item = ResolveItem( id, nullptr, true );
+                        const auto row = rows.find( { id, *instance } );
+
+                        if( !item || item->Type() != SCH_PIN_T
+                            || row == rows.end()
+                            || row->second.component != flagRow->second.component
+                            || !m_connectivity->GetSubgraphForItem( id, path ) )
+                        {
+                            return std::nullopt;
+                        }
+                    }
+
+                    return GROUP_KEY{ error->GetErrorCode(), path, group->second };
+                }
+
+                const auto& islands = m_connectivity->Published().Auxiliary().IslandOf();
+                std::optional<GROUP_KEY> key;
+
+                for( const KIID& id : error->GetIDs() )
+                {
+                    if( id == niluuid )
                         continue;
 
-                    const int code = diagnostic.connected ? ERCE_NOCONNECT_CONNECTED : ERCE_NOCONNECT_NOT_CONNECTED;
-                    ncFlagGroups->emplace( GROUP_KEY{ code, diagnostic.sheet, record->second.anchor },
-                                           diagnostic.flag );
+                    const auto island = islands.find( { id, *instance } );
+
+                    if( !m_connectivity->GetSubgraphForItem( id, path )
+                        || island == islands.end()
+                        || ( key && std::get<2>( *key ) != GROUP_ANCHOR{ island->second.anchor } ) )
+                    {
+                        return std::nullopt;
+                    }
+
+                    key = GROUP_KEY{ error->GetErrorCode(), path, island->second.anchor };
                 }
-            }
 
-            const auto group = ncFlagGroups->find( { error->GetErrorCode(), path, flagIsland->second.anchor } );
-
-            if( group == ncFlagGroups->end() )
-                return std::nullopt;
-
-            const auto& rows = m_connectivity->Published().Rows();
-            const auto flagRow = rows.find( { flag, *instance } );
-
-            if( flagRow == rows.end() )
-                return std::nullopt;
-
-            for( const KIID& id : error->GetIDs() )
-            {
-                if( id == niluuid || id == flag )
-                    continue;
-
-                const SCH_ITEM* item = ResolveItem( id, nullptr, true );
-                const auto row = rows.find( { id, *instance } );
-
-                if( !item || item->Type() != SCH_PIN_T || row == rows.end()
-                    || row->second.component != flagRow->second.component
-                    || !m_connectivity->GetSubgraphForItem( id, path ) )
-                    return std::nullopt;
-            }
-
-            return GROUP_KEY{ error->GetErrorCode(), path, group->second };
-        }
-
-        const auto& islands = m_connectivity->Published().Auxiliary().IslandOf();
-        std::optional<GROUP_KEY> key;
-
-        for( const KIID& id : error->GetIDs() )
-        {
-            if( id == niluuid )
-                continue;
-
-            const auto island = islands.find( { id, *instance } );
-
-            if( !m_connectivity->GetSubgraphForItem( id, path ) || island == islands.end()
-                || ( key && std::get<2>( *key ) != GROUP_ANCHOR{ island->second.anchor } ) )
-                return std::nullopt;
-
-            key = GROUP_KEY{ error->GetErrorCode(), path, island->second.anchor };
-        }
-
-        return key;
-    };
+                return key;
+            };
 
     std::set<ERC_EXCLUSION, ERC_EXCLUSION_COMPARE> legacyPathlessExclusions;
     std::optional<std::vector<SCH_CONNECTIVITY::OFF_GRID_ENDPOINT>> offGridEndpoints;
-    const auto findPathless = [&]( const ERC_EXCLUSION& aLookup )
-    {
-        auto legacy = aLookup.ToProto();
-        legacy.mutable_marker()->clear_sheet_specific_path();
-        legacy.mutable_marker()->clear_main_item_sheet_path();
-        legacy.mutable_marker()->clear_aux_item_sheet_path();
-        auto found = settings.m_ErcExclusions.find( ERC_EXCLUSION::FromProto( legacy ) );
 
-        if( found != settings.m_ErcExclusions.end() )
-            legacyPathlessExclusions.insert( *found );
+    const auto findPathless =
+            [&]( const ERC_EXCLUSION& aLookup )
+            {
+                kiapi::schematic::ErcExclusion legacy = aLookup.ToProto();
+                legacy.mutable_marker()->clear_sheet_specific_path();
+                legacy.mutable_marker()->clear_main_item_sheet_path();
+                legacy.mutable_marker()->clear_aux_item_sheet_path();
+                auto found = settings.m_ErcExclusions.find( ERC_EXCLUSION::FromProto( legacy ) );
 
-        return found;
-    };
+                if( found != settings.m_ErcExclusions.end() )
+                    legacyPathlessExclusions.insert( *found );
+
+                return found;
+            };
 
     for( const SCH_SHEET_PATH& sheet : sheetList )
     {
@@ -1047,7 +1408,9 @@ std::vector<SCH_MARKER*> SCHEMATIC::ResolveERCExclusions()
 
             const auto error = std::static_pointer_cast<ERC_ITEM>( marker->GetRCItem() );
 
-            if( it == settings.m_ErcExclusions.end() && !settings.m_ErcExclusions.empty() && error->IsSheetSpecific()
+            if( it == settings.m_ErcExclusions.end()
+                && !settings.m_ErcExclusions.empty()
+                && error->IsSheetSpecific()
                 && error->GetSpecificSheetPath().PathRef() == sheet.PathRef() )
             {
                 const bool engine = ADVANCED_CFG::GetCfg().m_ConnectivityEngine;
@@ -1078,7 +1441,7 @@ std::vector<SCH_MARKER*> SCHEMATIC::ResolveERCExclusions()
                     if( !marker->IsExcluded() && mainHere && !hasAux )
                     {
                         // Older sheet-specific exclusions omitted the main item's sheet path
-                        auto previous = lookup.ToProto();
+                        kiapi::schematic::ErcExclusion previous = lookup.ToProto();
                         previous.mutable_marker()->clear_main_item_sheet_path();
                         it = settings.m_ErcExclusions.find( ERC_EXCLUSION::FromProto( previous ) );
                     }
@@ -1097,7 +1460,10 @@ std::vector<SCH_MARKER*> SCHEMATIC::ResolveERCExclusions()
                     if( !marker->IsExcluded() && mainHere && !hasAux )
                         it = findPathless( lookup );
 
-                    if( it == settings.m_ErcExclusions.end() && engine && mainHere && !hasAux
+                    if( it == settings.m_ErcExclusions.end()
+                        && engine
+                        && mainHere
+                        && !hasAux
                         && error->GetErrorCode() == ERCE_ENDPOINT_OFF_GRID )
                     {
                         if( !offGridEndpoints )
@@ -1106,20 +1472,23 @@ std::vector<SCH_MARKER*> SCHEMATIC::ResolveERCExclusions()
                                     m_connectivity->Engine().OffGridEndpoints( Settings().m_ConnectionGridSize );
                         }
 
-                        for( const auto& endpoint : *offGridEndpoints )
+                        for( const SCH_CONNECTIVITY::OFF_GRID_ENDPOINT& endpoint : *offGridEndpoints )
                         {
-                            if( endpoint.sheet != sheet.PathRef() || endpoint.item != error->GetMainItemID()
+                            if( endpoint.sheet != sheet.PathRef()
+                                || endpoint.item != error->GetMainItemID()
                                 || endpoint.position != marker->GetPosition() )
+                            {
                                 continue;
+                            }
 
                             for( const auto& [pin, position] : endpoint.equivalentPins )
                             {
-                                auto alternate = ERC_ITEM::Create( ERCE_ENDPOINT_OFF_GRID );
+                                std::shared_ptr<ERC_ITEM> alternate = ERC_ITEM::Create( ERCE_ENDPOINT_OFF_GRID );
                                 alternate->SetItems( std::vector<KIID>{ pin } );
                                 alternate->SetSheetSpecificPath( sheet );
                                 alternate->SetItemsSheetPaths( sheet );
                                 SCH_MARKER witness( std::move( alternate ), position );
-                                const auto candidate = ERC_EXCLUSION::FromMarker( witness );
+                                const ERC_EXCLUSION candidate = ERC_EXCLUSION::FromMarker( witness );
                                 it = settings.m_ErcExclusions.find( candidate );
 
                                 if( it == settings.m_ErcExclusions.end() )
@@ -1163,7 +1532,7 @@ std::vector<SCH_MARKER*> SCHEMATIC::ResolveERCExclusions()
             }
             else if( !marker->IsExcluded() )
             {
-                if( const auto key = groupKey( *marker ) )
+                if( const std::optional<GROUP_KEY> key = groupKey( *marker ) )
                     groupMarkers.emplace( *key, marker );
             }
         }
@@ -1181,14 +1550,18 @@ std::vector<SCH_MARKER*> SCHEMATIC::ResolveERCExclusions()
         if( marker )
         {
             // Canonical connectivity witnesses can change the marker anchor and reported IDs
-            if( const auto key = groupKey( *marker ) )
+            if( const std::optional<GROUP_KEY> key = groupKey( *marker ) )
             {
                 const auto current = groupMarkers.find( *key );
-                const auto itemCount = []( const SCH_MARKER& aMarker )
-                {
-                    const auto ids = aMarker.GetRCItem()->GetIDs();
-                    return std::count_if( ids.begin(), ids.end(), []( const KIID& id ) { return id != niluuid; } );
-                };
+                const auto itemCount =
+                        []( const SCH_MARKER& aMarker )
+                        {
+                            return std::ranges::count_if( aMarker.GetRCItem()->GetIDs(),
+                                                          []( const KIID& id )
+                                                          {
+                                                              return id != niluuid;
+                                                          } );
+                        };
 
                 if( current != groupMarkers.end()
                     && itemCount( *current->second ) == itemCount( *marker ) )
@@ -1234,10 +1607,13 @@ void SCHEMATIC::AddBusAlias( std::shared_ptr<BUS_ALIAS> aAlias )
     if( !aAlias )
         return;
 
-    auto sameDefinition = [&]( const std::shared_ptr<BUS_ALIAS>& candidate ) -> bool
-    {
-        return candidate && candidate->GetName() == aAlias->GetName() && candidate->Members() == aAlias->Members();
-    };
+    auto sameDefinition =
+            [&]( const std::shared_ptr<BUS_ALIAS>& candidate ) -> bool
+            {
+                return candidate
+                        && candidate->GetName() == aAlias->GetName()
+                        && candidate->Members() == aAlias->Members();
+            };
 
     auto it = std::find_if( m_busAliases.begin(), m_busAliases.end(), sameDefinition );
 
@@ -1261,10 +1637,13 @@ void SCHEMATIC::SetBusAliases( const std::vector<std::shared_ptr<BUS_ALIAS>>& aA
 
         std::shared_ptr<BUS_ALIAS> clone = alias->Clone();
 
-        auto sameDefinition = [&]( const std::shared_ptr<BUS_ALIAS>& candidate ) -> bool
-        {
-            return candidate && candidate->GetName() == clone->GetName() && candidate->Members() == clone->Members();
-        };
+        auto sameDefinition =
+                [&]( const std::shared_ptr<BUS_ALIAS>& candidate ) -> bool
+                {
+                    return candidate
+                            && candidate->GetName() == clone->GetName()
+                            && candidate->Members() == clone->Members();
+                };
 
         auto it = std::find_if( aliases.begin(), aliases.end(), sameDefinition );
 
@@ -1278,7 +1657,10 @@ void SCHEMATIC::SetBusAliases( const std::vector<std::shared_ptr<BUS_ALIAS>>& aA
     updateProjectBusAliases();
 
     if( m_project )
+    {
         m_project->GetProjectFile().m_BusAliasesDefined = true;
+        m_busAliasesFromTable = true;
+    }
 }
 
 
@@ -1291,21 +1673,55 @@ bool SCHEMATIC::HasProjectBusAliases() const
 void SCHEMATIC::loadBusAliasesFromProject()
 {
     m_busAliases.clear();
+    m_busAliasesFromTable = HasProjectBusAliases();
 
     if( !m_project )
         return;
 
-    const auto& projectAliases = m_project->GetProjectFile().m_BusAliases;
+    const std::map<wxString, std::vector<wxString>>& projectAliases = m_project->GetProjectFile().m_BusAliases;
 
-    for( const auto& alias : projectAliases )
+    for( const auto& [name, members] : projectAliases )
     {
         std::shared_ptr<BUS_ALIAS> busAlias = std::make_shared<BUS_ALIAS>();
 
-        busAlias->SetName( alias.first );
-        busAlias->SetMembers( alias.second );
+        busAlias->SetName( name );
+        busAlias->SetMembers( members );
 
         m_busAliases.push_back( busAlias );
     }
+}
+
+
+SCHEMATIC::BUS_ALIAS_RELOAD SCHEMATIC::ReloadProjectBusAliases()
+{
+    if( !m_project )
+        return BUS_ALIAS_RELOAD::UNCHANGED;
+
+    if( !HasProjectBusAliases() )
+    {
+        // The reread cleared the project copy, and a save without it would drop the aliases in use
+        updateProjectBusAliases();
+
+        if( !m_busAliasesFromTable )
+            return BUS_ALIAS_RELOAD::UNCHANGED;
+
+        // Kept as a table, so an empty one still suppresses the sheets' legacy aliases on reopen
+        m_project->GetProjectFile().m_BusAliasesDefined = true;
+        return BUS_ALIAS_RELOAD::TABLE_REMOVED;
+    }
+
+    std::map<wxString, std::vector<wxString>> inUse;
+
+    for( const std::shared_ptr<BUS_ALIAS>& alias : m_busAliases )
+    {
+        if( alias )
+            inUse.insert_or_assign( alias->GetName(), alias->Members() );
+    }
+
+    loadBusAliasesFromProject();
+
+    return inUse != m_project->GetProjectFile().m_BusAliases ? BUS_ALIAS_RELOAD::CHANGED
+                                                              : BUS_ALIAS_RELOAD::UNCHANGED;
 }
 
 
@@ -1314,7 +1730,7 @@ void SCHEMATIC::updateProjectBusAliases()
     if( !m_project )
         return;
 
-    auto& projectAliases = m_project->GetProjectFile().m_BusAliases;
+    std::map<wxString, std::vector<wxString>>& projectAliases = m_project->GetProjectFile().m_BusAliases;
 
     projectAliases.clear();
 
@@ -1334,11 +1750,17 @@ std::set<wxString> SCHEMATIC::GetNetClassAssignmentCandidates()
 
     if( ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
     {
-        for( const auto& group : Connectivity().GetNetMap() )
+        for( const SCH_CONNECTIVITY::NET_GROUP& group : Connectivity().GetNetMap() )
         {
             // A net without items, such as a member of an unplaced bus, has nothing to assign a netclass to
-            if( std::ranges::all_of( group.instances, []( const auto& net ) { return net.Items().empty(); } ) )
+            if( std::ranges::all_of( group.instances,
+                                     []( const SCH_CONNECTIVITY::NET_VIEW& net )
+                                     {
+                                         return net.Items().empty();
+                                     } ) )
+            {
                 continue;
+            }
 
             const auto& net = group.instances.front();
 
@@ -1387,12 +1809,15 @@ bool SCHEMATIC::resolveCrossReference( wxString* token, int aDepth ) const
     wxString       ref = token->BeforeFirst( ':', &remainder );
     KIID_PATH      path( ref );
     KIID           uuid( 0 );
+
+    if( path.size() > 0 )
+        uuid = path.back();
+
     SCH_SHEET_PATH sheetPath;
     SCH_ITEM*      refItem = ResolveItem( KIID( uuid ), &sheetPath, true );
 
     if( path.size() > 1 )
     {
-        uuid = path.back();
         path.pop_back();
         sheetPath = Hierarchy().GetSheetPathByKIIDPath( path ).value_or( sheetPath );
     }
@@ -1457,37 +1882,43 @@ bool SCHEMATIC::resolveCrossReference( wxString* token, int aDepth ) const
     // This handles both exact matches (J601A) and parent references for multi-unit symbols (J601)
     if( !refItem )
     {
-        SCH_REFERENCE_LIST refs;
-        Hierarchy().GetSymbols( refs, SYMBOL_FILTER_ALL );
-
         SCH_SYMBOL*    foundSymbol = nullptr;
         SCH_SHEET_PATH foundPath;
 
-        for( int ii = 0; ii < (int) refs.GetCount(); ii++ )
-        {
-            SCH_REFERENCE& reference = refs[ii];
-            wxString       symbolRef = reference.GetSymbol()->GetRef( &reference.GetSheetPath(), false );
-
-            // Try exact match first
-            if( symbolRef == ref )
-            {
-                foundSymbol = reference.GetSymbol();
-                foundPath = reference.GetSheetPath();
-                break;
-            }
-
-            // For multi-unit symbols, try matching parent reference (e.g., J601 matches J601A)
-            if( symbolRef.StartsWith( ref ) && symbolRef.Length() == ref.Length() + 1 )
-            {
-                wxChar lastChar = symbolRef.Last();
-                if( lastChar >= 'A' && lastChar <= 'Z' )
+        // Walk symbols directly since an SCH_REFERENCE_LIST resolves fields that may refer back here
+        auto findSymbol =
+                [&]()
                 {
-                    foundSymbol = reference.GetSymbol();
-                    foundPath = reference.GetSheetPath();
-                    // Don't break - continue looking for exact match
-                }
-            }
-        }
+                    for( const SCH_SHEET_PATH& sheet : Hierarchy() )
+                    {
+                        for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
+                        {
+                            SCH_SYMBOL*    symbol = static_cast<SCH_SYMBOL*>( item );
+                            const wxString baseRef = symbol->GetRef( &sheet, false );
+
+                            if( !symbol->GetLibSymbolRef() || baseRef.StartsWith( wxT( "#" ) ) )
+                                continue;
+
+                            // A unit reference (J601A) names one unit exactly
+                            if( symbol->GetRef( &sheet, true ) == ref )
+                            {
+                                foundSymbol = symbol;
+                                foundPath = sheet;
+                                return;
+                            }
+
+                            // The parent reference (J601) names any unit, so keep looking for an
+                            // exact match
+                            if( !foundSymbol && baseRef == ref )
+                            {
+                                foundSymbol = symbol;
+                                foundPath = sheet;
+                            }
+                        }
+                    }
+                };
+
+        findSymbol();
 
         if( foundSymbol )
         {
@@ -1610,7 +2041,7 @@ wxString SCHEMATIC::ConvertRefsToKIIDs( const wxString& aSource ) const
                 wxString           ref = token.BeforeFirst( ':', &remainder );
                 SCH_REFERENCE_LIST references;
 
-                Hierarchy().GetSymbols( references, SYMBOL_FILTER_ALL );
+                Hierarchy().GetSymbols( references, SYMBOL_FILTER_NON_POWER );
 
                 for( size_t jj = 0; jj < references.GetCount(); jj++ )
                 {
@@ -2020,11 +2451,11 @@ void SCHEMATIC::AddListener( SCHEMATIC_LISTENER* aListener )
 
 void SCHEMATIC::RemoveListener( SCHEMATIC_LISTENER* aListener )
 {
-    auto i = std::find( m_listeners.begin(), m_listeners.end(), aListener );
+    auto it = std::find( m_listeners.begin(), m_listeners.end(), aListener );
 
-    if( i != m_listeners.end() )
+    if( it != m_listeners.end() )
     {
-        std::iter_swap( i, m_listeners.end() - 1 );
+        std::iter_swap( it, m_listeners.end() - 1 );
         m_listeners.pop_back();
     }
 }
@@ -2041,10 +2472,13 @@ void SCHEMATIC::ClearUnresolvedERCExclusions( int aErrorCode )
     std::erase_if( m_unresolvedErcExclusions,
             [&]( const ERC_EXCLUSION& exclusion )
             {
-                if( aErrorCode >= 0
-                    && FromProtoEnum<ERCE_T, kiapi::schematic::ErcErrorType>(
-                               exclusion.ToProto().marker().error_type() ) != aErrorCode )
-                    return false;
+                if( aErrorCode >= 0 )
+                {
+                    kiapi::schematic::ErcErrorType error = exclusion.ToProto().marker().error_type();
+
+                    if( FromProtoEnum<ERCE_T, kiapi::schematic::ErcErrorType>( error ) != aErrorCode )
+                        return false;
+                }
 
                 ErcSettings().m_ErcExclusions.erase( exclusion );
                 return true;
@@ -2097,6 +2531,45 @@ void SCHEMATIC::ResolveERCExclusionsPostUpdate()
 }
 
 
+std::vector<SCH_MARKER*> SCHEMATIC::ReloadERCExclusions()
+{
+    // The reread file carries every exclusion the old unresolved list held
+    m_unresolvedErcExclusions.clear();
+
+    std::vector<std::pair<SCH_MARKER*, SCH_SCREEN*>> wereExcluded;
+    SCH_SCREENS                                       screens( Root() );
+
+    for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+    {
+        for( SCH_ITEM* item : screen->Items().OfType( SCH_MARKER_T ) )
+        {
+            SCH_MARKER* marker = static_cast<SCH_MARKER*>( item );
+
+            if( marker->IsExcluded() )
+            {
+                wereExcluded.emplace_back( marker, screen );
+                marker->SetExcluded( false );
+            }
+        }
+    }
+
+    ResolveERCExclusionsPostUpdate();
+
+    std::vector<SCH_MARKER*> stale;
+
+    for( auto& [marker, screen] : wereExcluded )
+    {
+        if( !marker->IsExcluded() )
+        {
+            screen->Remove( marker );
+            stale.push_back( marker );
+        }
+    }
+
+    return stale;
+}
+
+
 EMBEDDED_FILES* SCHEMATIC::GetEmbeddedFiles()
 {
     return static_cast<EMBEDDED_FILES*>( this );
@@ -2139,7 +2612,7 @@ std::set<KIFONT::OUTLINE_FONT*> SCHEMATIC::GetFonts() const
                     continue;
 
                 using EMBEDDING_PERMISSION = KIFONT::OUTLINE_FONT::EMBEDDING_PERMISSION;
-                auto* outline = static_cast<KIFONT::OUTLINE_FONT*>( font );
+                KIFONT::OUTLINE_FONT* outline = static_cast<KIFONT::OUTLINE_FONT*>( font );
 
                 if( outline->GetEmbeddingPermission() == EMBEDDING_PERMISSION::EDITABLE
                     || outline->GetEmbeddingPermission() == EMBEDDING_PERMISSION::INSTALLABLE )
@@ -2160,7 +2633,7 @@ void SCHEMATIC::EmbedFonts()
 
     for( KIFONT::OUTLINE_FONT* font : fonts )
     {
-        auto file = GetEmbeddedFiles()->AddFile( font->GetFileName(), false );
+        EMBEDDED_FILES::EMBEDDED_FILE* file = GetEmbeddedFiles()->AddFile( font->GetFileName(), false );
 
         if( !file )
         {
@@ -2240,37 +2713,33 @@ void SCHEMATIC::CleanUp( SCH_COMMIT* aCommit, SCH_SCREEN* aScreen )
     if( aScreen == nullptr )
         aScreen = GetCurrentScreen();
 
-    auto remove_item = [&]( SCH_ITEM* aItem ) -> void
-    {
-        changed = true;
-
-        if( !( aItem->GetFlags() & STRUCT_DELETED ) )
-        {
-            aItem->SetFlags( STRUCT_DELETED );
-
-            if( aItem->IsSelected() && selectionTool )
-                selectionTool->RemoveItemFromSel( aItem, true /*quiet mode*/ );
-
-            if( m_schematicHolder )
+    auto remove_item =
+            [&]( SCH_ITEM* aItem ) -> void
             {
-                m_schematicHolder->RemoveFromScreen( aItem, aScreen );
-            }
-            else
-            {
-                aScreen->Remove( aItem );
-            }
+                changed = true;
 
-            aCommit->RemovedForCleanup( aItem, aScreen );
+                if( !( aItem->GetFlags() & STRUCT_DELETED ) )
+                {
+                    aItem->SetFlags( STRUCT_DELETED );
 
-            if( aItem->Type() == SCH_LINE_T && generatedLines.erase( static_cast<SCH_LINE*>( aItem ) )
-                && !aCommit->GetStatus( aItem, aScreen ) )
-            {
-                // An intermediate merge has no undo owner when its Add/Remove entries cancel.
-                retiredLines.emplace_back( static_cast<SCH_LINE*>( aItem ) );
-            }
-        }
-    };
+                    if( aItem->IsSelected() && selectionTool )
+                        selectionTool->RemoveItemFromSel( aItem, true /*quiet mode*/ );
 
+                    if( m_schematicHolder )
+                        m_schematicHolder->RemoveFromScreen( aItem, aScreen );
+                    else
+                        aScreen->Remove( aItem );
+
+                    aCommit->RemovedForCleanup( aItem, aScreen );
+
+                    if( aItem->Type() == SCH_LINE_T && generatedLines.erase( static_cast<SCH_LINE*>( aItem ) )
+                        && !aCommit->GetStatus( aItem, aScreen ) )
+                    {
+                        // An intermediate merge has no undo owner when its Add/Remove entries cancel.
+                        retiredLines.emplace_back( static_cast<SCH_LINE*>( aItem ) );
+                    }
+                }
+            };
 
     for( SCH_ITEM* item : aScreen->Items().OfType( SCH_JUNCTION_T ) )
     {
@@ -2318,25 +2787,29 @@ void SCHEMATIC::CleanUp( SCH_COMMIT* aCommit, SCH_SCREEN* aScreen )
                         } );
 
 
-    auto minX = []( const SCH_LINE* l )
-    {
-        return std::min( l->GetStartPoint().x, l->GetEndPoint().x );
-    };
+    auto minX =
+            []( const SCH_LINE* l )
+            {
+                return std::min( l->GetStartPoint().x, l->GetEndPoint().x );
+            };
 
-    auto maxX = []( const SCH_LINE* l )
-    {
-        return std::max( l->GetStartPoint().x, l->GetEndPoint().x );
-    };
+    auto maxX =
+            []( const SCH_LINE* l )
+            {
+                return std::max( l->GetStartPoint().x, l->GetEndPoint().x );
+            };
 
-    auto minY = []( const SCH_LINE* l )
-    {
-        return std::min( l->GetStartPoint().y, l->GetEndPoint().y );
-    };
+    auto minY =
+            []( const SCH_LINE* l )
+            {
+                return std::min( l->GetStartPoint().y, l->GetEndPoint().y );
+            };
 
-    auto maxY = []( const SCH_LINE* l )
-    {
-        return std::max( l->GetStartPoint().y, l->GetEndPoint().y );
-    };
+    auto maxY =
+            []( const SCH_LINE* l )
+            {
+                return std::max( l->GetStartPoint().y, l->GetEndPoint().y );
+            };
 
     // Would be nice to put lines in a canonical form here by swapping
     //  start <-> end as needed but I don't know what swapping breaks.
@@ -2514,10 +2987,9 @@ void SCHEMATIC::RebuildConnectivity( std::function<void( SCH_ITEM* )>* aChangedI
 
 void SCHEMATIC::RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS aCleanupFlags,
                                         TOOL_MANAGER* aToolManager, PROGRESS_REPORTER* aProgressReporter,
-                                        KIGFX::SCH_VIEW*                  aSchView,
+                                        KIGFX::SCH_VIEW* aSchView,
                                         std::function<void( SCH_ITEM* )>* aChangedItemHandler,
-                                        PICKED_ITEMS_LIST*                aLastChangeList,
-                                        bool aCleanupDone )
+                                        PICKED_ITEMS_LIST* aLastChangeList, bool aCleanupDone )
 {
     SCH_COMMIT localCommit( aToolManager );
 
@@ -2551,9 +3023,8 @@ void SCHEMATIC::RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS a
         if( !localCommit.Empty() )
             localCommit.Push( _( "Schematic Cleanup" ), SKIP_CONNECTIVITY | DELETE_REMOVED_ITEMS );
 
-        m_connectivity->Recalculate( *this, false,
-                                    aChangedItemHandler ? *aChangedItemHandler
-                                                        : std::function<void( SCH_ITEM* )>() );
+        m_connectivity->Recalculate( *this, false, aChangedItemHandler ? *aChangedItemHandler
+                                                                       : std::function<void( SCH_ITEM* )>() );
         return;
     }
 
@@ -2586,35 +3057,36 @@ void SCHEMATIC::RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS a
         std::vector<CHANGED_ITEM>                        changed_connectable_items;
 
         // Lambda to add an item to the connectivity update sets
-        auto addItemToChangeSet = [&changed_items, &pts, &item_paths]( CHANGED_ITEM itemData )
-        {
-            std::vector<SCH_SHEET_PATH>& paths = itemData.screen->GetClientSheetPaths();
+        auto addItemToChangeSet =
+                [&changed_items, &pts, &item_paths]( CHANGED_ITEM itemData )
+                {
+                    std::vector<SCH_SHEET_PATH>& paths = itemData.screen->GetClientSheetPaths();
 
-            std::vector<VECTOR2I> tmp_pts = itemData.item->GetConnectionPoints();
-            pts.insert( tmp_pts.begin(), tmp_pts.end() );
-            changed_items.insert( itemData.item );
+                    std::vector<VECTOR2I> tmp_pts = itemData.item->GetConnectionPoints();
+                    pts.insert( tmp_pts.begin(), tmp_pts.end() );
+                    changed_items.insert( itemData.item );
 
-            for( SCH_SHEET_PATH& path : paths )
-                item_paths.insert( std::make_pair( path, itemData.item ) );
+                    for( SCH_SHEET_PATH& path : paths )
+                        item_paths.insert( std::make_pair( path, itemData.item ) );
 
-            if( !itemData.linked_item || !itemData.linked_item->IsConnectable() )
-                return;
+                    if( !itemData.linked_item || !itemData.linked_item->IsConnectable() )
+                        return;
 
-            tmp_pts = itemData.linked_item->GetConnectionPoints();
-            pts.insert( tmp_pts.begin(), tmp_pts.end() );
-            changed_items.insert( itemData.linked_item );
+                    tmp_pts = itemData.linked_item->GetConnectionPoints();
+                    pts.insert( tmp_pts.begin(), tmp_pts.end() );
+                    changed_items.insert( itemData.linked_item );
 
-            // We have to directly add the pins here because the link may not exist on the schematic
-            // anymore and so won't be picked up by GetScreen()->Items().Overlapping() below.
-            if( SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( itemData.linked_item ) )
-            {
-                std::vector<SCH_PIN*> pins = symbol->GetPins();
-                changed_items.insert( pins.begin(), pins.end() );
-            }
+                    // We have to directly add the pins here because the link may not exist on the schematic
+                    // anymore and so won't be picked up by GetScreen()->Items().Overlapping() below.
+                    if( SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( itemData.linked_item ) )
+                    {
+                        std::vector<SCH_PIN*> pins = symbol->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES );
+                        changed_items.insert( pins.begin(), pins.end() );
+                    }
 
-            for( SCH_SHEET_PATH& path : paths )
-                item_paths.insert( std::make_pair( path, itemData.linked_item ) );
-        };
+                    for( SCH_SHEET_PATH& path : paths )
+                        item_paths.insert( std::make_pair( path, itemData.linked_item ) );
+                };
 
         // Get all changed connectable items and determine all changed screens
         for( unsigned ii = 0; ii < aLastChangeList->GetCount(); ++ii )
@@ -2662,45 +3134,45 @@ void SCHEMATIC::RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS a
 
         // If a SCH_RULE_AREA was changed, we need to add all past and present contained items to
         // update their connectivity
-        std::map<KIID, EDA_ITEM*> itemMap;
+        std::unordered_map<KIID, EDA_ITEM*> itemMap;
         list.FillItemMap( itemMap );
 
-        auto addPastAndPresentContainedItems = [&]( SCH_RULE_AREA* changedRuleArea, SCH_SCREEN* screen )
-        {
-            for( const KIID& pastItem : changedRuleArea->GetPastContainedItems() )
-            {
-                if( itemMap.contains( pastItem ) )
-                    addItemToChangeSet( { static_cast<SCH_ITEM*>( itemMap[pastItem] ), nullptr, screen } );
-            }
+        auto addPastAndPresentContainedItems =
+                [&]( SCH_RULE_AREA* changedRuleArea, SCH_SCREEN* screen )
+                {
+                    for( const KIID& pastItem : changedRuleArea->GetPastContainedItems() )
+                    {
+                        if( itemMap.contains( pastItem ) )
+                            addItemToChangeSet( { static_cast<SCH_ITEM*>( itemMap[pastItem] ), nullptr, screen } );
+                    }
 
-            for( SCH_ITEM* containedItem : changedRuleArea->GetContainedItems() )
-                addItemToChangeSet( { containedItem, nullptr, screen } );
-        };
+                    for( SCH_ITEM* containedItem : changedRuleArea->GetContainedItems() )
+                        addItemToChangeSet( { containedItem, nullptr, screen } );
+                };
 
         for( const auto& [changedRuleArea, screen] : changed_rule_areas )
             addPastAndPresentContainedItems( changedRuleArea, screen );
 
         // Add all changed items, and associated items, to the change set
-        for( CHANGED_ITEM& changed_item_data : changed_connectable_items )
+        for( CHANGED_ITEM& changed_item : changed_connectable_items )
         {
-            addItemToChangeSet( changed_item_data );
+            addItemToChangeSet( changed_item );
 
             // If a SCH_DIRECTIVE_LABEL was changed which is attached to a SCH_RULE_AREA, we need
             // to add the contained items to the change set to force update of their connectivity
-            if( changed_item_data.item->Type() == SCH_DIRECTIVE_LABEL_T )
+            if( changed_item.item->Type() == SCH_DIRECTIVE_LABEL_T )
             {
-                const std::vector<VECTOR2I> labelConnectionPoints = changed_item_data.item->GetConnectionPoints();
+                const std::vector<VECTOR2I> labelConnectionPoints = changed_item.item->GetConnectionPoints();
 
-                auto candidateRuleAreas = changed_item_data.screen->Items().Overlapping(
-                        SCH_RULE_AREA_T, changed_item_data.item->GetBoundingBox() );
+                auto candidateRuleAreas = changed_item.screen->Items()
+                                            .Overlapping( SCH_RULE_AREA_T, changed_item.item->GetBoundingBox() );
 
                 for( SCH_ITEM* candidateRuleArea : candidateRuleAreas )
                 {
-                    SCH_RULE_AREA*      ruleArea = static_cast<SCH_RULE_AREA*>( candidateRuleArea );
-                    std::vector<SHAPE*> borderShapes = ruleArea->MakeEffectiveShapes( true );
+                    SCH_RULE_AREA* ruleArea = static_cast<SCH_RULE_AREA*>( candidateRuleArea );
 
                     if( ruleArea->GetPolyShape().CollideEdge( labelConnectionPoints[0], nullptr, 5 ) )
-                        addPastAndPresentContainedItems( ruleArea, changed_item_data.screen );
+                        addPastAndPresentContainedItems( ruleArea, changed_item.screen );
                 }
             }
         }
@@ -2729,7 +3201,7 @@ void SCHEMATIC::RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS a
                 else if( item->Type() == SCH_SYMBOL_T && item->IsConnected( pt ) )
                 {
                     SCH_SYMBOL*           symbol = static_cast<SCH_SYMBOL*>( item );
-                    std::vector<SCH_PIN*> pins = symbol->GetPins();
+                    std::vector<SCH_PIN*> pins = symbol->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES );
 
                     changed_items.insert( pins.begin(), pins.end() );
 
@@ -2866,6 +3338,70 @@ SCH_SHEET* SCHEMATIC::GetTopLevelSheet( int aIndex ) const
         return nullptr;
 
     return m_topLevelSheets[index];
+}
+
+
+std::vector<TOP_LEVEL_SHEET_INFO> SCHEMATIC::TopLevelSheetInfos() const
+{
+    std::vector<TOP_LEVEL_SHEET_INFO> infos;
+    wxString                          projectPath = m_project ? m_project->GetProjectPath() : wxString();
+
+    for( SCH_SHEET* sheet : GetTopLevelSheets() )
+    {
+        if( !sheet->GetScreen() )
+            continue;
+
+        // A top-level sheet's file is its screen's; the SHEET_FILENAME field is for instances
+        wxFileName sheetFn( sheet->GetScreen()->GetFileName() );
+
+        if( sheetFn.IsAbsolute() )
+            sheetFn.MakeRelativeTo( projectPath );
+
+        infos.emplace_back( sheet->m_Uuid, sheet->GetName(), sheetFn.GetFullPath() );
+    }
+
+    return infos;
+}
+
+
+bool SCHEMATIC::TopLevelSheetsMatch( const std::vector<TOP_LEVEL_SHEET_INFO>& aSheets ) const
+{
+    std::vector<TOP_LEVEL_SHEET_INFO> loaded = TopLevelSheetInfos();
+
+    if( loaded.size() != aSheets.size() )
+        return false;
+
+    wxString projectPath = m_project ? m_project->GetProjectPath() : wxString();
+
+    for( size_t ii = 0; ii < loaded.size(); ++ii )
+    {
+        wxFileName have( loaded[ii].filename );
+        have.MakeAbsolute( projectPath );
+
+        wxFileName want = TopLevelSheetFile( aSheets[ii], projectPath,
+                                             have.GetExt() == FILEEXT::LegacySchematicFileExtension );
+
+        if( ( aSheets[ii].uuid != niluuid && aSheets[ii].uuid != loaded[ii].uuid )
+                || aSheets[ii].name != loaded[ii].name || !have.SameAs( want ) )
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+wxFileName SCHEMATIC::TopLevelSheetFile( const TOP_LEVEL_SHEET_INFO& aSheet, const wxString& aProjectPath,
+                                         bool aLegacy )
+{
+    wxFileName fn( aSheet.filename );
+    fn.MakeAbsolute( aProjectPath );
+
+    if( aLegacy )
+        fn.SetExt( FILEEXT::LegacySchematicFileExtension );
+
+    return fn;
 }
 
 
@@ -3037,7 +3573,7 @@ wxArrayString SCHEMATIC::GetVariantNamesForUI() const
     for( const wxString& name : m_variantNames )
         variantNames.Add( name );
 
-    variantNames.Sort( SortVariantNames );
+    variantNames.Sort( SortVariantNames );  // SortVariantNames ensures the default is always first
 
     return variantNames;
 }
@@ -3072,9 +3608,6 @@ void SCHEMATIC::SetCurrentVariant( const wxString& aVariantName )
     if( ( aVariantName != GetDefaultVariantName() ) && m_variantNames.contains( aVariantName ) )
         newVariant = aVariantName;
 
-    if( m_currentVariant == newVariant )
-        return;
-
     m_currentVariant = newVariant;
 
     // Variant-specific field values affect text geometry, so bounding box caches computed
@@ -3103,29 +3636,31 @@ void SCHEMATIC::AddVariant( const wxString& aVariantName )
     m_variantNames.emplace( aVariantName );
 
     // Ensure the variant is registered in the project file
-    auto& descriptions = Settings().m_VariantDescriptions;
+    std::map<wxString, wxString>& descriptions = Settings().m_VariantDescriptions;
 
     if( descriptions.find( aVariantName ) == descriptions.end() )
         descriptions[aVariantName] = wxEmptyString;
 }
 
 
-void SCHEMATIC::DeleteVariant( const wxString& aVariantName, SCH_COMMIT* aCommit )
+void SCHEMATIC::DeleteVariantDefinition( const wxString& aVariantName )
 {
-    if( aCommit )
-    {
-        wxCHECK( m_rootSheet, /* void */ );
-
-        SCH_SCREENS allScreens( m_rootSheet );
-
-        allScreens.DeleteVariant( aVariantName, aCommit );
-    }
-
     if( m_currentVariant == aVariantName )
         SetCurrentVariant( wxEmptyString );
 
     m_variantNames.erase( aVariantName );
     Settings().m_VariantDescriptions.erase( aVariantName );
+}
+
+
+void SCHEMATIC::DeleteVariant( const wxString& aVariantName, SCH_COMMIT* aCommit )
+{
+    wxCHECK( m_rootSheet, /* void */ );
+
+    SCH_SCREENS allScreens( m_rootSheet );
+
+    allScreens.DeleteVariant( aVariantName, aCommit );
+    DeleteVariantDefinition( aVariantName );
 }
 
 
@@ -3138,7 +3673,7 @@ void SCHEMATIC::RenameVariant( const wxString& aOldName, const wxString& aNewNam
     m_variantNames.erase( aOldName );
     m_variantNames.insert( aNewName );
 
-    auto& descriptions = Settings().m_VariantDescriptions;
+    std::map<wxString, wxString>& descriptions = Settings().m_VariantDescriptions;
 
     if( descriptions.count( aOldName ) )
     {
@@ -3166,7 +3701,7 @@ void SCHEMATIC::CopyVariant( const wxString& aSourceVariant, const wxString& aNe
 
     AddVariant( aNewVariant );
 
-    auto& descriptions = Settings().m_VariantDescriptions;
+    std::map<wxString, wxString>& descriptions = Settings().m_VariantDescriptions;
 
     if( descriptions.count( aSourceVariant ) )
         descriptions[aNewVariant] = descriptions[aSourceVariant];
@@ -3178,7 +3713,7 @@ void SCHEMATIC::CopyVariant( const wxString& aSourceVariant, const wxString& aNe
 
 wxString SCHEMATIC::GetVariantDescription( const wxString& aVariantName ) const
 {
-    const auto& descriptions = Settings().m_VariantDescriptions;
+    const std::map<wxString, wxString>& descriptions = Settings().m_VariantDescriptions;
     auto it = descriptions.find( aVariantName );
 
     if( it != descriptions.end() )
@@ -3190,12 +3725,15 @@ wxString SCHEMATIC::GetVariantDescription( const wxString& aVariantName ) const
 
 void SCHEMATIC::SetVariantDescription( const wxString& aVariantName, const wxString& aDescription )
 {
-    auto& descriptions = Settings().m_VariantDescriptions;
+    std::map<wxString, wxString>& descriptions = Settings().m_VariantDescriptions;
 
     if( aDescription.IsEmpty() )
         descriptions.erase( aVariantName );
     else
         descriptions[aVariantName] = aDescription;
+
+    if( m_textVarAdapter )
+        m_textVarAdapter->Tracker().InvalidateVariantScoped();
 }
 
 
@@ -3208,7 +3746,7 @@ void SCHEMATIC::LoadVariants()
         m_variantNames.insert( variantNames.begin(), variantNames.end() );
 
         // Register any unknown variants to the project file with empty descriptions
-        auto& descriptions = Settings().m_VariantDescriptions;
+        std::map<wxString, wxString>& descriptions = Settings().m_VariantDescriptions;
 
         for( const wxString& name : variantNames )
         {
@@ -3221,6 +3759,24 @@ void SCHEMATIC::LoadVariants()
         for( const auto& [name, description] : descriptions )
             m_variantNames.insert( name );
     }
+}
+
+
+bool SCHEMATIC::ReloadProjectVariants()
+{
+    std::set<wxString> before;
+    before.swap( m_variantNames );
+    LoadVariants();
+
+    bool changed = m_variantNames != before;
+
+    if( !m_currentVariant.IsEmpty() && !m_variantNames.contains( m_currentVariant ) )
+    {
+        SetCurrentVariant( wxEmptyString );
+        changed = true;
+    }
+
+    return changed;
 }
 
 
@@ -3278,7 +3834,8 @@ void SCHEMATIC::SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY
 
         wxString absPath = abs.GetFullPath();
 
-        if( absPath.IsEmpty() || !absPath.StartsWith( projPath ) )
+        if( absPath.IsEmpty()
+            || !absPath.Left( projPath.length() ).IsSameAs( projPath, wxFileName::IsCaseSensitive() ) )
             continue;
 
         wxString rel = absPath.Mid( projPath.length() );
@@ -3306,4 +3863,3 @@ void SCHEMATIC::SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY
         }
     }
 }
-

@@ -17,17 +17,21 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "board_design_settings.h"
+#include "widgets/report_severity.h"
+
+#include <algorithm>
+#include <cmath>
+
+#include <board_design_settings.h>
+#include <board_design_settings_defaults.h>
 #include <magic_enum.hpp>
 #include <pcb_dimension.h>
 #include <pcb_track.h>
-#include <algorithm>
-#include <limits>
-#include <cmath>
 #include <layer_ids.h>
 #include <lset.h>
 #include <kiface_base.h>
 #include <pad.h>
-#include <board_design_settings.h>
 #include <project/net_settings.h>
 #include <drc/drc_item.h>
 #include <drc/drc_engine.h>
@@ -35,8 +39,9 @@
 #include <settings/parameters.h>
 #include <project/project_file.h>
 #include <advanced_config.h>
+#include <wx/debug.h>
 
-const int bdsSchemaVersion = 3;
+const int bdsSchemaVersion = 4;
 
 
 BOARD_DESIGN_SETTINGS::BOARD_DESIGN_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
@@ -53,9 +58,6 @@ BOARD_DESIGN_SETTINGS::BOARD_DESIGN_SETTINGS( JSON_SETTINGS* aParent, const std:
     m_NetSettings = std::make_shared<NET_SETTINGS>( nullptr, "" );
 
     m_HasStackup = false;                   // no stackup defined by default
-
-    m_Pad_Master = std::make_unique<PAD>( nullptr );
-    SetDefaultMasterPad();
 
     LSET all_set = LSET().set();
     m_enabledLayers = all_set;     // All layers enabled at first.
@@ -161,7 +163,7 @@ BOARD_DESIGN_SETTINGS::BOARD_DESIGN_SETTINGS( JSON_SETTINGS* aParent, const std:
     m_SilkClearance       = pcbIUScale.mmToIU( DEFAULT_SILKCLEARANCE );
     m_MinResolvedSpokes   = DEFAULT_MINRESOLVEDSPOKES;
     m_MinSilkTextHeight   = pcbIUScale.mmToIU( DEFAULT_SILK_TEXT_SIZE * 0.8 );
-    m_MinSilkTextThickness= pcbIUScale.mmToIU( DEFAULT_SILK_TEXT_WIDTH * 0.8 );
+    m_MinSilkLineWidth    = pcbIUScale.mmToIU( DEFAULT_SILK_TEXT_WIDTH * 0.8 );
     m_MinGrooveWidth      = pcbIUScale.mmToIU( DEFAULT_MINGROOVEWIDTH );
 
     for( int errorCode = DRCE_FIRST; errorCode <= DRCE_LAST; ++errorCode )
@@ -176,8 +178,10 @@ BOARD_DESIGN_SETTINGS::BOARD_DESIGN_SETTINGS( JSON_SETTINGS* aParent, const std:
 
     m_DRCSeverities[ DRCE_DANGLING_TRACK ] = RPT_SEVERITY_WARNING;
     m_DRCSeverities[ DRCE_DANGLING_VIA ] = RPT_SEVERITY_WARNING;
+    m_DRCSeverities[ DRCE_COPPER_OUTSIDE_BOARD ] = RPT_SEVERITY_WARNING;
 
     m_DRCSeverities[DRCE_MICROVIA_CROSSES_CORE] = RPT_SEVERITY_WARNING;
+    m_DRCSeverities[DRCE_MICROVIA_SPANS_DIELECTRICS] = RPT_SEVERITY_WARNING;
     m_DRCSeverities[DRCE_MICROVIA_STACK_NOT_FILLED] = RPT_SEVERITY_WARNING;
 
     m_DRCSeverities[ DRCE_COPPER_SLIVER ] = RPT_SEVERITY_WARNING;
@@ -198,7 +202,7 @@ BOARD_DESIGN_SETTINGS::BOARD_DESIGN_SETTINGS( JSON_SETTINGS* aParent, const std:
     m_DRCSeverities[ DRCE_SILK_MASK_CLEARANCE ] = RPT_SEVERITY_WARNING;
     m_DRCSeverities[ DRCE_SILK_EDGE_CLEARANCE ] = RPT_SEVERITY_WARNING;
     m_DRCSeverities[ DRCE_TEXT_HEIGHT ] = RPT_SEVERITY_WARNING;
-    m_DRCSeverities[ DRCE_TEXT_THICKNESS ] = RPT_SEVERITY_WARNING;
+    m_DRCSeverities[ DRCE_LINE_WIDTH ] = RPT_SEVERITY_WARNING;
 
     m_DRCSeverities[ DRCE_FOOTPRINT_TYPE_MISMATCH ] = RPT_SEVERITY_IGNORE;
 
@@ -345,8 +349,8 @@ BOARD_DESIGN_SETTINGS::BOARD_DESIGN_SETTINGS( JSON_SETTINGS* aParent, const std:
             &m_MinSilkTextHeight, pcbIUScale.mmToIU( DEFAULT_SILK_TEXT_SIZE * 0.8 ),
             pcbIUScale.mmToIU( 0.00 ), pcbIUScale.mmToIU( 100.0 ), pcbIUScale.MM_PER_IU ) );
 
-    m_params.emplace_back( new PARAM_SCALED<int>( "rules.min_text_thickness",
-            &m_MinSilkTextThickness, pcbIUScale.mmToIU( DEFAULT_SILK_TEXT_WIDTH * 0.8 ),
+    m_params.emplace_back( new PARAM_SCALED<int>( "rules.min_silk_line_width",
+            &m_MinSilkLineWidth, pcbIUScale.mmToIU( DEFAULT_SILK_TEXT_WIDTH * 0.8 ),
             pcbIUScale.mmToIU( 0.00 ), pcbIUScale.mmToIU( 25.0 ), pcbIUScale.MM_PER_IU ) );
 
     // Note: a clearance of -0.01 is a flag indicating we should use the legacy (pre-6.0) method
@@ -1130,35 +1134,6 @@ BOARD_DESIGN_SETTINGS::BOARD_DESIGN_SETTINGS( JSON_SETTINGS* aParent, const std:
             },
             10.0 ) );
 
-    m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "defaults.pads",
-            [&]() -> nlohmann::json
-            {
-                nlohmann::json ret =
-                        {
-                            { "width",  pcbIUScale.IUTomm( m_Pad_Master->GetSize( PADSTACK::ALL_LAYERS ).x ) },
-                            { "height", pcbIUScale.IUTomm( m_Pad_Master->GetSize( PADSTACK::ALL_LAYERS ).y ) },
-                            { "drill",  pcbIUScale.IUTomm( m_Pad_Master->GetDrillSize().x ) }
-                        };
-
-                return ret;
-            },
-            [&]( const nlohmann::json& aJson )
-            {
-                if( aJson.contains( "width" ) && aJson.contains( "height" ) && aJson.contains( "drill" ) )
-                {
-                    VECTOR2I sz;
-                    sz.x = pcbIUScale.mmToIU( aJson["width"].get<double>() );
-                    sz.y = pcbIUScale.mmToIU( aJson["height"].get<double>() );
-
-                    m_Pad_Master->SetPadstackMode( PADSTACK::MODE::NORMAL );
-                    m_Pad_Master->SetSize( PADSTACK::ALL_LAYERS, sz );
-
-                    int drill = pcbIUScale.mmToIU( aJson["drill"].get<double>() );
-
-                    m_Pad_Master->SetDrillSize( VECTOR2I( drill, drill ) );
-                }
-            }, {} ) );
-
     m_params.emplace_back( new PARAM_SCALED<int>( "rules.max_error",
             &m_MaxError, ARC_HIGH_DEF,
             pcbIUScale.mmToIU( 0.0001 ), pcbIUScale.mmToIU( 1.0 ), pcbIUScale.MM_PER_IU ) );
@@ -1205,6 +1180,8 @@ BOARD_DESIGN_SETTINGS::BOARD_DESIGN_SETTINGS( JSON_SETTINGS* aParent, const std:
             } );
 
     registerMigration( 2, 3, std::bind( &BOARD_DESIGN_SETTINGS::migrateSchema2to3, this ) );
+
+    registerMigration( 3, 4, std::bind( &BOARD_DESIGN_SETTINGS::migrateSchema3to4, this ) );
 }
 
 
@@ -1218,10 +1195,9 @@ BOARD_DESIGN_SETTINGS::~BOARD_DESIGN_SETTINGS()
 }
 
 
+// Detached so a discarded copy cannot flush its values into the project file
 BOARD_DESIGN_SETTINGS::BOARD_DESIGN_SETTINGS( const BOARD_DESIGN_SETTINGS& aOther ) :
-        NESTED_SETTINGS( "board_design_settings", bdsSchemaVersion, aOther.m_parent,
-                         aOther.m_path ),
-        m_Pad_Master( nullptr )
+        NESTED_SETTINGS( "board_design_settings", bdsSchemaVersion, nullptr, aOther.m_path )
 {
     initFromOther( aOther );
 }
@@ -1259,7 +1235,7 @@ void BOARD_DESIGN_SETTINGS::initFromOther( const BOARD_DESIGN_SETTINGS& aOther )
     m_SilkClearance               = aOther.m_SilkClearance;
     m_MinResolvedSpokes           = aOther.m_MinResolvedSpokes;
     m_MinSilkTextHeight           = aOther.m_MinSilkTextHeight;
-    m_MinSilkTextThickness        = aOther.m_MinSilkTextThickness;
+    m_MinSilkLineWidth            = aOther.m_MinSilkLineWidth;
     m_DRCSeverities               = aOther.m_DRCSeverities;
     m_DrcExclusions               = aOther.m_DrcExclusions;
     m_ZoneKeepExternalFillets     = aOther.m_ZoneKeepExternalFillets;
@@ -1331,7 +1307,6 @@ void BOARD_DESIGN_SETTINGS::initFromOther( const BOARD_DESIGN_SETTINGS& aOther )
     m_currentNetClassName = aOther.m_currentNetClassName;
     m_stackup             = aOther.m_stackup;
     m_NetSettings         = aOther.m_NetSettings;
-    m_Pad_Master          = std::make_unique<PAD>( *aOther.m_Pad_Master );
     m_defaultZoneSettings = aOther.m_defaultZoneSettings;
 
     m_StyleFPFields       = aOther.m_StyleFPFields;
@@ -1368,7 +1343,7 @@ bool BOARD_DESIGN_SETTINGS::operator==( const BOARD_DESIGN_SETTINGS& aOther ) co
     if( m_SilkClearance          != aOther.m_SilkClearance ) return false;
     if( m_MinResolvedSpokes      != aOther.m_MinResolvedSpokes ) return false;
     if( m_MinSilkTextHeight      != aOther.m_MinSilkTextHeight ) return false;
-    if( m_MinSilkTextThickness   != aOther.m_MinSilkTextThickness ) return false;
+    if( m_MinSilkLineWidth       != aOther.m_MinSilkLineWidth ) return false;
     if( m_DRCSeverities          != aOther.m_DRCSeverities ) return false;
     if( m_DrcExclusions          != aOther.m_DrcExclusions ) return false;
     if( m_ZoneKeepExternalFillets     != aOther.m_ZoneKeepExternalFillets ) return false;
@@ -1444,7 +1419,6 @@ bool BOARD_DESIGN_SETTINGS::operator==( const BOARD_DESIGN_SETTINGS& aOther ) co
     if( m_currentNetClassName      != aOther.m_currentNetClassName ) return false;
     if( m_stackup                  != aOther.m_stackup ) return false;
     if( *m_NetSettings             != *aOther.m_NetSettings ) return false;
-    if( *m_Pad_Master              != *aOther.m_Pad_Master ) return false;
     if( m_defaultZoneSettings      != aOther.m_defaultZoneSettings ) return false;
 
     if( m_StyleFPFields     != aOther.m_StyleFPFields ) return false;
@@ -1550,10 +1524,35 @@ bool BOARD_DESIGN_SETTINGS::migrateSchema2to3()
 }
 
 
+bool BOARD_DESIGN_SETTINGS::migrateSchema3to4()
+{
+    // Schema 4 renamed text_thickness to line_width, which also checks silkscreen graphics
+    auto renameKey =
+            [&]( const std::string& aParent, const std::string& aOld, const std::string& aNew )
+            {
+                if( !Contains( aParent ) || !At( aParent ).is_object() )
+                    return;
+
+                nlohmann::json& parent = At( aParent );
+
+                if( !parent.contains( aOld ) )
+                    return;
+
+                // A key already written by a newer build wins
+                if( !parent.contains( aNew ) )
+                    parent[aNew] = parent[aOld];
+
+                parent.erase( aOld );
+            };
+
+    renameKey( "rule_severities", "text_thickness", "line_width" );
+    renameKey( "rules", "min_text_thickness", "min_silk_line_width" );
+
+    return true;
+}
+
 bool BOARD_DESIGN_SETTINGS::LoadFromFile( const wxString& aDirectory )
 {
-    bool ret = NESTED_SETTINGS::LoadFromFile( aDirectory );
-
     // A number of things won't have been translated by the PROJECT_FILE migration because of
     // descoped objects required to decode this data.  So, it will be in the legacy.pcbnew
     // section and needs to be pulled out here
@@ -1561,9 +1560,7 @@ bool BOARD_DESIGN_SETTINGS::LoadFromFile( const wxString& aDirectory )
     PROJECT_FILE* project = dynamic_cast<PROJECT_FILE*>( GetParent() );
 
     if( !project )
-        return ret;
-
-    bool migrated = false;
+        return NESTED_SETTINGS::LoadFromFile( aDirectory );
 
     auto drcName =
             []( int aCode ) -> std::string
@@ -1571,10 +1568,10 @@ bool BOARD_DESIGN_SETTINGS::LoadFromFile( const wxString& aDirectory )
                 return std::string( DRC_ITEM::Create( aCode )->GetSettingsKey().ToUTF8() );
             };
 
-    const std::string rs = "rule_severities.";
     const std::string no_courtyard_key = "legacy_no_courtyard_defined";
     const std::string courtyard_overlap_key = "legacy_courtyards_overlap";
 
+    // Translate in the parent first, since the load settles what it read back into the parent
     try
     {
         nlohmann::json& severities =
@@ -1583,55 +1580,61 @@ bool BOARD_DESIGN_SETTINGS::LoadFromFile( const wxString& aDirectory )
         if( severities.contains( no_courtyard_key ) )
         {
             if( severities[no_courtyard_key].get<bool>() )
-                Set( rs + drcName( DRCE_MISSING_COURTYARD ), "error" );
+                severities[drcName( DRCE_MISSING_COURTYARD )] = "error";
             else
-                Set( rs + drcName( DRCE_MISSING_COURTYARD ), "ignore" );
-
-            severities.erase( no_courtyard_key );
-            migrated = true;
+                severities[drcName( DRCE_MISSING_COURTYARD )] = "ignore";
         }
 
         if( severities.contains( courtyard_overlap_key ) )
         {
             if( severities[courtyard_overlap_key].get<bool>() )
-                Set( rs + drcName( DRCE_OVERLAPPING_FOOTPRINTS ), "error" );
+                severities[drcName( DRCE_OVERLAPPING_FOOTPRINTS )] = "error";
             else
-                Set( rs + drcName( DRCE_OVERLAPPING_FOOTPRINTS ), "ignore" );
-
-            severities.erase( courtyard_overlap_key );
-            migrated = true;
+                severities[drcName( DRCE_OVERLAPPING_FOOTPRINTS )] = "ignore";
         }
     }
     catch( ... )
     {
     }
 
-    if( Contains( "legacy" ) )
+    bool ret = NESTED_SETTINGS::LoadFromFile( aDirectory );
+
+    // Erase only these keys from the baseline, since the flushed store lacks severities from newer versions
+    for( const std::string& key : { no_courtyard_key, courtyard_overlap_key, std::string( "hole_near_hole" ) } )
+        dropFromParentOriginal( "rule_severities." + key );
+
+    // A 5.1 import wrote these without a separator. Nothing reads them, so the parent copy goes too
+    for( const char* key :
+         { "rule_severitieslegacy_no_courtyard_defined", "rule_severitieslegacy_courtyards_overlap" } )
     {
-        // This defaults to false for new boards, but version 5.1.x and prior kept the fillets
-        // so we do the same for legacy boards.
-        m_ZoneKeepExternalFillets = true;
+        Internals()->erase( key );
 
-        project->At( "legacy" ).erase( "pcbnew" );
+        if( project->Contains( "board.design_settings" ) )
+            project->At( "board.design_settings" ).erase( key );
+
+        dropFromParentOriginal( key );
     }
-
-    // Now that we have everything, we need to load again
-    if( migrated )
-        Load();
 
     return ret;
 }
 
 
-SEVERITY BOARD_DESIGN_SETTINGS::GetSeverity( int aDRCErrorCode )
+SEVERITY BOARD_DESIGN_SETTINGS::GetSeverity( int aDRCErrorCode ) const
 {
-    return m_DRCSeverities[ aDRCErrorCode ];
+    auto it = m_DRCSeverities.find( aDRCErrorCode );
+
+    // If not found, return the default severity for unrecognized error codes.
+    // As constructed, the default severity for unrecognized error codes is RPT_SEVERITY_ERROR.
+    wxCHECK_MSG( it != m_DRCSeverities.end(), RPT_SEVERITY_ERROR,
+                 wxString::Format( wxT( "DRC error code %d not found" ), aDRCErrorCode ) );
+
+    return it->second;
 }
 
 
-bool BOARD_DESIGN_SETTINGS::Ignore( int aDRCErrorCode )
+bool BOARD_DESIGN_SETTINGS::Ignore( int aDRCErrorCode ) const
 {
-    return m_DRCSeverities[ aDRCErrorCode ] == RPT_SEVERITY_IGNORE;
+    return GetSeverity( aDRCErrorCode ) == RPT_SEVERITY_IGNORE;
 }
 
 
@@ -1646,16 +1649,11 @@ BOARD_DESIGN_SETTINGS::ValidateDesignRules( std::optional<EDA_UNITS> aUnits ) co
             {
                 if( aValue < aMin || aValue > aMax )
                 {
-                    wxString minValue = EDA_UNIT_UTILS::UI::StringFromValue( pcbIUScale, units,
-                                                                              aMin, true );
-                    wxString maxValue = EDA_UNIT_UTILS::UI::StringFromValue( pcbIUScale, units,
-                                                                              aMax, true );
+                    wxString min = EDA_UNIT_UTILS::UI::StringFromValue( pcbIUScale, units, aMin, true );
+                    wxString max = EDA_UNIT_UTILS::UI::StringFromValue( pcbIUScale, units, aMax, true );
 
-                    errors.push_back( {
-                            aField,
-                            wxString::Format( _( "Value must be between %s and %s." ),
-                                              minValue, maxValue )
-                    } );
+                    errors.push_back( { aField,
+                                        wxString::Format( _( "Value must be between %s and %s." ), min, max ) } );
                 }
             };
 
@@ -1664,11 +1662,8 @@ BOARD_DESIGN_SETTINGS::ValidateDesignRules( std::optional<EDA_UNITS> aUnits ) co
             {
                 if( !std::isfinite( aValue ) || aValue < aMin || aValue > aMax )
                 {
-                    errors.push_back( {
-                            aField,
-                            wxString::Format( _( "Value must be between %.3f and %.3f." ),
-                                              aMin, aMax )
-                    } );
+                    errors.push_back( { aField,
+                                        wxString::Format( _( "Value must be between %.3f and %.3f." ), aMin, aMax ) } );
                 }
             };
 
@@ -1698,17 +1693,15 @@ BOARD_DESIGN_SETTINGS::ValidateDesignRules( std::optional<EDA_UNITS> aUnits ) co
                    pcbIUScale.mmToIU( 0.00 ), pcbIUScale.mmToIU( 25.0 ) );
     addRangeError( wxS( "min_text_height" ), m_MinSilkTextHeight,
                    pcbIUScale.mmToIU( 0.00 ), pcbIUScale.mmToIU( 100.0 ) );
-    addRangeError( wxS( "min_text_thickness" ), m_MinSilkTextThickness,
+    addRangeError( wxS( "min_silk_line_width" ), m_MinSilkLineWidth,
                    pcbIUScale.mmToIU( 0.00 ), pcbIUScale.mmToIU( 25.0 ) );
     addRangeError( wxS( "min_copper_edge_clearance" ), m_CopperEdgeClearance,
                    pcbIUScale.mmToIU( -0.01 ), pcbIUScale.mmToIU( 25.0 ) );
 
     if( m_MinResolvedSpokes < 0 || m_MinResolvedSpokes > 99 )
     {
-        errors.push_back( {
-                wxS( "min_resolved_spokes" ),
-                _( "Value must be between 0 and 99." )
-        } );
+        errors.push_back( { wxS( "min_resolved_spokes" ),
+                            _( "Value must be between 0 and 99." ) } );
     }
 
     addRangeError( wxS( "max_error" ), m_MaxError,
@@ -1726,36 +1719,18 @@ BOARD_DESIGN_SETTINGS::ValidateDesignRules( std::optional<EDA_UNITS> aUnits ) co
     addRatioRangeError( wxS( "solder_paste_margin_ratio" ), m_SolderPasteMarginRatio,
                         -1.0, 1.0 );
 
-    TEARDROP_PARAMETERS_LIST& teardropParamsList =
-            const_cast<TEARDROP_PARAMETERS_LIST&>( m_TeardropParamsList );
+    TEARDROP_PARAMETERS_LIST& teardropParamsList = const_cast<TEARDROP_PARAMETERS_LIST&>( m_TeardropParamsList );
 
     for( size_t ii = 0; ii < teardropParamsList.GetParametersCount(); ++ii )
     {
         const TEARDROP_PARAMETERS* params = teardropParamsList.GetParameters( static_cast<TARGET_TD>( ii ) );
-        std::string target = GetTeardropTargetCanonicalName( static_cast<TARGET_TD>( ii ) );
-
-        if( params->m_TdMaxLen < 0 )
-        {
-            errors.push_back( {
-                    wxString::Format( wxS( "teardrop_parameters[%s].max_length" ), target ),
-                    _( "Value must be greater than or equal to 0." )
-            } );
-        }
-
-        if( params->m_TdMaxWidth < 0 )
-        {
-            errors.push_back( {
-                    wxString::Format( wxS( "teardrop_parameters[%s].max_width" ), target ),
-                    _( "Value must be greater than or equal to 0." )
-            } );
-        }
+        std::string                target = GetTeardropTargetCanonicalName( static_cast<TARGET_TD>( ii ) );
 
         addRatioRangeError( wxString::Format( wxS( "teardrop_parameters[%s].best_length_ratio" ), target ),
                             params->m_BestLengthRatio, 0.0, 1.0 );
         addRatioRangeError( wxString::Format( wxS( "teardrop_parameters[%s].best_width_ratio" ), target ),
                             params->m_BestWidthRatio, 0.0, 1.0 );
-        addRatioRangeError( wxString::Format( wxS( "teardrop_parameters[%s].width_to_size_filter_ratio" ),
-                                              target ),
+        addRatioRangeError( wxString::Format( wxS( "teardrop_parameters[%s].width_to_size_filter_ratio" ), target ),
                             params->m_WidthtoSizeFilterRatio, 0.0, 1.0 );
     }
 
@@ -1765,10 +1740,8 @@ BOARD_DESIGN_SETTINGS::ValidateDesignRules( std::optional<EDA_UNITS> aUnits ) co
 
         if( diffPair.m_Width > 0 && diffPair.m_Gap <= 0 )
         {
-            errors.push_back( {
-                    wxString::Format( wxS( "diff_pair_dimensions_list[%zu].gap" ), ii ),
-                    _( "No differential pair gap defined." )
-            } );
+            errors.push_back( { wxString::Format( wxS( "diff_pair_dimensions_list[%zu].gap" ), ii ),
+                                _( "No differential pair gap defined." ) } );
         }
     }
 
@@ -1785,17 +1758,46 @@ BOARD_DESIGN_SETTINGS::ValidateDesignRules( std::optional<EDA_UNITS> aUnits ) co
         if( viaDim.m_Drill > 0 )
             viaDrill = viaDim.m_Drill;
 
-        if( std::optional<PCB_VIA::VIA_PARAMETER_ERROR> error =
-                    PCB_VIA::ValidateViaParameters( viaDiameter, viaDrill ) )
+        if( std::optional<PCB_VIA::VIA_PARAMETER_ERROR> error = PCB_VIA::ValidateViaParameters( viaDiameter,
+                                                                                                viaDrill ) )
         {
-            errors.push_back( {
-                    wxString::Format( wxS( "via_dimensions_list[%zu]" ), ii ),
-                    error->m_Message
-            } );
+            errors.push_back( { wxString::Format( wxS( "via_dimensions_list[%zu]" ), ii ),
+                                error->m_Message } );
         }
     }
 
     return errors;
+}
+
+
+std::vector<BOARD_DESIGN_SETTINGS::VALIDATION_ERROR>
+BOARD_DESIGN_SETTINGS::GetDesignRuleWarnings( std::optional<EDA_UNITS> aUnits ) const
+{
+    std::vector<VALIDATION_ERROR> warnings;
+    EDA_UNITS                     units = aUnits.value_or( EDA_UNITS::MM );
+
+    auto str =
+            [&]( int aValue )
+            {
+                return EDA_UNIT_UTILS::UI::StringFromValue( pcbIUScale, units, aValue, true );
+            };
+
+    // Microvias are excluded because their default drill plus annulus already exceeds their default diameter
+    int impliedViaMin = m_MinThroughDrill + 2 * m_ViasMinAnnularWidth;
+
+    if( m_ViasMinSize < impliedViaMin )
+    {
+        warnings.push_back( { wxS( "min_via_diameter" ),
+                              wxString::Format( _( "Minimum via diameter (%s) is smaller than the minimum drill "
+                                                   "size (%s) plus twice the minimum annular width (%s), so it "
+                                                   "has no effect. The effective minimum via diameter is %s." ),
+                                                str( m_ViasMinSize ),
+                                                str( m_MinThroughDrill ),
+                                                str( m_ViasMinAnnularWidth ),
+                                                str( impliedViaMin ) ) } );
+    }
+
+    return warnings;
 }
 
 
@@ -2113,22 +2115,4 @@ bool BOARD_DESIGN_SETTINGS::GetTextItalic( PCB_LAYER_ID aLayer ) const
 bool BOARD_DESIGN_SETTINGS::GetTextUpright( PCB_LAYER_ID aLayer ) const
 {
     return m_TextUpright[ GetLayerClass( aLayer ) ];
-}
-
-void BOARD_DESIGN_SETTINGS::SetDefaultMasterPad()
-{
-    m_Pad_Master->SetPadstackMode( PADSTACK::MODE::NORMAL );
-    m_Pad_Master->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( pcbIUScale.mmToIU( DEFAULT_PAD_WIDTH_MM ),
-                                                           pcbIUScale.mmToIU( DEFAULT_PAD_HEIGTH_MM ) ) );
-    m_Pad_Master->SetDrillShape( PAD_DRILL_SHAPE::CIRCLE );
-    m_Pad_Master->SetDrillSize( VECTOR2I( pcbIUScale.mmToIU( DEFAULT_PAD_DRILL_DIAMETER_MM ), 0 ) );
-    m_Pad_Master->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::ROUNDRECT );
-
-    constexpr double RR_RADIUS = DEFAULT_PAD_HEIGTH_MM * DEFAULT_PAD_RR_RADIUS_RATIO;
-    m_Pad_Master->SetRoundRectCornerRadius( PADSTACK::ALL_LAYERS, pcbIUScale.mmToIU( RR_RADIUS ) );
-
-    if( m_Pad_Master->GetFrontShape() == PAD_SHAPE::CIRCLE )
-        m_Pad_Master->SetThermalSpokeAngle( ANGLE_45 );
-    else
-        m_Pad_Master->SetThermalSpokeAngle( ANGLE_90 );
 }

@@ -38,14 +38,8 @@ bool GIT_CLONE_HANDLER::PerformClone()
     // Apply KiCad's conventions to the freshly-cloned repo so subsequent
     // command-line merges through this clone route through kicad-cli the
     // same way a locally-initialised repo would.
-    if( ok )
-        ApplyKicadGitConventions( GetClonePath() );
+    if( ok && GetRepo() )
+        ApplyKicadGitConventions( GetRepo(), true );
 
     return ok;
-}
-
-
-void GIT_CLONE_HANDLER::UpdateProgress( int aCurrent, int aTotal, const wxString& aMessage )
-{
-    ReportProgress( aCurrent, aTotal, aMessage );
 }

@@ -31,6 +31,17 @@ class DRC_TEST_PROVIDER;
 class PCB_MARKER;
 class BOARD;
 
+namespace PAD_UTILS
+{
+enum class PAD_CHECK_CODE;
+}
+
+/**
+ * Map a granular #PAD_UTILS::PAD_CHECK_CODE to the DRC error code
+ * used to report it at the DRC level (including reports and APIs).
+ */
+int ConvertPadCheckToDrcCode( PAD_UTILS::PAD_CHECK_CODE aCode );
+
 enum PCB_DRC_CODE
 {
     DRCE_FIRST = 1,
@@ -63,8 +74,9 @@ enum PCB_DRC_CODE
     DRCE_MALFORMED_MICROVIA_STACK_SPAN,  // Stack's hops do not tile the span it declares
     DRCE_MICROVIA_STACK_NOT_FILLED,      // Microvia under another microvia is not filled
     DRCE_MICROVIA_STACK_DEPTH,           // Microvia stack exceeds the maximum depth
-    DRCE_MICROVIA_ASPECT_RATIO,          // Microvia is too deep for its diameter
+    DRCE_HOLE_ASPECT_RATIO,              // Hole is too deep for its diameter
     DRCE_MICROVIA_CROSSES_CORE,          // Microvia crosses core rather than build-up material
+    DRCE_MICROVIA_SPANS_DIELECTRICS,     // Microvia spans more than the one dielectric a laser can drill
     DRCE_OVERLAPPING_FOOTPRINTS,         // footprint courtyards overlap
     DRCE_MISSING_COURTYARD,              // footprint has no courtyard defined
     DRCE_MALFORMED_COURTYARD,            // footprint has a courtyard but malformed
@@ -102,7 +114,7 @@ enum PCB_DRC_CODE
     DRCE_SILK_EDGE_CLEARANCE,
     DRCE_SILK_CLEARANCE, // silk-to-silk or silk-to-other clearance error
     DRCE_TEXT_HEIGHT,
-    DRCE_TEXT_THICKNESS,
+    DRCE_LINE_WIDTH,
 
     DRCE_LENGTH_OUT_OF_RANGE,
     DRCE_NET_CHAIN_STUB_TOO_LONG,     // Routed stub on a net chain exceeds the (stub_length max) constraint
@@ -128,7 +140,9 @@ enum PCB_DRC_CODE
     DRCE_VIA_STITCH_OVERLAP, // Two same-net via-stitching zones overlap — placement priority
                              // is undefined in the overlap, leading to nondeterministic vias.
 
-    DRCE_LAST = DRCE_VIA_STITCH_OVERLAP
+    DRCE_COPPER_OUTSIDE_BOARD, // copper item lies entirely outside the board outline
+
+    DRCE_LAST = DRCE_COPPER_OUTSIDE_BOARD
 };
 
 
@@ -214,6 +228,7 @@ private:
     static DRC_ITEM creepage;
     static DRC_ITEM tracksCrossing;
     static DRC_ITEM edgeClearance;
+    static DRC_ITEM copperOutsideBoard;
     static DRC_ITEM zonesIntersect;
     static DRC_ITEM isolatedCopper;
     static DRC_ITEM starvedThermal;
@@ -235,8 +250,9 @@ private:
     static DRC_ITEM malformedMicroviaStackSpan;
     static DRC_ITEM microviaStackNotFilled;
     static DRC_ITEM microviaStackDepth;
-    static DRC_ITEM microviaAspectRatio;
+    static DRC_ITEM holeAspectRatio;
     static DRC_ITEM microviaCrossesCore;
+    static DRC_ITEM microviaSpansDielectrics;
     static DRC_ITEM courtyardsOverlap;
     static DRC_ITEM missingCourtyard;
     static DRC_ITEM malformedCourtyard;
@@ -262,7 +278,7 @@ private:
     static DRC_ITEM solderMaskBridge;
     static DRC_ITEM silkClearance;
     static DRC_ITEM textHeightOutOfRange;
-    static DRC_ITEM textThicknessOutOfRange;
+    static DRC_ITEM lineWidthOutOfRange;
     static DRC_ITEM lengthOutOfRange;
     static DRC_ITEM netChainStubTooLong;
     static DRC_ITEM netChainReturnPathBreak;
@@ -327,5 +343,22 @@ private:
     std::vector<PCB_MARKER*>           m_filteredMarkers;
 };
 
+
+/**
+ * Implements the RC_ITEM_RESOLVER interface to resolve PCB items by their KIID.
+ */
+class BOARD_RC_ITEM_RESOLVER : public RC_ITEM_RESOLVER
+{
+public:
+    explicit BOARD_RC_ITEM_RESOLVER( const BOARD& aBoard ) :
+            m_board( aBoard )
+    {
+    }
+
+    EDA_ITEM* doResolveItemById( const KIID& aKiid ) const override;
+
+private:
+    const BOARD& m_board;
+};
 
 #endif      // DRC_ITEM_H

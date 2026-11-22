@@ -30,9 +30,13 @@
 
 #include <wx/string.h>
 
+#include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
+
+class UNITS_PROVIDER;
 
 
 namespace KICAD_DIFF
@@ -140,8 +144,9 @@ ApplyAutoResolutions( MERGE_PLAN&                          aPlan,
 
 
 /**
- * Build the list of conflict-action indices the dialog walks (i.e. the
- * positions in `plan.actions` whose ids appear in `plan.unresolved`).
+ * Build the list of conflict-action indices the dialog walks: the positions
+ * in `plan.actions` whose ids appear in `plan.unresolved`, plus the items the
+ * engine merged property by property, so the user can review that answer.
  *
  * Each entry carries the action index plus a human-readable label
  * truncated to 40 chars (an ellipsis + the right-most 39 chars if the
@@ -160,15 +165,34 @@ KICOMMON_API std::vector<CONFLICT_LIST_ENTRY> BuildConflictList( const MERGE_PLA
 
 
 /**
- * Return the subset of conflict actions whose `kind` is NOT one of the
- * concrete TAKE_OURS / TAKE_THEIRS / TAKE_ANCESTOR — the dialog uses
- * this to refuse Apply when the user hasn't picked a side on every
- * conflict. KEEP / MERGE_PROPS at that point mean the engine's default
- * is still in effect, which silently loses user intent.
+ * Return the conflict actions that still have no decision. The dialog refuses Apply until
+ * every conflict has one. TAKE_OURS, TAKE_THEIRS and TAKE_ANCESTOR are the user's choices,
+ * and MERGE_PROPS is the engine's own answer, which the dialog offers as a fourth. KEEP
+ * means nothing has decided the item, which would silently lose user intent.
  */
 KICOMMON_API std::vector<KIID_PATH>
 CollectUnresolvedConflicts( const MERGE_PLAN&                aPlan,
                             const std::vector<std::size_t>&  aConflictActionIndices );
+
+
+/**
+ * Settle the MERGE_PROPS of a library merge, where an item is combined whole or not at all. Items
+ * aCanCombine accepts are resolved, and the applier's combiner builds them. With aEditedNames,
+ * every other one becomes a conflict for the user, with a property row per edited name. Without
+ * it, the applier takes our side and reports the item.
+ */
+KICOMMON_API void
+SettleLibraryMerges( MERGE_PLAN& aPlan, const std::function<bool( const KIID_PATH& )>& aCanCombine,
+                     const std::function<std::set<wxString>( const KIID_PATH& )>& aEditedNames = {} );
+
+
+/// The properties and elements aChange edits, by the names a user would know them by.
+KICOMMON_API std::set<wxString> EditedNames( const ITEM_CHANGE& aChange );
+
+
+/// What either side edits in an item, for SettleLibraryMerges. Both diffs must outlive the result.
+KICOMMON_API std::function<std::set<wxString>( const KIID_PATH& )> EditedNamesIn( const DOCUMENT_DIFF& aOurs,
+                                                                                const DOCUMENT_DIFF& aTheirs );
 
 
 /**
@@ -205,19 +229,32 @@ ResolveConflictBBox( const KIID_PATH&                  aId,
 
 
 /**
+ * The ancestor, ours and theirs values of each edit aResolution names, taken from each side's change
+ * to the item. A side that did not make an edit shows the ancestor value. Lengths are given in aUnits,
+ * or in internal units without it.
+ */
+KICOMMON_API wxString ConflictValuesText( const ITEM_RESOLUTION& aResolution, const ITEM_CHANGE* aOurs,
+                                          const ITEM_CHANGE* aTheirs, const UNITS_PROVIDER* aUnits = nullptr );
+
+
+/**
  * Build the human-readable detail text shown in the merge dialog's
  * resolution panel for a given ITEM_RESOLUTION.
  *
  * Output format:
- *   "Item id: <KIID_PATH>\nCurrent resolution: <kind label>\n\n
- *    <N> property edit(s) in this resolution.\n"
+ *   "Current resolution: <kind label>\n\n<N> property edit(s) in this resolution.\n"
+ *
+ * The item is named by the caller's own label, so the raw KIID_PATH is not repeated here.
+ *
+ * Given each side's change to the item, the text ends with ConflictValuesText.
  *
  * The kind labels are locale-aware (`_(...)`). Pure dispatch + text
  * formatting; useful for any UI surface displaying a resolution's
  * summary.
  */
-KICOMMON_API wxString
-BuildConflictDetailText( const ITEM_RESOLUTION& aResolution );
+KICOMMON_API wxString BuildConflictDetailText( const ITEM_RESOLUTION& aResolution, const ITEM_CHANGE* aOurs = nullptr,
+                                               const ITEM_CHANGE*    aTheirs = nullptr,
+                                               const UNITS_PROVIDER* aUnits = nullptr );
 
 } // namespace KICAD_DIFF
 

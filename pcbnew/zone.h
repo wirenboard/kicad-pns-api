@@ -488,6 +488,7 @@ public:
      * Circles (vias) and arcs (ends of tracks) are approximated by segments.
      *
      * @param aBuffer is a buffer to store the polygon
+     * @param aLayer is the layer of the polygon
      * @param aClearance is the min clearance around outlines
      * @param aError is the maximum deviation from true circle
      * @param aErrorLoc
@@ -495,6 +496,8 @@ public:
      */
     void TransformSmoothedOutlineToPolygon( SHAPE_POLY_SET& aBuffer, PCB_LAYER_ID aLayer, int aClearance,
                                             int aError, ERROR_LOC aErrorLoc, SHAPE_POLY_SET* aBoardOutline ) const;
+
+    double GetCoverageArea( int aTextMargin ) const override;
 
     /**
      * Convert the zone shape to a closed polygon
@@ -509,8 +512,6 @@ public:
      * @param ignoreLineWidth is used for edge cut items where the line width is only for
      *                        visualization
      */
-    double GetCoverageArea( int aTextMargin ) const override;
-
     void TransformShapeToPolygon( SHAPE_POLY_SET& aBuffer, PCB_LAYER_ID aLayer, int aClearance,
                                   int aError, ERROR_LOC aErrorLoc, bool ignoreLineWidth = false ) const override;
 
@@ -592,11 +593,7 @@ public:
     void OnFootprintRescaled( double aRatioX, double aRatioY, double aLinearFactor, const VECTOR2I& aAnchor,
                               const EDA_ANGLE& aParentRotate ) override;
 
-    void OnFootprintTransformed() override
-    {
-        SetNeedRefill( true );
-        UnFill();
-    }
+    void OnFootprintTransformed() override;
 
     /**
      * Mirror the outlines relative to a given horizontal axis the layer is not changed.
@@ -605,6 +602,8 @@ public:
      * @param aFlipDirection is the direction of the flip.
      */
     void Mirror( const VECTOR2I& aMirrorRef, FLIP_DIRECTION aFlipDirection ) override;
+
+    void Mirror( const SEG& aAxis ) override;
 
     /**
      * @return the class name.
@@ -842,6 +841,13 @@ public:
     PLACEMENT_SOURCE_T GetPlacementAreaSourceType() const       { return m_placementAreaSourceType; }
     void SetPlacementAreaSourceType( PLACEMENT_SOURCE_T aType ) { m_placementAreaSourceType = aType; }
 
+    /// The set of placement rule areas that share one layout, or niluuid when this one is not linked
+    const KIID& GetLinkSet() const                              { return m_linkSet; }
+    void SetLinkSet( const KIID& aLinkSet )                     { m_linkSet = aLinkSet; }
+
+    const REPEAT_LAYOUT_OPTIONS& GetRepeatOptions() const       { return m_repeatOptions; }
+    void SetRepeatOptions( const REPEAT_LAYOUT_OPTIONS& aOpts ) { m_repeatOptions = aOpts; }
+
     bool GetDoNotAllowZoneFills() const  { return m_doNotAllowZoneFills; }
     bool GetDoNotAllowVias() const       { return m_doNotAllowVias; }
     bool GetDoNotAllowTracks() const     { return m_doNotAllowTracks; }
@@ -974,6 +980,8 @@ protected:
     bool                  m_placementAreaEnabled;
     PLACEMENT_SOURCE_T    m_placementAreaSourceType;
     wxString              m_placementAreaSource;
+    KIID                  m_linkSet;
+    REPEAT_LAYOUT_OPTIONS m_repeatOptions;
 
     /**
      * A zone outline can be a teardrop zone with different rules for priority
@@ -1065,6 +1073,8 @@ protected:
 
     /// Compute the bbox from scratch.  Shared so the cached value can't diverge from the live one.
     BOX2I computeBoundingBox() const;
+
+    void invalidateBoundingBoxCache() const;
 
     /// Lock-free bbox cache, valid while m_bboxCacheTimeStamp matches the board timestamp.
     mutable BOX2I             m_bboxCache;

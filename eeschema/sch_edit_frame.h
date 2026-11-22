@@ -166,6 +166,24 @@ public:
      */
     bool LoadProjectSettings();
 
+    /// Apply the project file's render settings.  The drawing sheet name is left alone because
+    /// Page Settings holds an unsaved choice in BASE_SCREEN until the schematic is saved.
+    void ApplyProjectFileSettings();
+
+    /**
+     * Bring the frame in line with a project file that was reread from disk.
+     *
+     * Every value this frame copies out of the project file and writes back on save must be
+     * refreshed here; a copy left stale silently undoes the new file on the next save.
+     */
+    void ReloadProjectFileSettings();
+
+    /**
+     * Update what depends on the schematic's project settings after they changed in memory.
+     * @param aAliasesChanged rebuilds connectivity for the new bus alias members.
+     */
+    void RefreshProjectSettings( bool aAliasesChanged );
+
     /**
      * Load the drawing sheet file.
      */
@@ -192,6 +210,13 @@ public:
      * data structures and GUI elements.
      */
     void OnModify() override;
+
+    /**
+     * Set whether the schematic has unsaved changes.
+     *
+     * @param aModified is true when the schematic has unsaved changes.
+     */
+    void SetContentModified( bool aModified );
 
     SEVERITY GetSeverity( int aErrorCode ) const override;
 
@@ -233,6 +258,11 @@ public:
     void RefreshOperatingPointDisplay();
 
     /**
+     * Redraw the displayed symbols after a sheet suffix change made on another screen.
+     */
+    void RefreshComposedReferences();
+
+    /**
      * Automatically set the rotation of an item (if the item supports it).
      */
     void AutoRotateItem( SCH_SCREEN* aScreen, SCH_ITEM* aItem );
@@ -272,13 +302,11 @@ public:
     void CopyVariant();
 
     /**
-     * Update the variant name control on the main toolbar.
+     * Refill the toolbar variant control and any open symbol fields table from the schematic.
      *
-     * Updating will attempt to maintain the current selection if it's available.  If the current
-     * selection is no longer available, the default (no variant) will be selected.
-     *
+     * The control selects the schematic's current variant.
      */
-    void UpdateVariantSelectionCtrl( const wxArrayString& aVariantNames );
+    void SyncVariantUI();
 
     void SetCurrentVariant( const wxString& aVariantName );
 
@@ -408,7 +436,6 @@ public:
      *                          could change previous annotation because time stamps are
      *                          used to handle annotation in complex hierarchies.
      * @param aReporter A sink for error messages.  Use NULL_REPORTER if you don't need errors.
-     * @param aSymbolFilter Filter for symbol handling. Ignored for non-selection scopes.
      *
      * When the sheet number is used in annotation, each sheet annotation starts from sheet
      * number * 100.  In other words the first sheet uses 100 to 199, the second sheet uses
@@ -416,8 +443,7 @@ public:
      */
     void AnnotateSymbols( SCH_COMMIT* aCommit, ANNOTATE_SCOPE_T aAnnotateScope, ANNOTATE_ORDER_T aSortOption,
                           ANNOTATE_ALGO_T aAlgoOption, bool aRecursive, int aStartNumber, bool aResetAnnotation,
-                          bool aRegroupUnits, bool aRepairTimestamps, REPORTER& aReporter,
-                          SYMBOL_FILTER aSymbolFilter );
+                          bool aRegroupUnits, bool aRepairTimestamps, REPORTER& aReporter );
 
     /**
      * Check for annotation errors.
@@ -434,11 +460,10 @@ public:
      * @param aAnnotateScope See #ANNOTATE_SCOPE_T Check the current sheet only if true.
      *                       Otherwise check the entire schematic.
      * @param aRecursive
-     * @param aSymbolFilter
      * @return Number of annotation errors found.
      */
     int CheckAnnotate( ANNOTATION_ERROR_HANDLER aErrorHandler, ANNOTATE_SCOPE_T aAnnotateScope,
-                       bool aRecursive, SYMBOL_FILTER aSymbolFilter );
+                       bool aRecursive );
 
     /**
      * Run a modal version of the annotate dialog for a specific purpose.
@@ -503,6 +528,28 @@ public:
     bool SaveProject( bool aSaveAs = false );
 
     bool OpenProjectFiles( const std::vector<wxString>& aFileSet, int aCtl = 0 ) override;
+
+    /**
+     * Reload the schematic and all its sheets from disk.
+     * The caller handles confirmation before unsaved edits are discarded.
+     *
+     * @return false when there is no filename or the reload fails.
+     */
+    bool ReloadFromDisk();
+
+    /**
+     * Ask whether to reload when that would discard unsaved edits.
+     *
+     * @return true when there are no unsaved edits or the user chose to reload.
+     */
+    bool ConfirmReloadFromDisk( const wxString& aMessage, const wxString& aTitle );
+
+    /**
+     * Check whether the last read of the project file brought a top-level sheet list that the
+     * open schematic does not have.  An unsaved change made here is not one.  A reread list that
+     * matches the open sheets is settled.
+     */
+    bool TopLevelSheetsChangedOnDisk();
 
     void SetSchematic( SCHEMATIC* aSchematic );
 
@@ -689,6 +736,8 @@ public:
     /**
      * Change the unit of \a aSymbol, swapping with another placed unit if the user asks.
      *
+     * @param aSymbol
+     * @param aUnit
      * @param aCommit is the commit of an edit in progress, such as a move.  The changes are staged
      *                there and not pushed.  Without it, a local commit is pushed.
      */
@@ -697,6 +746,8 @@ public:
     /**
      * Change the body style of \a aSymbol.
      *
+     * @param aSymbol
+     * @param aBodyStyle
      * @param aCommit is the commit of an edit in progress, such as a move.  The change is staged
      *                there and not pushed.  Without it, a local commit is pushed.
      */
@@ -834,6 +885,10 @@ public:
 
     /**
      * Generate the connection data for the entire schematic hierarchy.
+     *
+     * @param aCommit
+     * @param aCleanupFlags
+     * @param aProgressReporter
      * @param aCleanupDone the commit already applied cleanup; flags still select the rebuild scope.
      * @return false if recalculation failed; the frame has already reported the failure.
      */
@@ -1013,8 +1068,6 @@ protected:
      */
     void sendNetlistToCvpcb();
 
-    void onSize( wxSizeEvent& aEvent );
-
     void saveProjectSettings() override;
 
     void onCloseSymbolDiffDialog( wxCommandEvent& aEvent );
@@ -1030,6 +1083,12 @@ protected:
     void onPluginAvailabilityChanged( wxCommandEvent& aEvt );
 
 private:
+    /// Register the loaded schematic and its project for autosave history. A no-op when they already are.
+    void registerHistorySaver();
+
+    /// Select the schematic's current variant in the toolbar control, which must exist.
+    void selectCurrentVariant();
+
     // Called when resizing the Hierarchy Navigator panel
     void OnResizeHierarchyNavigator( wxSizeEvent& aEvent );
 
@@ -1088,9 +1147,20 @@ private:
      *
      * @param aSheet is the #SCH_SHEET object to save.
      * @param aSavePath is the full path of the destination file
+     * @param isSaveAs indicates this is a save-as or save-copy-as operation, and that the dirty
+     *                 bit should NOT be cleared on the sheet
      * @return True if the file has been saved.
      */
-    bool saveSchematicFile( SCH_SHEET* aSheet, const wxString& aSavePath );
+    bool saveSchematicFile( SCH_SHEET* aSheet, const wxString& aSavePath, bool isSaveAs );
+
+    /**
+     * Show the older-format infobar.
+     *
+     * @param aOfferUpgrade adds an "Upgrade Format Now" link in a Git-tracked project, which saves every
+     *                      sheet unchanged in the current format so the upgrade can be committed apart
+     *                      from any edit.
+     */
+    void showOutdatedFormatInfo( bool aOfferUpgrade );
 
     /**
      * Fill a map of uuid -> reference from the currently loaded schematic.

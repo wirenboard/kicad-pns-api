@@ -57,6 +57,7 @@ public:
     static TOOL_ACTION saveAll;
     static TOOL_ACTION revert;
     static TOOL_ACTION pageSettings;
+    static TOOL_ACTION exportForOlderVersion;
     static TOOL_ACTION print;
     static TOOL_ACTION plot;
     static TOOL_ACTION quit;
@@ -260,12 +261,14 @@ public:
     static TOOL_ACTION updatePcbFromSchematic;
     static TOOL_ACTION updateSchematicFromPcb;
     static TOOL_ACTION showProperties;
+    static TOOL_ACTION showGitCommitPane;
     static TOOL_ACTION showDatasheet;
 
     // Internal
     static TOOL_ACTION updateMenu;
     static TOOL_ACTION activatePointEditor;
     static TOOL_ACTION arcPosture;
+    static TOOL_ACTION cycleArcDrawMode;
     static TOOL_ACTION deleteLastPoint;
     static TOOL_ACTION cycleArcEditMode;
     static TOOL_ACTION pointEditorArcKeepCenter;
@@ -290,6 +293,7 @@ public:
 
     // API
     static TOOL_ACTION pluginsReload;
+    static TOOL_ACTION pluginsShowFolder;
 
     // Embedding Files
     static TOOL_ACTION embeddedFiles;

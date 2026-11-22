@@ -194,6 +194,13 @@ public:
      */
     void ReCreateLayerBox( bool aForceResizeToolbar = true );
 
+    void configureToolbars() override;
+
+    PLUGIN_ACTION_SCOPE PluginActionScope() const override
+    {
+        return PLUGIN_ACTION_SCOPE::FOOTPRINT;
+    }
+
     // The Tool Framework initialization, for GAL mode
     void setupTools();
 
@@ -249,9 +256,14 @@ public:
     void RenameFootprintTab( const LIB_ID& aOldId, const LIB_ID& aNewId );
 
     /**
-     * Return true if any footprint editor tab has unsaved changes.
+     * Return true if any footprint editor tab has unsaved changes, or with aLibraryOnly any tab holding a
+     * library footprint.
      */
-    bool HasModifiedFootprintTabs() const;
+    bool HasModifiedFootprintTabs( bool aLibraryOnly = false ) const;
+
+    /// Save every tab with unsaved edits to a library footprint, then return to the tab that was
+    /// active. False when a save failed; the tabs after it are left unsaved.
+    bool SaveModifiedLibraryTabs();
 
     /**
      * Replace the clean open editor tab matching aFootprint, if any, with the saved footprint.
@@ -429,11 +441,6 @@ protected:
     FOOTPRINT_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent );
 
     /**
-     * Determines the Canvas type to load (with prompt if required) and initializes m_canvasType
-     */
-    void resolveCanvasType() override;
-
-    /**
      * Make sure the footprint info list is loaded (with a progress dialog) and then initialize
      * the footprint library tree.
      */
@@ -460,6 +467,8 @@ protected:
     void editFootprintProperties( FOOTPRINT* aFootprint );
 
     void setupUIConditions() override;
+
+    void onPluginAvailabilityChanged( wxCommandEvent& aEvt );
 
     void centerItemIdleHandler( wxIdleEvent& aEvent );
 
@@ -513,6 +522,9 @@ private:
      * m_pcb references.
      */
     void installFootprintTabBoard( FOOTPRINT_EDITOR_TAB_CONTEXT* aCtx, BOARD* aBoard );
+
+    /// Fold a pad being edited back together, so its primitives are not left as loose copper.
+    void recombineEditedPad();
 
     /**
      * Snapshot the active tab's view/selection, fold the dirty state back into it, and clear

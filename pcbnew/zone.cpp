@@ -48,6 +48,8 @@
 #include <api/api_pcb_utils.h>
 #include <api/board/board_types.pb.h>
 
+#include "board_commit.h"
+
 
 ZONE::ZONE( BOARD_ITEM_CONTAINER* aParent ) :
         BOARD_CONNECTED_ITEM( aParent, PCB_ZONE_T ),
@@ -57,6 +59,7 @@ ZONE::ZONE( BOARD_ITEM_CONTAINER* aParent ) :
         m_isRuleArea( false ),
         m_placementAreaEnabled( false ),
         m_placementAreaSourceType( PLACEMENT_SOURCE_T::SHEETNAME ),
+        m_linkSet( niluuid ),
         m_teardropType( TEARDROP_TYPE::TD_NONE ),
         m_PadConnection( ZONE_CONNECTION::NONE ),
         m_ZoneClearance( 0 ),
@@ -142,6 +145,8 @@ void ZONE::InitDataFromSrcInCopyCtor( const ZONE& aZone, PCB_LAYER_ID aLayer )
     m_placementAreaEnabled    = aZone.m_placementAreaEnabled;
     m_placementAreaSourceType = aZone.m_placementAreaSourceType;
     m_placementAreaSource     = aZone.m_placementAreaSource;
+    m_linkSet                 = aZone.m_linkSet;
+    m_repeatOptions           = aZone.m_repeatOptions;
 
     m_fillMode = aZone.m_fillMode; // solid vs. hatched
 
@@ -237,7 +242,37 @@ BOARD_ITEM* ZONE::Duplicate( bool addToParentGroup, BOARD_COMMIT* aCommit ) cons
 
         // Give the copy its own name so it does not collide with the original (issue 23131)
         if( !newZone->GetZoneName().IsEmpty() )
-            newZone->SetZoneName( board->GetUniqueZoneName( newZone->GetZoneName(), newZone ) );
+        {
+            auto inUse =
+                    [&]( const wxString& aName )
+                    {
+                        for( const ZONE* zone : board->Zones() )
+                        {
+                            if( zone != newZone && zone->GetZoneName() == aName )
+                                return true;
+                        }
+
+                        // Check the commit as well.  The array tool adds many zones at once, which
+                        // only end up in the board's Zones() list after the commit has been pushed.
+                        if( aCommit )
+                        {
+                            for( const auto& [item, change_type] : aCommit->StagedItems() )
+                            {
+                                if( item->Type() == PCB_ZONE_T && ( change_type & CHT_ADD ) > 0 )
+                                {
+                                    ZONE* zone = static_cast<ZONE*>( item );
+
+                                    if( zone != newZone && zone->GetZoneName() == aName )
+                                        return true;
+                                }
+                            }
+                        }
+
+                        return false;
+                    };
+
+            newZone->SetZoneName( BOARD::MakeUniqueZoneName( newZone->GetZoneName(), inUse ) );
+        }
     }
 
     return dupe;
@@ -363,7 +398,9 @@ void ZONE::Serialize( google::protobuf::Any& aContainer ) const
     zone.mutable_border()->mutable_pitch()->set_value_nm( m_borderHatchPitch );
 
     kiapi::common::PackCustomProperties( zone.mutable_custom_properties(), *this );
-    aContainer.PackFrom( zone );
+
+    if( !aContainer.PackFrom( zone ) )
+        wxFAIL_MSG( wxT( "Failed to pack ZONE" ) );
 }
 
 
@@ -818,6 +855,27 @@ const BOX2I ZONE::GetBoundingBox() const
 }
 
 
+void ZONE::invalidateBoundingBoxCache() const
+{
+    if( const BOARD* board = GetBoard() )
+    {
+        std::unique_lock<std::shared_mutex> writeLock( board->m_CachesMutex );
+        board->m_ZoneBBoxCache.erase( this );
+    }
+
+    m_bboxCacheTimeStamp.store( -1, std::memory_order_release );
+}
+
+
+void ZONE::OnFootprintTransformed()
+{
+    // Footprint zone bounding boxes are derived through the parent transform
+    invalidateBoundingBoxCache();
+    SetNeedRefill( true );
+    UnFill();
+}
+
+
 void ZONE::CacheBoundingBox()
 {
     const BOARD* board = GetBoard();
@@ -1133,6 +1191,9 @@ void ZONE::GetMsgPanelInfo( EDA_DRAW_FRAME* aFrame, std::vector<MSG_PANEL_ITEM>&
 
         if( GetPlacementAreaEnabled() )
             aList.emplace_back( _( "Placement source" ), UnescapeString( GetPlacementAreaSource() ) );
+
+        if( m_linkSet != niluuid )
+            aList.emplace_back( _( "Layout link" ), _( "Linked" ) );
     }
     else if( IsOnCopperLayer() )
     {
@@ -1159,26 +1220,20 @@ void ZONE::GetMsgPanelInfo( EDA_DRAW_FRAME* aFrame, std::vector<MSG_PANEL_ITEM>&
 
     if( layers.size() == 1 )
     {
-        layerDesc.Printf( _( "%s" ), GetBoard()->GetLayerName( layers[0] ) );
+        layerDesc.Printf( wxS( "%s" ), GetLayerName( layers[0] ) );
     }
-    else if (layers.size() == 2 )
+    else if( layers.size() == 2 )
     {
-        layerDesc.Printf( _( "%s and %s" ),
-                          GetBoard()->GetLayerName( layers[0] ),
-                          GetBoard()->GetLayerName( layers[1] ) );
+        layerDesc.Printf( _( "%s and %s" ), GetLayerName( layers[0] ), GetLayerName( layers[1] ) );
     }
-    else if (layers.size() == 3 )
+    else if( layers.size() == 3 )
     {
-        layerDesc.Printf( _( "%s, %s and %s" ),
-                          GetBoard()->GetLayerName( layers[0] ),
-                          GetBoard()->GetLayerName( layers[1] ),
-                          GetBoard()->GetLayerName( layers[2] ) );
+        layerDesc.Printf( _( "%s, %s and %s" ), GetLayerName( layers[0] ), GetLayerName( layers[1] ),
+                          GetLayerName( layers[2] ) );
     }
     else if( layers.size() > 3 )
     {
-        layerDesc.Printf( _( "%s, %s and %d more" ),
-                          GetBoard()->GetLayerName( layers[0] ),
-                          GetBoard()->GetLayerName( layers[1] ),
+        layerDesc.Printf( _( "%s, %s and %d more" ), GetLayerName( layers[0] ), GetLayerName( layers[1] ),
                           static_cast<int>( layers.size() - 2 ) );
     }
 
@@ -1322,6 +1377,7 @@ void ZONE::Rotate( const VECTOR2I& aCentre, const EDA_ANGLE& aAngle )
         outlineCentre = fp->GetTransform().InverseApply( aCentre );
 
     m_Poly->Rotate( aAngle, outlineCentre );
+    invalidateBoundingBoxCache();
     HatchBorder();
 
     /* rotate filled areas: */
@@ -1338,6 +1394,7 @@ void ZONE::OnFootprintRescaled( double aRatioX, double aRatioY, double /* aLinea
 
     // Zone outline auto-derives from lib storage through the parent transform.
     // Just invalidate the fill since geometry-on-screen has changed.
+    invalidateBoundingBoxCache();
     SetNeedRefill( true );
     UnFill();
 }
@@ -1357,19 +1414,19 @@ void ZONE::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
     LSET flipped;
 
     for( PCB_LAYER_ID layer : GetLayerSet() )
-        flipped.set( GetBoard()->FlipLayer( layer ) );
+        flipped.set( GetFlippedLayer( layer ) );
 
     SetLayerSet( flipped );
 
     for( auto& [oldLayer, properties] : layerPropertiesCopy )
     {
-        PCB_LAYER_ID newLayer = GetBoard()->FlipLayer( oldLayer );
+        PCB_LAYER_ID newLayer = GetFlippedLayer( oldLayer );
         m_layerProperties[newLayer] = properties;
     }
 
     for( auto& [oldLayer, shape] : fillsCopy )
     {
-        PCB_LAYER_ID newLayer = GetBoard()->FlipLayer( oldLayer );
+        PCB_LAYER_ID newLayer = GetFlippedLayer( oldLayer );
         SetFilledPolysList( newLayer, shape );
     }
 }
@@ -1377,17 +1434,39 @@ void ZONE::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
 
 void ZONE::Mirror( const VECTOR2I& aMirrorRef, FLIP_DIRECTION aFlipDirection )
 {
-    VECTOR2I outlineRef = aMirrorRef;
+    Mirror( MIRROR_AXIS( aMirrorRef, aFlipDirection ) );
+}
+
+
+void ZONE::Mirror( const SEG& aAxis )
+{
+    const EDA_ANGLE axisAngle = -EDA_ANGLE( aAxis.B - aAxis.A );
+
+    SetHatchOrientation( GetHatchOrientation().Reflect( axisAngle ).Normalized() );
+    SetThievingOrientation( GetThievingOrientation().Reflect( axisAngle ).Normalized() );
 
     if( const FOOTPRINT* fp = GetParentFootprint() )
-        outlineRef = fp->GetTransform().InverseApply( aMirrorRef );
+    {
+        // Footprints are only ever flipped, never mirrored, so this is reached only from Flip(),
+        // which always passes a cardinal axis.
+        // (Handy, because otherwise we have to handle the footprint transform!)
+        const FLIP_DIRECTION flipDirection =
+                ( aAxis.A.x == aAxis.B.x ) ? FLIP_DIRECTION::LEFT_RIGHT : FLIP_DIRECTION::TOP_BOTTOM;
 
-    m_Poly->Mirror( outlineRef, aFlipDirection );
+        const VECTOR2I flipAxisStart = fp->GetTransform().InverseApply( aAxis.A );
+        m_Poly->Mirror( flipAxisStart, flipDirection );
+    }
+    else
+    {
+        m_Poly->Mirror( aAxis );
+    }
+
+    invalidateBoundingBoxCache();
 
     HatchBorder();
 
     for( std::pair<const PCB_LAYER_ID, std::shared_ptr<SHAPE_POLY_SET>>& pair : m_FilledPolysList )
-        pair.second->Mirror( aMirrorRef, aFlipDirection );
+        pair.second->Mirror( aAxis );
 }
 
 
@@ -1702,6 +1781,9 @@ bool ZONE::IsIsland( PCB_LAYER_ID aLayer, int aPolyIdx ) const
 void ZONE::GetInteractingZones( PCB_LAYER_ID aLayer, std::vector<ZONE*>* aSameNetCollidingZones,
                                 std::vector<ZONE*>* aOtherNetIntersectingZones ) const
 {
+    if( !GetBoard() )
+        return;
+
     int   epsilon = pcbIUScale.mmToIU( 0.001 );
     BOX2I bbox = GetBoundingBox();
 
@@ -2104,6 +2186,9 @@ bool ZONE::operator==( const ZONE& aOther ) const
     if( GetIsRuleArea() != other.GetIsRuleArea() )
         return false;
 
+    if( GetLayerSet() != other.GetLayerSet() )
+        return false;
+
      if( GetIsRuleArea() )
      {
          if( GetDoNotAllowZoneFills() != other.GetDoNotAllowZoneFills() )
@@ -2249,57 +2334,57 @@ static struct ZONE_DESC
                 layerEnum.Map( layer, LSET::Name( layer ) );
         }
 
-        ENUM_MAP<ZONE_CONNECTION>& zcMap = ENUM_MAP<ZONE_CONNECTION>::Instance();
+        ENUM_MAP<ZONE_CONNECTION>& zoneConnectionEnum = ENUM_MAP<ZONE_CONNECTION>::Instance();
 
-        if( zcMap.Choices().GetCount() == 0 )
+        if( zoneConnectionEnum.Choices().GetCount() == 0 )
         {
-            zcMap.Undefined( ZONE_CONNECTION::INHERITED );
-            zcMap.Map( ZONE_CONNECTION::INHERITED,   _HKI( "Inherited" ) )
-                 .Map( ZONE_CONNECTION::NONE,        _HKI( "None" ) )
-                 .Map( ZONE_CONNECTION::THERMAL,     _HKI( "Thermal reliefs" ) )
-                 .Map( ZONE_CONNECTION::FULL,        _HKI( "Solid" ) )
-                 .Map( ZONE_CONNECTION::THT_THERMAL, _HKI( "Thermal reliefs for PTH" ) );
+            zoneConnectionEnum.Undefined( ZONE_CONNECTION::INHERITED );
+            zoneConnectionEnum.Map( ZONE_CONNECTION::INHERITED,   _HKI( "Inherited" ) )
+                              .Map( ZONE_CONNECTION::NONE,        _HKI( "None" ) )
+                              .Map( ZONE_CONNECTION::THERMAL,     _HKI( "Thermal reliefs" ) )
+                              .Map( ZONE_CONNECTION::FULL,        _HKI( "Solid" ) )
+                              .Map( ZONE_CONNECTION::THT_THERMAL, _HKI( "Thermal reliefs for PTH" ) );
         }
 
-        ENUM_MAP<ZONE_FILL_MODE>& zfmMap = ENUM_MAP<ZONE_FILL_MODE>::Instance();
+        ENUM_MAP<ZONE_FILL_MODE>& zoneFillModeEnum = ENUM_MAP<ZONE_FILL_MODE>::Instance();
 
-        if( zfmMap.Choices().GetCount() == 0 )
+        if( zoneFillModeEnum.Choices().GetCount() == 0 )
         {
-            zfmMap.Undefined( ZONE_FILL_MODE::POLYGONS );
-            zfmMap.Map( ZONE_FILL_MODE::POLYGONS,        _HKI( "Solid fill" ) )
-                  .Map( ZONE_FILL_MODE::HATCH_PATTERN,   _HKI( "Hatch pattern" ) )
-                  .Map( ZONE_FILL_MODE::COPPER_THIEVING, _HKI( "Copper thieving" ) );
+            zoneFillModeEnum.Undefined( ZONE_FILL_MODE::POLYGONS );
+            zoneFillModeEnum.Map( ZONE_FILL_MODE::POLYGONS,        _HKI( "Solid fill" ) )
+                            .Map( ZONE_FILL_MODE::HATCH_PATTERN,   _HKI( "Hatch pattern" ) )
+                            .Map( ZONE_FILL_MODE::COPPER_THIEVING, _HKI( "Copper thieving" ) );
         }
 
-        ENUM_MAP<THIEVING_PATTERN>& tpMap = ENUM_MAP<THIEVING_PATTERN>::Instance();
+        ENUM_MAP<THIEVING_PATTERN>& thievingPatternEnum = ENUM_MAP<THIEVING_PATTERN>::Instance();
 
-        if( tpMap.Choices().GetCount() == 0 )
+        if( thievingPatternEnum.Choices().GetCount() == 0 )
         {
-            tpMap.Undefined( THIEVING_PATTERN::DOTS );
-            tpMap.Map( THIEVING_PATTERN::DOTS,    _HKI( "Dots" ) )
-                 .Map( THIEVING_PATTERN::SQUARES, _HKI( "Squares" ) )
-                 .Map( THIEVING_PATTERN::HATCH,   _HKI( "Hatch" ) );
+            thievingPatternEnum.Undefined( THIEVING_PATTERN::DOTS );
+            thievingPatternEnum.Map( THIEVING_PATTERN::DOTS,    _HKI( "Dots" ) )
+                               .Map( THIEVING_PATTERN::SQUARES, _HKI( "Squares" ) )
+                               .Map( THIEVING_PATTERN::HATCH,   _HKI( "Hatch" ) );
         }
 
-        ENUM_MAP<ISLAND_REMOVAL_MODE>& irmMap = ENUM_MAP<ISLAND_REMOVAL_MODE>::Instance();
+        ENUM_MAP<ISLAND_REMOVAL_MODE>& islandRemovalModeEnum = ENUM_MAP<ISLAND_REMOVAL_MODE>::Instance();
 
-        if( irmMap.Choices().GetCount() == 0 )
+        if( islandRemovalModeEnum.Choices().GetCount() == 0 )
         {
-            irmMap.Undefined( ISLAND_REMOVAL_MODE::ALWAYS );
-            irmMap.Map( ISLAND_REMOVAL_MODE::ALWAYS, _HKI( "Always" ) )
-                  .Map( ISLAND_REMOVAL_MODE::NEVER,  _HKI( "Never" ) )
-                  .Map( ISLAND_REMOVAL_MODE::AREA,   _HKI( "Below area limit" ) );
+            islandRemovalModeEnum.Undefined( ISLAND_REMOVAL_MODE::ALWAYS );
+            islandRemovalModeEnum.Map( ISLAND_REMOVAL_MODE::ALWAYS, _HKI( "Always" ) )
+                                 .Map( ISLAND_REMOVAL_MODE::NEVER,  _HKI( "Never" ) )
+                                 .Map( ISLAND_REMOVAL_MODE::AREA,   _HKI( "Below area limit" ) );
         }
 
-        ENUM_MAP<PLACEMENT_SOURCE_T>& rapstMap = ENUM_MAP<PLACEMENT_SOURCE_T>::Instance();
+        ENUM_MAP<PLACEMENT_SOURCE_T>& placementSourceEnum = ENUM_MAP<PLACEMENT_SOURCE_T>::Instance();
 
-        if( rapstMap.Choices().GetCount() == 0 )
+        if( placementSourceEnum.Choices().GetCount() == 0 )
         {
-            rapstMap.Undefined( PLACEMENT_SOURCE_T::SHEETNAME );
-            rapstMap.Map( PLACEMENT_SOURCE_T::SHEETNAME,       _HKI( "Sheet Name" ) )
-                    .Map( PLACEMENT_SOURCE_T::COMPONENT_CLASS, _HKI( "Component Class" ) )
-                    .Map( PLACEMENT_SOURCE_T::GROUP_PLACEMENT, _HKI( "Group" ) )
-                    .Map( PLACEMENT_SOURCE_T::DESIGN_BLOCK,    _HKI( "Design Block" ) );
+            placementSourceEnum.Undefined( PLACEMENT_SOURCE_T::SHEETNAME );
+            placementSourceEnum.Map( PLACEMENT_SOURCE_T::SHEETNAME,       _HKI( "Sheet Name" ) )
+                               .Map( PLACEMENT_SOURCE_T::COMPONENT_CLASS, _HKI( "Component Class" ) )
+                               .Map( PLACEMENT_SOURCE_T::GROUP_PLACEMENT, _HKI( "Group" ) )
+                               .Map( PLACEMENT_SOURCE_T::DESIGN_BLOCK,    _HKI( "Design Block" ) );
         }
 
         PROPERTY_MANAGER& propMgr = PROPERTY_MANAGER::Instance();
@@ -2418,28 +2503,32 @@ static struct ZONE_DESC
         propMgr.AddProperty( new PROPERTY<ZONE, bool>( _HKI( "Keep Out Tracks" ),
                     &ZONE::SetDoNotAllowTracks, &ZONE::GetDoNotAllowTracks ),
                     groupKeepout )
-                .SetAvailableFunc( isRuleArea ).SetIsCopyable();
+                .SetAvailableFunc( isRuleArea )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, bool>( _HKI( "Keep Out Vias" ),
                     &ZONE::SetDoNotAllowVias, &ZONE::GetDoNotAllowVias ),
                     groupKeepout )
-                .SetAvailableFunc( isRuleArea ).SetIsCopyable();
+                .SetAvailableFunc( isRuleArea )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, bool>( _HKI( "Keep Out Pads" ),
                     &ZONE::SetDoNotAllowPads, &ZONE::GetDoNotAllowPads ),
                     groupKeepout )
-                .SetAvailableFunc( isRuleArea ).SetIsCopyable();
+                .SetAvailableFunc( isRuleArea )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, bool>( _HKI( "Keep Out Zone Fills" ),
                     &ZONE::SetDoNotAllowZoneFills, &ZONE::GetDoNotAllowZoneFills ),
                     groupKeepout )
-                .SetAvailableFunc( isRuleArea ).SetIsCopyable();
+                .SetAvailableFunc( isRuleArea )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, bool>( _HKI( "Keep Out Footprints" ),
                     &ZONE::SetDoNotAllowFootprints, &ZONE::GetDoNotAllowFootprints ),
                     groupKeepout )
-                .SetAvailableFunc( isRuleArea ).SetIsCopyable();
-
+                .SetAvailableFunc( isRuleArea )
+                .SetIsCopyable();
 
         const wxString groupPlacement = _HKI( "Placement" );
 
@@ -2451,12 +2540,20 @@ static struct ZONE_DESC
         propMgr.AddProperty( new PROPERTY_ENUM<ZONE, PLACEMENT_SOURCE_T>( _HKI( "Source Type" ),
                     &ZONE::SetPlacementAreaSourceType, &ZONE::GetPlacementAreaSourceType ),
                     groupPlacement )
-                .SetAvailableFunc( isRuleArea );
+                .SetAvailableFunc(
+                        [&]( INSPECTABLE* aItem )
+                        {
+                            return isRuleArea( aItem ) && static_cast<ZONE*>( aItem )->GetPlacementAreaEnabled();
+                        } );
 
         propMgr.AddProperty( new PROPERTY<ZONE, wxString>( _HKI( "Source Name" ),
                     &ZONE::SetPlacementAreaSource, &ZONE::GetPlacementAreaSource ),
                     groupPlacement )
-                .SetAvailableFunc( isRuleArea );
+                .SetAvailableFunc(
+                        [&]( INSPECTABLE* aItem )
+                        {
+                            return isRuleArea( aItem ) && static_cast<ZONE*>( aItem )->GetPlacementAreaEnabled();
+                        } );
 
 
         const wxString groupFill = _HKI( "Fill Style" );
@@ -2464,13 +2561,15 @@ static struct ZONE_DESC
         propMgr.AddProperty( new PROPERTY_ENUM<ZONE, ZONE_FILL_MODE>( _HKI( "Fill Mode" ),
                     &ZONE::SetFillMode, &ZONE::GetFillMode ),
                     groupFill )
-                .SetAvailableFunc( isCopperZone ).SetIsCopyable();
+                .SetAvailableFunc( isCopperZone )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, EDA_ANGLE>( _HKI( "Hatch Orientation" ),
                     &ZONE::SetHatchOrientation, &ZONE::GetHatchOrientation, PROPERTY_DISPLAY::PT_DEGREE ),
                     groupFill )
                 .SetAvailableFunc( isNonThievingCopperZone )
-                .SetWriteableFunc( isHatchedFill ).SetIsCopyable();
+                .SetWriteableFunc( isHatchedFill )
+                .SetIsCopyable();
 
         auto atLeastMinWidthValidator =
                 []( const wxAny&& aValue, EDA_ITEM* aZone ) -> VALIDATOR_RESULT
@@ -2490,39 +2589,45 @@ static struct ZONE_DESC
                     groupFill )
                 .SetAvailableFunc( isNonThievingCopperZone )
                 .SetWriteableFunc( isHatchedFill )
-                .SetValidator( atLeastMinWidthValidator ).SetIsCopyable();
+                .SetValidator( atLeastMinWidthValidator )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, int>( _HKI( "Hatch Gap" ),
                     &ZONE::SetHatchGap, &ZONE::GetHatchGap, PROPERTY_DISPLAY::PT_SIZE ),
                     groupFill )
                 .SetAvailableFunc( isNonThievingCopperZone )
                 .SetWriteableFunc( isHatchedFill )
-                .SetValidator( atLeastMinWidthValidator ).SetIsCopyable();
+                .SetValidator( atLeastMinWidthValidator )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, double>( _HKI( "Hatch Minimum Hole Ratio" ),
                      &ZONE::SetHatchHoleMinArea, &ZONE::GetHatchHoleMinArea ),
                      groupFill )
                 .SetAvailableFunc( isNonThievingCopperZone )
                 .SetWriteableFunc( isHatchedFill )
-                .SetValidator( PROPERTY_VALIDATORS::PositiveRatioValidator ).SetIsCopyable();
+                .SetValidator( PROPERTY_VALIDATORS::PositiveRatioValidator )
+                .SetIsCopyable();
 
         // TODO: Smoothing effort needs to change to enum (in dialog too)
         propMgr.AddProperty( new PROPERTY<ZONE, int>( _HKI( "Smoothing Effort" ),
                     &ZONE::SetHatchSmoothingLevel, &ZONE::GetHatchSmoothingLevel ),
                     groupFill )
                 .SetAvailableFunc( isNonThievingCopperZone )
-                .SetWriteableFunc( isHatchedFill ).SetIsCopyable();
+                .SetWriteableFunc( isHatchedFill )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, double>( _HKI( "Smoothing Amount" ),
                     &ZONE::SetHatchSmoothingValue, &ZONE::GetHatchSmoothingValue ),
                     groupFill )
                 .SetAvailableFunc( isNonThievingCopperZone )
-                .SetWriteableFunc( isHatchedFill ).SetIsCopyable();
+                .SetWriteableFunc( isHatchedFill )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY_ENUM<ZONE, THIEVING_PATTERN>( _HKI( "Thieving Pattern" ),
                     &ZONE::SetThievingPattern, &ZONE::GetThievingPattern ),
                     groupFill )
-                .SetAvailableFunc( isThievingFill ).SetIsCopyable();
+                .SetAvailableFunc( isThievingFill )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, int>( _HKI( "Thieving Element Size" ),
                     &ZONE::SetThievingElementSize, &ZONE::GetThievingElementSize,
@@ -2530,7 +2635,8 @@ static struct ZONE_DESC
                     groupFill )
                 .SetAvailableFunc( isThievingFill )
                 .SetWriteableFunc( isThievingNonHatch )
-                .SetValidator( PROPERTY_VALIDATORS::PositiveIntValidator ).SetIsCopyable();
+                .SetValidator( PROPERTY_VALIDATORS::PositiveIntValidator )
+                .SetIsCopyable();
 
         // Gap is meaningful for all three patterns: edge-to-edge spacing between
         // adjacent stamps for dots/squares, line-to-line edge spacing for hatch.
@@ -2538,7 +2644,8 @@ static struct ZONE_DESC
                     &ZONE::SetThievingGap, &ZONE::GetThievingGap, PROPERTY_DISPLAY::PT_SIZE ),
                     groupFill )
                 .SetAvailableFunc( isThievingFill )
-                .SetValidator( PROPERTY_VALIDATORS::PositiveIntValidator ).SetIsCopyable();
+                .SetValidator( PROPERTY_VALIDATORS::PositiveIntValidator )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, int>( _HKI( "Thieving Line Width" ),
                     &ZONE::SetThievingLineWidth, &ZONE::GetThievingLineWidth,
@@ -2546,29 +2653,34 @@ static struct ZONE_DESC
                     groupFill )
                 .SetAvailableFunc( isThievingFill )
                 .SetWriteableFunc( isThievingHatch )
-                .SetValidator( PROPERTY_VALIDATORS::PositiveIntValidator ).SetIsCopyable();
+                .SetValidator( PROPERTY_VALIDATORS::PositiveIntValidator )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, bool>( _HKI( "Thieving Stagger" ),
                     &ZONE::SetThievingStagger, &ZONE::GetThievingStagger ),
                     groupFill )
-                .SetAvailableFunc( isThievingFill ).SetIsCopyable();
+                .SetAvailableFunc( isThievingFill )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, EDA_ANGLE>( _HKI( "Thieving Orientation" ),
                     &ZONE::SetThievingOrientation, &ZONE::GetThievingOrientation,
                     PROPERTY_DISPLAY::PT_DEGREE ),
                     groupFill )
-                .SetAvailableFunc( isThievingFill ).SetIsCopyable();
+                .SetAvailableFunc( isThievingFill )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY_ENUM<ZONE, ISLAND_REMOVAL_MODE>( _HKI( "Remove Islands" ),
                     &ZONE::SetIslandRemovalMode, &ZONE::GetIslandRemovalMode ),
                     groupFill )
-                .SetAvailableFunc( isNonThievingCopperZone ).SetIsCopyable();
+                .SetAvailableFunc( isNonThievingCopperZone )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<ZONE, long long int>( _HKI( "Minimum Island Area" ),
                     &ZONE::SetMinIslandArea, &ZONE::GetMinIslandArea, PROPERTY_DISPLAY::PT_AREA ),
                     groupFill )
                 .SetAvailableFunc( isNonThievingCopperZone )
-                .SetWriteableFunc( isAreaBasedIslandRemoval ).SetIsCopyable();
+                .SetWriteableFunc( isAreaBasedIslandRemoval )
+                .SetIsCopyable();
 
         const wxString groupElectrical = _HKI( "Electrical" );
 

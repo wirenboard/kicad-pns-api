@@ -385,11 +385,15 @@ bool GERBVIEW_FRAME::LoadListOfGerberAndDrillFiles( const wxString&      aPath,
                 ( *aFileType )[ii] = 0;
             }
 
+            bool read_ok = false;
+
             switch( ( *aFileType )[ii] )
             {
             case 0:
 
-                if( Read_GERBER_File( filename.GetFullPath() ) )
+                read_ok = Read_GERBER_File( filename.GetFullPath() );
+
+                if( read_ok )
                 {
                     UpdateFileHistory( filename.GetFullPath() );
 
@@ -403,7 +407,9 @@ bool GERBVIEW_FRAME::LoadListOfGerberAndDrillFiles( const wxString&      aPath,
 
             case 1:
 
-                if( Read_EXCELLON_File( filename.GetFullPath() ) )
+                read_ok = Read_EXCELLON_File( filename.GetFullPath() );
+
+                if( read_ok )
                 {
                     UpdateFileHistory( filename.GetFullPath(), &m_drillFileHistory );
 
@@ -416,6 +422,12 @@ bool GERBVIEW_FRAME::LoadListOfGerberAndDrillFiles( const wxString&      aPath,
 
                 break;
             default:
+                break;
+            }
+
+            if( !read_ok )
+            {
+                success = false;
                 wxString txt = wxString::Format( MSG_NOT_LOADED, filename.GetFullName() );
                 reporter.Report( txt, RPT_SEVERITY_ERROR );
             }
@@ -458,7 +470,7 @@ bool GERBVIEW_FRAME::LoadListOfGerberAndDrillFiles( const wxString&      aPath,
 }
 
 
-bool GERBVIEW_FRAME::unarchiveFiles( const wxString& aFullFileName, REPORTER* aReporter )
+bool GERBVIEW_FRAME::unarchiveFiles( const wxString& aFullFileName, REPORTER* aReporter, const wxArrayString* aMembers )
 {
     bool     foundX2Gerbers = false;
     wxString msg;
@@ -509,6 +521,10 @@ bool GERBVIEW_FRAME::unarchiveFiles( const wxString& aFullFileName, REPORTER* aR
             continue;
 
         wxString   fname = entry->GetName();
+
+        if( aMembers && aMembers->Index( fname ) == wxNOT_FOUND )
+            continue;
+
         wxFileName uzfn = fname;
         wxString   curr_ext = uzfn.GetExt().Lower();
 
@@ -660,6 +676,7 @@ bool GERBVIEW_FRAME::unarchiveFiles( const wxString& aFullFileName, REPORTER* aR
             if( gerber_image )
             {
                 gerber_image->m_FileName = fname;
+                gerber_image->m_ArchiveFileName = aFullFileName;
                 if( gerber_image->m_IsX2_file )
                     foundX2Gerbers = true;
             }
@@ -686,7 +703,7 @@ bool GERBVIEW_FRAME::unarchiveFiles( const wxString& aFullFileName, REPORTER* aR
 }
 
 
-bool GERBVIEW_FRAME::LoadZipArchiveFile( const wxString& aFullFileName )
+bool GERBVIEW_FRAME::LoadZipArchiveFile( const wxString& aFullFileName, const wxArrayString* aMembers )
 {
 #define ZipFileExtension "zip"
 
@@ -723,7 +740,7 @@ bool GERBVIEW_FRAME::LoadZipArchiveFile( const wxString& aFullFileName )
     WX_STRING_REPORTER reporter;
 
     if( filename.IsOk() )
-        unarchiveFiles( filename.GetFullPath(), &reporter );
+        unarchiveFiles( filename.GetFullPath(), &reporter, aMembers );
 
     Zoom_Automatique( false );
 

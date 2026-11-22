@@ -58,8 +58,7 @@ BOOST_AUTO_TEST_CASE( ModifiedBoardStagesCurrentState )
 
     BOOST_REQUIRE_MESSAGE( std::filesystem::exists( sourceBoard ), "Missing test board " << sourceBoard );
 
-    std::unique_ptr<BOARD> board = KI_TEST::ReadBoardFromFileOrStream( sourceBoard );
-    BOOST_REQUIRE( board );
+    std::unique_ptr<BOARD> board = KI_TEST::RequireBoardFromPcbnewQAData( "issue23704/issue23704.kicad_pcb" );
 
     const size_t originalCount = board->Footprints().size();
     BOOST_REQUIRE_MESSAGE( originalCount > 1, "Panel board needs multiple footprints to delete" );
@@ -69,7 +68,7 @@ BOOST_AUTO_TEST_CASE( ModifiedBoardStagesCurrentState )
     const KI_TEST::SCOPED_TEMP_DIR workDir( wxS( "kicad_step_export_23704_" ) );
     const std::filesystem::path& onDisk = workDir.Path() / "panel.kicad_pcb";
     KI_TEST::DumpBoardToFile( *board, onDisk );
-    const wxString onDiskPath = wxString::FromUTF8( onDisk.string() );
+    const wxString onDiskPath = KI_TEST::ToWxPath( onDisk );
 
     // A sibling project file must be staged too, so project-relative model and library paths
     // resolve identically during export.
@@ -132,8 +131,7 @@ BOOST_AUTO_TEST_CASE( UnmodifiedBoardStagesOnDiskFile )
 {
     const std::string sourceBoard = KI_TEST::GetPcbnewTestDataDir() + "issue23704/issue23704.kicad_pcb";
 
-    std::unique_ptr<BOARD> board = KI_TEST::ReadBoardFromFileOrStream( sourceBoard );
-    BOOST_REQUIRE( board );
+    std::unique_ptr<BOARD> board = KI_TEST::RequireBoardFromPcbnewQAData( "issue23704/issue23704.kicad_pcb" );
 
     const wxString onDiskPath = wxString::FromUTF8( sourceBoard );
 
@@ -154,10 +152,7 @@ BOOST_AUTO_TEST_CASE( UnmodifiedBoardStagesOnDiskFile )
  */
 BOOST_AUTO_TEST_CASE( UnsavedBoardIsRejected )
 {
-    const std::string sourceBoard = KI_TEST::GetPcbnewTestDataDir() + "issue23704/issue23704.kicad_pcb";
-
-    std::unique_ptr<BOARD> board = KI_TEST::ReadBoardFromFileOrStream( sourceBoard );
-    BOOST_REQUIRE( board );
+    std::unique_ptr<BOARD> board = KI_TEST::RequireBoardFromPcbnewQAData( "issue23704/issue23704.kicad_pcb" );
 
     wxString              inputPath;
     std::vector<wxString> tempFiles;

@@ -61,6 +61,7 @@
 #include <project/project_file.h>
 #include <project/net_settings.h>
 #include <sch_edit_frame.h>
+#include <eeschema_helpers.h>
 #include <symbol_chooser_frame.h>
 #include <sch_painter.h>
 #include <sch_marker.h>
@@ -72,6 +73,7 @@
 #include <advanced_config.h>
 #include <connectivity/conn_facade.h>
 #include <sim/simulator_frame.h>
+#include <sim/operating_point.h>
 #include <tool/action_manager.h>
 #include <tool/action_toolbar.h>
 #include <tool/common_control.h>
@@ -112,6 +114,7 @@
 #include <widgets/bitmap_button.h>
 #include <widgets/sch_properties_panel.h>
 #include <widgets/sch_search_pane.h>
+#include <widgets/git_commit_pane.h>
 #include <wildcards_and_files_ext.h>
 #include <wx/cmdline.h>
 #include <wx/app.h>
@@ -229,6 +232,7 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     m_searchPane = new SCH_SEARCH_PANE( this );
     m_propertiesPanel = new SCH_PROPERTIES_PANEL( this, this );
     m_remoteSymbolPane = new PANEL_REMOTE_SYMBOL( this );
+    m_gitCommitPane = new GIT_COMMIT_PANE( this );
 
     m_propertiesPanel->SetSplitterProportion( eeconfig()->m_AuiPanels.properties_splitter );
 
@@ -294,7 +298,25 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
                       .DestroyOnClose( false )
                       .Show( m_show_search ) );
 
+    m_auimgr.AddPane( m_gitCommitPane,
+                      EDA_PANE()
+                              .Name( GitCommitPaneName() )
+                              .Right()
+                              .Layer( 5 )
+                              .Caption( _( "Version Control" ) )
+                              .PaneBorder( false )
+                              .MinSize( wxSize( m_gitCommitPane->GetMinDockWidth(), FromDIP( 120 ) ) )
+                              .BestSize( wxSize( std::max( m_gitCommitPane->GetMinDockWidth(), FromDIP( 300 ) ),
+                                                 FromDIP( 300 ) ) )
+                              .FloatingSize( FromDIP( wxSize( 300, 400 ) ) )
+                              .DestroyOnClose( false )
+                              .CloseButton( true )
+                              .Hide() );
+
     RestoreAuiLayout();
+
+    // A saved layout brings its own minimum, so the one the panel needs is set again.
+    m_auimgr.GetPane( GitCommitPaneName() ).min_size.x = m_gitCommitPane->GetMinDockWidth();
     FinishAUIInitialization();
 
     wxAuiPaneInfo& hierarchy_pane = m_auimgr.GetPane( SchematicHierarchyPaneName() );
@@ -308,6 +330,7 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     netNavigatorPane.Show( aui_cfg.show_net_nav_panel );
     propertiesPane.Show( aui_cfg.show_properties );
     designBlocksPane.Show( aui_cfg.design_blocks_show );
+    m_auimgr.GetPane( GitCommitPaneName() ).Show( aui_cfg.show_git_commit_pane );
 
     if( m_remoteSymbolPane && !m_remoteSymbolPane->HasDataSources() )
         remoteSymbolPane.Show( false );
@@ -442,10 +465,6 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     m_netNavigator->Bind( wxEVT_TREE_SEL_CHANGED, &SCH_EDIT_FRAME::onNetNavigatorSelection, this );
     m_netNavigator->Bind( wxEVT_SIZE, &SCH_EDIT_FRAME::onResizeNetNavigator, this );
 
-    // This is used temporarily to fix a client size issue on GTK that causes zoom to fit
-    // to calculate the wrong zoom size.  See SCH_EDIT_FRAME::onSize().
-    Bind( wxEVT_SIZE, &SCH_EDIT_FRAME::onSize, this );
-
     setupUnits( eeconfig() );
 
     // Net list generator
@@ -525,7 +544,7 @@ void SCH_EDIT_FRAME::StartCrossProbeFlash( const std::vector<SCH_ITEM*>& aItems 
     if( !m_crossProbeFlashTimer.GetOwner() )
         m_crossProbeFlashTimer.SetOwner( this );
 
-    bool started = m_crossProbeFlashTimer.Start( 500, wxTIMER_CONTINUOUS );
+    [[maybe_unused]] bool started = m_crossProbeFlashTimer.Start( 500, wxTIMER_CONTINUOUS );
     wxLogTrace( traceCrossProbeFlash, "StartCrossProbeFlash: timer start=%d id=%d", (int) started,
                 m_crossProbeFlashTimer.GetId() );
 }
@@ -536,9 +555,9 @@ void SCH_EDIT_FRAME::OnCrossProbeFlashTimer( wxTimerEvent& aEvent )
     wxLogTrace( traceCrossProbeFlash, "Timer(SCH) fired: phase=%d running=%d items=%zu", m_crossProbeFlashPhase,
                 (int) m_crossProbeFlashing, m_crossProbeFlashItems.size() );
 
-    if( !m_crossProbeFlashing )
+    if( !m_crossProbeFlashing || !GetToolManager() )
     {
-        wxLogTrace( traceCrossProbeFlash, "Timer fired but not flashing (ignored)" );
+        wxLogTrace( traceCrossProbeFlash, "Timer fired without active flashing or tools (ignored)" );
         return;
     }
 
@@ -594,6 +613,12 @@ void SCH_EDIT_FRAME::OnCrossProbeFlashTimer( wxTimerEvent& aEvent )
 
 SCH_EDIT_FRAME::~SCH_EDIT_FRAME()
 {
+    // The loader hands this frame's schematic to callers, so it must not outlive the frame
+    EESCHEMA_HELPERS::SetSchEditFrame( nullptr );
+
+    m_crossProbeFlashing = false;
+    m_crossProbeFlashTimer.Stop();
+
     m_connectivitySubscription.Reset();
 
     // Ensure that teardowns without doCloseWindow are fully unregistered
@@ -767,6 +792,11 @@ void SCH_EDIT_FRAME::setupUIConditions()
                 return m_auimgr.GetPane( SearchPaneName() ).IsShown();
             };
 
+    auto gitCommitPaneCond = [this]( const SELECTION& )
+    {
+        return IsGitCommitPaneShown();
+    };
+
     auto propertiesCond =
             [this] ( const SELECTION& )
             {
@@ -831,6 +861,7 @@ void SCH_EDIT_FRAME::setupUIConditions()
     mgr->SetConditions( SCH_ACTIONS::showHierarchy,        CHECK( hierarchyNavigatorCond ) );
     mgr->SetConditions( SCH_ACTIONS::showNetNavigator,     CHECK( netNavigatorCond ) );
     mgr->SetConditions( ACTIONS::showProperties,           CHECK( propertiesCond ) );
+    mgr->SetConditions( ACTIONS::showGitCommitPane, CHECK( gitCommitPaneCond ) );
     mgr->SetConditions( SCH_ACTIONS::showDesignBlockPanel, CHECK( designBlockCond ) );
     mgr->SetConditions( SCH_ACTIONS::showRemoteSymbolPanel, CHECK( remoteSymbolCond ) );
     mgr->SetConditions( ACTIONS::toggleGrid,               CHECK( cond.GridVisible() ) );
@@ -1016,6 +1047,7 @@ void SCH_EDIT_FRAME::setupUIConditions()
     CURRENT_TOOL( SCH_ACTIONS::drawEllipse );
     CURRENT_TOOL( SCH_ACTIONS::drawEllipseArc );
     CURRENT_TOOL( SCH_ACTIONS::drawArc );
+    setArcModeConditions( SCH_ACTIONS::drawArc, SELECTION_CONDITIONS::ShowAlways );
     CURRENT_TOOL( SCH_ACTIONS::drawBezier );
     CURRENT_TOOL( SCH_ACTIONS::drawPolygon );
     CURRENT_TOOL( SCH_ACTIONS::drawLines );
@@ -1159,6 +1191,10 @@ void SCH_EDIT_FRAME::HardRedraw()
 
     GetCanvas()->DisplaySheet( GetCurrentSheet().LastScreen() );
 
+    // The modern canvas only re-emits cached geometry for dirty items, so the new sheet's static
+    // pool would otherwise stay empty
+    GetCanvas()->GetView()->UpdateAllItems( KIGFX::ALL );
+
     if( SCH_SELECTION_TOOL* selectionTool = m_toolManager->GetTool<SCH_SELECTION_TOOL>() )
         selectionTool->Reset( TOOL_BASE::REDRAW );
 
@@ -1175,11 +1211,8 @@ bool SCH_EDIT_FRAME::canCloseWindow( wxCloseEvent& aEvent )
         m_toolManager->RunAction( ACTIONS::cancelInteractive );
 
     // Shutdown blocks must be determined and vetoed as early as possible
-    if( KIPLATFORM::APP::SupportsShutdownBlockReason() && aEvent.GetId() == wxEVT_QUERY_END_SESSION
-            && IsContentModified() )
-    {
+    if( isBlockableSessionEnd() && IsContentModified() )
         return false;
-    }
 
     if( Kiface().IsSingle() )
     {
@@ -1258,6 +1291,9 @@ bool SCH_EDIT_FRAME::canCloseWindow( wxCloseEvent& aEvent )
 
 void SCH_EDIT_FRAME::doCloseWindow()
 {
+    m_crossProbeFlashing = false;
+    m_crossProbeFlashTimer.Stop();
+
     Pgm().GetApiServer().DeregisterHandler( m_apiHandler.get() );
     wxTheApp->Unbind( EDA_EVT_PLUGIN_AVAILABILITY_CHANGED, &SCH_EDIT_FRAME::onPluginAvailabilityChanged, this );
 
@@ -1383,6 +1419,15 @@ void SCH_EDIT_FRAME::OnModify()
 
     if( GetScreen() && !GetTitle().StartsWith( wxS( "*" ) ) )
         updateTitle();
+}
+
+
+void SCH_EDIT_FRAME::SetContentModified( bool aModified )
+{
+    if( SCH_SCREEN* screen = GetScreen() )
+        screen->SetContentModified( aModified );
+
+    updateTitle();
 }
 
 
@@ -1548,7 +1593,13 @@ void SCH_EDIT_FRAME::ProjectChanged()
         m_symbolFieldsTableDialog = nullptr;
     }
 
-    // Register schematic saver for autosave history
+    registerHistorySaver();
+    m_designBlocksPane->ProjectChanged();
+}
+
+
+void SCH_EDIT_FRAME::registerHistorySaver()
+{
     Kiway().LocalHistory().RegisterSaver( m_schematic,
             [this]( const wxString& aProjectPath, std::vector<HISTORY_FILE_DATA>& aFileData )
             {
@@ -1556,7 +1607,8 @@ void SCH_EDIT_FRAME::ProjectChanged()
             },
             m_schematic->GetHistoryLifetimeToken() );
 
-    m_designBlocksPane->ProjectChanged();
+    // A standalone editor has no project manager to record the project's own files
+    Kiway().LocalHistory().RegisterProjectSaver( &Prj() );
 }
 
 
@@ -1661,6 +1713,23 @@ void SCH_EDIT_FRAME::OnExit( wxCommandEvent& event )
 }
 
 
+void SCH_EDIT_FRAME::RefreshComposedReferences()
+{
+    GetCanvas()->GetView()->UpdateAllItemsConditionally(
+            [this]( KIGFX::VIEW_ITEM* aItem ) -> int
+            {
+                SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( aItem );
+
+                if( !symbol )
+                    return 0;
+
+                symbol->ClearCaches();
+                GetScreen()->UpdateDisplayBounds( symbol );
+                return KIGFX::GEOMETRY | KIGFX::REPAINT;
+            } );
+}
+
+
 void SCH_EDIT_FRAME::RefreshOperatingPointDisplay()
 {
     SCHEMATIC_SETTINGS& settings = m_schematic->Settings();
@@ -1760,11 +1829,11 @@ void SCH_EDIT_FRAME::RefreshOperatingPointDisplay()
                 std::vector<EMBEDDED_FILES*> embeddedFilesStack;
                 embeddedFilesStack.push_back( m_schematic->GetEmbeddedFiles() );
 
-                if( EMBEDDED_FILES* symbolEmbeddedFiles = symbol->GetEmbeddedFiles() )
-                {
-                    embeddedFilesStack.push_back( symbolEmbeddedFiles );
+                if( symbol->GetLibSymbolRef() )
                     symbol->GetLibSymbolRef()->AppendParentEmbeddedFiles( embeddedFilesStack );
-                }
+
+                if( EMBEDDED_FILES* symbolEmbeddedFiles = symbol->GetEmbeddedFiles() )
+                    embeddedFilesStack.push_back( symbolEmbeddedFiles );
 
                 simLibMgr.SetFilesStack( std::move( embeddedFilesStack ) );
 
@@ -1791,42 +1860,11 @@ void SCH_EDIT_FRAME::RefreshOperatingPointDisplay()
         }
     }
 
-    for( const auto& [ key, subgraphList ] : m_schematic->m_connectionGraph->GetNetMap() )
-    {
-        wxString op = m_schematic->GetOperatingPoint( key.Name, settings.m_OPO_VPrecision, settings.m_OPO_VRange );
-
-        if( !op.IsEmpty() && op != wxS( "--" ) && op != wxS( "?" ) )
-        {
-            for( CONNECTION_SUBGRAPH* subgraph : subgraphList )
+    UpdateOperatingPointVoltages( *m_schematic,
+            [this]( SCH_LINE* aWire )
             {
-                SCH_LINE* longestWire = nullptr;
-                double    length = 0.0;
-
-                if( subgraph->GetSheet().GetExcludedFromSim( variant ) )
-                    continue;
-
-                for( SCH_ITEM* item : subgraph->GetItems() )
-                {
-                    if( item->Type() == SCH_LINE_T )
-                    {
-                        SCH_LINE* line = static_cast<SCH_LINE*>( item );
-
-                        if( line->IsWire() && line->GetLength() > length )
-                        {
-                            longestWire = line;
-                            length = line->GetLength();
-                        }
-                    }
-                }
-
-                if( longestWire )
-                {
-                    longestWire->SetOperatingPoint( op );
-                    GetCanvas()->GetView()->Update( longestWire );
-                }
-            }
-        }
-    }
+                GetCanvas()->GetView()->Update( aWire );
+            } );
 }
 
 
@@ -1925,6 +1963,12 @@ bool SCH_EDIT_FRAME::RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FL
             {
                 itemsChanged = true;
                 GetCanvas()->GetView()->Update( aChangedItem, KIGFX::REPAINT );
+
+                if( aChangedItem->Type() == SCH_PIN_T || aChangedItem->Type() == SCH_SHEET_PIN_T )
+                {
+                    if( EDA_ITEM* parent = aChangedItem->GetParent() )
+                        GetCanvas()->GetView()->Update( parent, KIGFX::REPAINT );
+                }
 
                 if( ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
                     return;
@@ -2323,10 +2367,7 @@ const BOX2I SCH_EDIT_FRAME::GetDocumentExtents( bool aIncludeAllVisible ) const
 
 bool SCH_EDIT_FRAME::IsContentModified() const
 {
-    if( !Schematic().HasHierarchy() )
-        return false;
-
-    return Schematic().Hierarchy().IsModified();
+    return Schematic().IsHierarchyModified();
 }
 
 
@@ -2353,6 +2394,10 @@ void SCH_EDIT_FRAME::FocusOnItem( EDA_ITEM* aItem, bool aAllowScroll )
 
         UpdateItem( lastItem );
         lastBrightenedItemID = niluuid;
+
+        // Focusing a new item repaints as it moves the view, but clearing alone has to ask
+        if( !aItem )
+            GetCanvas()->Refresh();
     }
 
     if( aItem )
@@ -2380,23 +2425,6 @@ SELECTION& SCH_EDIT_FRAME::GetCurrentSelection()
 {
     return m_toolManager->GetTool<SCH_SELECTION_TOOL>()->GetSelection();
 }
-
-void SCH_EDIT_FRAME::onSize( wxSizeEvent& aEvent )
-{
-    // doCloseWindow() destroys the tool manager and then updates the AUI layout, which can
-    // dispatch a deferred size event back to this still-bound handler.
-    if( IsShown() && GetToolManager() )
-    {
-        // We only need this until the frame is done resizing and the final client size is
-        // established.
-        Unbind( wxEVT_SIZE, &SCH_EDIT_FRAME::onSize, this );
-        GetToolManager()->RunAction( ACTIONS::zoomFitScreen );
-    }
-
-    // Skip() is called in the base class.
-    EDA_DRAW_FRAME::OnSize( aEvent );
-}
-
 
 bool SCH_EDIT_FRAME::SaveSymbolToSchematic( const LIB_SYMBOL& aSymbol,
                                             const KIID& aSchematicSymbolUUID )
@@ -2454,7 +2482,7 @@ bool SCH_EDIT_FRAME::SaveSymbolToSchematic( const LIB_SYMBOL& aSymbol,
     }
 
     // Clear any orphaned alternate pins.
-    for( SCH_PIN* pin : principalSymbol->GetPins() )
+    for( SCH_PIN* pin : principalSymbol->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES ) )
     {
         wxString altName = pin->GetAlt();
 
@@ -3060,6 +3088,7 @@ void SCH_EDIT_FRAME::onPluginAvailabilityChanged( wxCommandEvent& aEvt )
 {
     wxLogTrace( traceApi, "SCH frame: EDA_EVT_PLUGIN_AVAILABILITY_CHANGED" );
     RecreateToolbars();
+    ReCreateMenuBar();
     aEvt.Skip();
 }
 
@@ -3294,6 +3323,7 @@ void SCH_EDIT_FRAME::SetSchematic( SCHEMATIC* aSchematic )
     m_toolManager->SetEnvironment( m_schematic, GetCanvas()->GetView(), GetCanvas()->GetViewControls(), config(),
                                    this );
     subscribeConnectivity();
+    registerHistorySaver();
 }
 
 
@@ -3397,30 +3427,27 @@ void SCH_EDIT_FRAME::RemoveVariant()
 
     VARIANT_PROXY_UNDO_ITEM* undoItem = new VARIANT_PROXY_UNDO_ITEM( &Schematic() );
     SCH_COMMIT               commit( this );
-    PICKED_ITEMS_LIST*       undoCmd = nullptr;
+    bool                     append = false;
 
     Schematic().DeleteVariant( variantName, &commit );
 
     if( !commit.Empty() )
     {
         commit.Push();
-        undoCmd = PopCommandFromUndoList();
-    }
-    else
-    {
-        undoCmd = new PICKED_ITEMS_LIST();
+        append = true;
     }
 
-    undoCmd->PushItem( ITEM_PICKER( GetScreen(), undoItem, UNDO_REDO::VARIANTS ) );
-    undoCmd->SetDescription( _( "Delete Variant" ) );
-    PushCommandToUndoList( undoCmd );
+    PICKED_ITEMS_LIST undoCmd;
+    undoCmd.PushItem( ITEM_PICKER( GetScreen(), undoItem, UNDO_REDO::VARIANTS ) );
+    undoCmd.SetDescription( _( "Delete Variant" ) );
+    SaveCopyInUndoList( undoCmd, UNDO_REDO::VARIANTS, append );
 
     OnModify();
 
     if( Schematic().GetCurrentVariant() == variantName )
         SetCurrentVariant( wxEmptyString );
 
-    UpdateVariantSelectionCtrl( Schematic().GetVariantNamesForUI() );
+    SyncVariantUI();
 
     GetCanvas()->Refresh();
 }
@@ -3501,32 +3528,27 @@ void SCH_EDIT_FRAME::RenameVariant()
 
     VARIANT_PROXY_UNDO_ITEM* undoItem = new VARIANT_PROXY_UNDO_ITEM( &Schematic() );
     SCH_COMMIT               commit( this );
-    PICKED_ITEMS_LIST*       undoCmd = nullptr;
+    bool                     append = false;
 
     Schematic().RenameVariant( oldName, newName, &commit );
 
     if( !commit.Empty() )
     {
         commit.Push();
-        undoCmd = PopCommandFromUndoList();
-    }
-    else
-    {
-        undoCmd = new PICKED_ITEMS_LIST();
+        append = true;
     }
 
-    undoCmd->PushItem( ITEM_PICKER( GetScreen(), undoItem, UNDO_REDO::VARIANTS ) );
-    undoCmd->SetDescription( _( "Rename Variant" ) );
-    PushCommandToUndoList( undoCmd );
+    PICKED_ITEMS_LIST undoCmd;
+    undoCmd.PushItem( ITEM_PICKER( GetScreen(), undoItem, UNDO_REDO::VARIANTS ) );
+    undoCmd.SetDescription( _( "Rename Variant" ) );
+    SaveCopyInUndoList( undoCmd, UNDO_REDO::VARIANTS, append );
 
     // The registry entry changes even when no symbol carries an override, so always mark dirty.
     OnModify();
 
-    UpdateVariantSelectionCtrl( Schematic().GetVariantNamesForUI() );
+    SyncVariantUI();
 
-    // The renamed label just disappeared from the control, so a plain repopulate falls back to the
-    // default selection.  Re-selecting the new name resyncs the toolbar and (via SetCurrentVariant)
-    // repaints ${VARIANT} text; a non-current rename needs no redraw.
+    // Repaint ${VARIANT} text under the new name; a non-current rename needs no redraw
     if( wasCurrent )
         SetCurrentVariant( newName );
 }
@@ -3570,28 +3592,25 @@ void SCH_EDIT_FRAME::CopyVariant()
 
     VARIANT_PROXY_UNDO_ITEM* undoItem = new VARIANT_PROXY_UNDO_ITEM( &Schematic() );
     SCH_COMMIT               commit( this );
-    PICKED_ITEMS_LIST*       undoCmd = nullptr;
+    bool                     append = false;
 
     Schematic().CopyVariant( sourceName, newName, &commit );
 
     if( !commit.Empty() )
     {
         commit.Push();
-        undoCmd = PopCommandFromUndoList();
-    }
-    else
-    {
-        undoCmd = new PICKED_ITEMS_LIST();
+        append = true;
     }
 
-    undoCmd->PushItem( ITEM_PICKER( GetScreen(), undoItem, UNDO_REDO::VARIANTS ) );
-    undoCmd->SetDescription( _( "Copy Variant" ) );
-    PushCommandToUndoList( undoCmd );
+    PICKED_ITEMS_LIST undoCmd;
+    undoCmd.PushItem( ITEM_PICKER( GetScreen(), undoItem, UNDO_REDO::VARIANTS ) );
+    undoCmd.SetDescription( _( "Copy Variant" ) );
+    SaveCopyInUndoList( undoCmd, UNDO_REDO::VARIANTS, append );
 
     // The new registry entry changes project state even when no symbol carries an override.
     OnModify();
 
-    UpdateVariantSelectionCtrl( Schematic().GetVariantNamesForUI() );
+    SyncVariantUI();
 
     // Switching to the freshly-created variant already refreshes properties and redraws.
     SetCurrentVariant( newName );

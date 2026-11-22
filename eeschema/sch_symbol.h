@@ -21,8 +21,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef SCH_SYMBOL_H
-#define SCH_SYMBOL_H
+#pragma once
 
 #include <eda_item.h>
 #include <core/typeinfo.h>
@@ -31,6 +30,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -54,6 +54,8 @@ class LEGACY_SYMBOL_LIBS;
 class SCH_SCREEN;
 class SCH_COMMIT;
 class SCH_SHAPE;
+class SCH_SYMBOL_FIELD_PROPERTY;
+
 
 namespace kiapi::schematic::types
 {
@@ -498,10 +500,38 @@ public:
     const SCH_FIELD* FindFieldCaseInsensitive( const wxString& aFieldName ) const;
 
     /**
-     * @return the reference for the instance on the given sheet.
+     * @return the reference for the instance on the given sheet, with the unit after the base and
+     *         the sheet path's reference suffix last, as in U12A_M4.
      */
     const wxString GetRef( const SCH_SHEET_PATH* aSheet,
                            bool aIncludeUnit = false ) const override;
+
+    /**
+     * @return the reference of \a aUnit of this symbol's package, with that unit's sheet suffix
+     *         when the package spans sheets.
+     */
+    wxString GetUnitRef( const SCH_SHEET_PATH* aSheet, int aUnit ) const;
+
+    /**
+     * Count of changes to any symbol's references, units, library links or placement.
+     *
+     * Caches built from references across the schematic rebuild when it moves.
+     */
+    static uint64_t RefGeneration();
+
+    /// Mark every cache built from references as stale.
+    static void BumpRefGeneration();
+
+    /**
+     * @return the stored reference for the instance on the given sheet, without the sheet path's
+     *         reference suffix.  This is what SetRef() takes and what annotation numbers.
+     */
+    wxString GetBaseRef( const SCH_SHEET_PATH* aSheet, bool aIncludeUnit = false ) const;
+
+    /**
+     * @return the reference shown on the current sheet, for descriptions that have no sheet path.
+     */
+    wxString GetCurrentSheetRef() const;
 
     /**
      * @return the value for the instance on the given sheet.
@@ -529,8 +559,14 @@ public:
 
     int GetUnitProp() const;
 
+    void SetFieldText( SCH_FIELD* aField, const wxString& aFieldName, const wxString& aFieldText,
+                       const SCH_SHEET_PATH* aPath, const wxString& aVariantName );
+
     void SetFieldText( const wxString& aFieldName, const wxString& aFieldText, const SCH_SHEET_PATH* aPath = nullptr,
                        const wxString& aVariantName = wxEmptyString );
+
+    wxString GetFieldText( const SCH_FIELD* aField, const wxString& aFieldName, const SCH_SHEET_PATH* aPath,
+                           const wxString& aVariantName ) const;
 
     wxString GetFieldText( const wxString& aFieldName, const SCH_SHEET_PATH* aPath = nullptr,
                            const wxString& aVariantName = wxEmptyString ) const;
@@ -673,19 +709,40 @@ public:
     std::vector<const SCH_PIN*> GetPins( const SCH_SHEET_PATH* aSheet ) const;
     std::vector<SCH_PIN*> GetPins( const SCH_SHEET_PATH* aSheet );
 
-    std::vector<SCH_PIN*> GetPins() const override;
+    std::vector<SCH_PIN*> GetGraphicalPins( int aUnit, int aBodyStyle ) const override;
 
 
     std::vector<std::unique_ptr<SCH_PIN>>& GetRawPins() { return m_pins; }
     const std::vector<std::unique_ptr<SCH_PIN>>& GetRawPins() const { return m_pins; }
 
     /**
-     * Set the reference for the given sheet path for this symbol.
+     * Set the base reference for the given sheet path for this symbol.
      *
      * @param aSheet is the hierarchical path of the reference.
-     * @param aReference is the new reference for the symbol.
+     * @param aReference is the new base reference, without the sheet path's reference suffix.
      */
     void SetRef( const SCH_SHEET_PATH* aSheet, const wxString& aReference );
+
+    /**
+     * Convert a reference typed on \a aSheet to the base reference.  Text that ends in the path's own
+     * reference suffix loses it.  Text that ends in the suffix of another instance of this symbol's
+     * file is refused, since it names another channel.
+     *
+     * @param aBase receives the base reference.
+     * @param aSchematic stands in for Schematic() on a symbol that is not on a screen yet.
+     * @return an error message, or an empty string when \a aBase is valid.
+     */
+    wxString BaseRefFromUser( const SCH_SHEET_PATH& aSheet, const wxString& aText, wxString& aBase,
+                              const SCHEMATIC* aSchematic = nullptr ) const;
+
+    /**
+     * Set a base reference chosen by the user on \a aSheet.  In suffix annotation mode every
+     * instance of the symbol's file takes it, so the channels keep one base.
+     */
+    void SetUserRef( const SCH_SHEET_PATH& aSheet, const wxString& aBase );
+
+    /// Flag the reference loaded for @a aPath as saved without its sheet suffix.
+    void SetRefLacksSuffix( const KIID_PATH& aPath, bool aLacksSuffix = true );
 
     /**
      * Check if the symbol has a valid annotation (reference) for the given sheet path.
@@ -744,6 +801,11 @@ public:
      */
     PIN_MAP_INSTANCE_OVERRIDE GetPinMapOverride( const SCH_SHEET_PATH* aInstance = nullptr,
                                                  const wxString&       aVariantName = wxEmptyString ) const;
+
+    /**
+     * Clear the base pin-to-pad map override and every variant's override.
+     */
+    void ClearPinMapOverrides();
 
     void SetExcludedFromBOM( bool aEnable, const SCH_SHEET_PATH* aInstance = nullptr,
                              const wxString& aVariantName = wxEmptyString ) override;
@@ -844,7 +906,7 @@ public:
     /**
      * @return true if the symbol is in netlist.
      */
-    bool IsInNetlist() const;
+    bool DoNetList() const;
 
     enum class PASSTHROUGH_MODE
     {
@@ -977,6 +1039,8 @@ public:
     bool IsPower() const override;
     bool IsNormal() const override;
 
+    void SetLocalPowerProp( bool aLocal );
+
     bool GetShowPinNames() const override;
     void SetShowPinNames( bool aShow ) override;
 
@@ -986,7 +1050,8 @@ public:
     double Similarity( const SCH_ITEM& aOther ) const override;
 
     /// Return the component classes this symbol belongs in.
-    std::unordered_set<wxString> GetComponentClassNames( const SCH_SHEET_PATH* aPath ) const;
+    std::unordered_set<wxString> GetComponentClassNames( const SCH_SHEET_PATH* aPath,
+                                                         const wxString& aVariantName ) const;
 
     void DeleteVariant( const KIID_PATH& aPath, const wxString& aVariantName );
 
@@ -1018,11 +1083,23 @@ public:
     bool ClearVariantSymbolOverride( const SCH_SHEET_PATH& aPath, const wxString& aVariantName );
 
     /**
+     * @return the distinct alternate-symbol LIB_IDs referenced by any variant of any instance.
+     */
+    std::vector<LIB_ID> GetVariantSymbolOverrides() const;
+
+    /**
+     * Load a flattened copy of an alternate symbol from the project's symbol libraries.
+     *
+     * @return the symbol, or nullptr if the library or symbol cannot be found.
+     */
+    std::unique_ptr<LIB_SYMBOL> LoadAlternateFromLibrary( const LIB_ID& aLibId ) const;
+
+    /**
      * Resolve the alternate library symbol for a given variant.
      *
-     * Looks up the variant's symbol override and resolves the LIB_ID through
-     * the project's symbol library adapter. Returns nullptr if the variant has no
-     * override or if the LIB_ID cannot be resolved.
+     * Looks up the variant's symbol override and resolves the LIB_ID through the schematic's
+     * library symbols first, then the project's symbol library adapter. Returns nullptr if the
+     * variant has no override or if the LIB_ID cannot be resolved.
      *
      * @param aVariantName the variant to resolve.
      * @param aPath the sheet path for this instance.
@@ -1053,16 +1130,14 @@ public:
      * @param aByNumber true when aLibPins belong to a variant alternate symbol.
      * @return instance pins aligned with aLibPins; entries are nullptr when unmatched.
      */
-    std::vector<SCH_PIN*> MapLibPins( const std::vector<const SCH_PIN*>& aLibPins,
-                                      bool aByNumber ) const;
+    std::vector<SCH_PIN*> MapLibPins( const std::vector<SCH_PIN*>& aLibPins, bool aByNumber ) const;
 
     void DeleteVariant( const SCH_SHEET_PATH& aInstance, const wxString& aVariantName )
     {
         DeleteVariant( aInstance.Path(), aVariantName );
     }
 
-    void RenameVariant( const SCH_SHEET_PATH& aInstance, const wxString& aOldName,
-                        const wxString& aNewName )
+    void RenameVariant( const SCH_SHEET_PATH& aInstance, const wxString& aOldName, const wxString& aNewName )
     {
         RenameVariant( aInstance.Path(), aOldName, aNewName );
     }
@@ -1077,6 +1152,14 @@ public:
 
 protected:
     void swapData( SCH_ITEM* aItem ) override;
+
+    struct cmp_pins
+    {
+        bool operator()( const SCH_PIN* aFirst, const SCH_PIN* aSecond ) const
+        {
+            return *aFirst < *aSecond;
+        }
+    };
 
 private:
     // Copy construction must relink pins without invalidating the live source screen.
@@ -1101,13 +1184,21 @@ private:
     PIN_MAP_INSTANCE_OVERRIDE resolveDelegatedPinMapOverride( const SCH_SHEET_PATH& aSheet,
                                                               const wxString&       aVariantName ) const;
 
+    void rebuildInstancePathIndex();
+
+    /**
+     * @param aUnit replaces the instance's own unit when given.
+     */
+    wxString refFor( const SCH_SHEET_PATH* aSheet, bool aIncludeUnit, bool aCompose,
+                     std::optional<int> aUnit = std::nullopt ) const;
+
 private:
-    VECTOR2I    m_pos;
-    LIB_ID      m_lib_id;       ///< Name and library the symbol was loaded from, i.e. 74xx:74LS00.
-    wxString    m_prefix;       ///< C, R, U, Q etc - the first character(s) which typically
-                                ///<   indicate what the symbol is. Determined, upon placement,
-                                ///<   from the library symbol.  Created upon file load, by the
-                                ///<   first non-digits in the reference fields.
+    VECTOR2I              m_pos;
+    LIB_ID                m_lib_id;       ///< Name and library the symbol was loaded from, i.e. 74xx:74LS00.
+    wxString              m_prefix;       ///< C, R, U, Q etc - the first character(s) which typically
+                                          ///<   indicate what the symbol is. Determined, upon placement,
+                                          ///<   from the library symbol.  Created upon file load, by the
+                                          ///<   first non-digits in the reference fields.
 
     /**
      * The name used to look up a symbol in the symbol library embedded in a schematic.
@@ -1116,29 +1207,32 @@ private:
      * multiple variants of the same library symbol.  Set this member in order to preserve the
      * link to the original symbol library.  If empty, #LIB_ID::GetLibItemName() should be used.
      */
-    wxString                    m_schLibSymbolName;
+    wxString                               m_schLibSymbolName;
 
-    std::vector<SCH_FIELD>      m_fields;        ///< Variable length list of fields.
+    std::vector<SCH_FIELD>                 m_fields;        ///< Variable length list of fields.
 
-    /// Per-object cache of dynamic property descriptors for custom fields and
-    /// effective pin-map entries, keyed by descriptor name and populated
-    /// lazily.
-    mutable std::map<wxString, std::unique_ptr<PROPERTY_BASE>> m_dynamicPropertyCache;
+    /// Per-object cache of dynamic property descriptors for custom fields, keyed by descriptor name
+    /// and populated lazily.  Entries linger after a key is removed but are simply not enumerated.
+    mutable std::map<wxString, std::unique_ptr<SCH_SYMBOL_FIELD_PROPERTY>> m_fieldPropsStorageCache;
 
-    std::unique_ptr<LIB_SYMBOL> m_part;          ///< A flattened copy of the #LIB_SYMBOL from the
-                                                 ///< #PROJECT object's libraries.
-    bool                        m_isInNetlist;   ///< True if the symbol should appear in netlist
+    /// Same for effective pin-map entries.  We can't combine these because they're indexed by name
+    /// and could have collisions.  Entries linger after a key is removed but are simply not enumerated.
+    mutable std::map<wxString, std::unique_ptr<PROPERTY_BASE>> m_pinMapPropsStorageCache;
 
-    PASSTHROUGH_MODE            m_passthroughMode;
+    std::unique_ptr<LIB_SYMBOL>            m_part;          ///< A flattened copy of the #LIB_SYMBOL from the
+                                                            ///< #PROJECT object's libraries.
+    bool                                   m_doNetlist;     ///< True if the symbol should appear in netlist
 
-    wxString                    m_signalName;
+    PASSTHROUGH_MODE                       m_passthroughMode;
+
+    wxString                               m_signalName;
 
     std::vector<std::unique_ptr<SCH_PIN>>  m_pins;     ///< A copy of #SCH_PIN objects from the library symbol.
     std::unordered_map<SCH_PIN*, SCH_PIN*> m_pinMap;   ///< Library pin pointer : #SCH_PIN indices.
 
     /// Base (no-variant) pin-to-pad map override applied when no variant override exists for the
     /// sheet path (issue #2282).
-    PIN_MAP_INSTANCE_OVERRIDE m_pinMapOverride;
+    PIN_MAP_INSTANCE_OVERRIDE              m_pinMapOverride;
 
     /**
      * Define the hierarchical path and reference of the symbol.
@@ -1153,13 +1247,8 @@ private:
      */
     std::unordered_map<KIID_PATH, size_t>  m_instancePathIndex;
 
-    void rebuildInstancePathIndex();
-
     mutable std::map<wxString, std::unique_ptr<LIB_SYMBOL>> m_variantSymbolCache;
 
     /// @see SCH_SYMBOL::GetOrientation
     static std::unordered_map<TRANSFORM, int> s_transformToOrientationCache;
 };
-
-
-#endif /* SCH_SYMBOL_H */

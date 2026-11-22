@@ -318,7 +318,7 @@ void DIALOG_GLOBAL_EDIT_TRACKS_AND_VIAS::processItem( PICKED_ITEMS_LIST* aUndoLi
                 aUndoList->PushItem( picker );
             }
 
-            aItem->SetLayer( ToLAYER_ID( m_layerCtrl->GetLayerSelection() ) );
+            aItem->SetLayer( m_layerCtrl->GetLayerIDSelection() );
             m_parent->GetBoard()->GetConnectivity()->Update( aItem );
         }
     }
@@ -364,13 +364,15 @@ void DIALOG_GLOBAL_EDIT_TRACKS_AND_VIAS::visitItem( PICKED_ITEMS_LIST* aUndoList
 
     if( m_layerFilterOpt->GetValue() && m_layerFilter->GetLayerSelection() != UNDEFINED_LAYER )
     {
-        if( aItem->GetLayer() != m_layerFilter->GetLayerSelection() )
+        if( aItem->GetLayer() != m_layerFilter->GetLayerIDSelection() )
             return;
     }
 
     if( aItem->Type() == PCB_VIA_T )
     {
-        if( m_filterByViaSize->GetValue() && aItem->GetWidth() != m_viaSizeFilter.GetValue() )
+        PCB_VIA* via = static_cast<PCB_VIA*>( aItem );
+
+        if( m_filterByViaSize->GetValue() && via->GetWidth( PADSTACK::ALL_LAYERS ) != m_viaSizeFilter.GetValue() )
             return;
     }
     else

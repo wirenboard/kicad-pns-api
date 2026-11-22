@@ -22,7 +22,10 @@
 #include <board.h>
 #include <board_loader.h>
 #include <board_design_settings.h>
+#include <footprint.h>
+#include <pad.h>
 #include <pcb_reference_image.h>
+#include <pcb_track.h>
 #include <pcb_io/pcb_io_mgr.h>
 #include <pcbnew_utils/board_file_utils.h>
 #include <project.h>
@@ -87,4 +90,50 @@ BOOST_FIXTURE_TEST_CASE( BoardLoaderWithoutInit, BOARD_LOADER_TEST_FIXTURE )
     BOOST_REQUIRE( board );
     BOOST_CHECK_NE( board->GetProject(), project );
     BOOST_CHECK( board->GetDesignSettings().m_DRCEngine == nullptr );
+}
+
+
+BOOST_AUTO_TEST_CASE( CollinearTrackArcLoadsAsTrack )
+{
+    const std::string path = KI_TEST::GetPcbnewTestDataDir()
+                             + "plugins/allegro/boards/VCU118_REV2-0/8851_HW-U1-VCU118_REV2-0_071417.kicad_pcb";
+
+    std::unique_ptr<BOARD> board = KI_TEST::ReadBoardFromFileOrStream( path );
+
+    BOOST_REQUIRE( board );
+
+    // Collinear (arc ...) record in the file
+    BOARD_ITEM* item = board->ResolveItem( KIID( "945ee847-b394-409c-b580-2568b3573ad8" ) );
+
+    BOOST_REQUIRE( item );
+    BOOST_CHECK_EQUAL( item->Type(), PCB_TRACE_T );
+
+    PCB_TRACK* track = static_cast<PCB_TRACK*>( item );
+
+    BOOST_CHECK_EQUAL( track->GetStart(),
+                       VECTOR2I( pcbIUScale.mmToIU( 81.471125 ), pcbIUScale.mmToIU( -136.690775 ) ) );
+    BOOST_CHECK_EQUAL( track->GetEnd(),
+                       VECTOR2I( pcbIUScale.mmToIU( 81.476825 ), pcbIUScale.mmToIU( -136.685025 ) ) );
+    BOOST_CHECK_EQUAL( track->GetWidth(), pcbIUScale.mmToIU( 0.15 ) );
+    BOOST_CHECK_EQUAL( track->GetLayer(), In2_Cu );
+    BOOST_CHECK_EQUAL( track->GetNetname(), wxString( "FMCP_HSPC_DP11_C2M_N" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( LegacyPadNumericNetNameLoads )
+{
+    const std::string path = KI_TEST::GetPcbnewTestDataDir() + "c4_motherboard.kicad_pcb";
+
+    std::unique_ptr<BOARD> board = KI_TEST::ReadBoardFromFileOrStream( path );
+
+    BOOST_REQUIRE( board );
+
+    FOOTPRINT* vrm = board->FindFootprintByReference( wxS( "VRM901" ) );
+
+    BOOST_REQUIRE( vrm );
+
+    PAD* pad = vrm->FindPadByNumber( wxS( "B8" ) );
+
+    BOOST_REQUIRE( pad );
+    BOOST_CHECK_EQUAL( pad->GetNetname(), wxString( "+12" ) );
 }

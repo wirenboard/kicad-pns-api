@@ -25,6 +25,7 @@
 
 #include <wx/valnum.h>
 
+#include <bitmaps.h>
 #include <pcb_base_edit_frame.h>
 #include <pcb_edit_frame.h>
 #include <board_commit.h>
@@ -542,7 +543,9 @@ public:
         const VECTOR2I p1{ GetIntValue( SME_MID_X ), GetIntValue( SME_MID_Y ) };
         const VECTOR2I p2{ GetIntValue( SME_END_X ), GetIntValue( SME_END_Y ) };
 
-        GetShape().SetArcGeometry( p0, p1, p2 );
+        // Collinear typed points have no arc, keep the previous geometry
+        if( !IsStraightArc( p0, p1, p2 ) )
+            GetShape().SetArcGeometry( p0, p1, p2 );
 
         updateCSA();
         updateCRAA();
@@ -1503,8 +1506,6 @@ bool DIALOG_SHAPE_PROPERTIES::TransferDataFromWindow()
     if( !m_item )
         return true;
 
-    int layer = m_LayerSelectionCtrl->GetLayerSelection();
-
     BOARD_COMMIT commit( m_parent );
     commit.Modify( m_item );
 
@@ -1535,7 +1536,7 @@ bool DIALOG_SHAPE_PROPERTIES::TransferDataFromWindow()
     else
         m_item->SetLineStyle( it->first );
 
-    m_item->SetLayer( ToLAYER_ID( layer ) );
+    m_item->SetLayer( m_LayerSelectionCtrl->GetLayerIDSelection() );
 
     m_item->SetHasSolderMask( m_hasSolderMask->GetValue() );
 

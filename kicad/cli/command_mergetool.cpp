@@ -51,6 +51,7 @@ static int translateExitCode( int aKicadExit )
     switch( aKicadExit )
     {
     case SUCCESS:                       return 0;
+    case ERR_CANCELLED: return 1;
     case ERR_RC_VIOLATIONS:             return 2;   // unresolved conflicts
     case ERR_INVALID_INPUT_FILE:
     case ERR_INVALID_OUTPUT_CONFLICT:   return 3;   // I/O or parse error
@@ -123,7 +124,7 @@ int CLI::MERGETOOL_COMMAND::doPerform( KIWAY& /* aKiway */ )
     if( !supportsMergetoolKind( kind ) )
     {
         wxFprintf( stderr,
-                   _( "Unsupported output extension '%s'. "
+                   _( "Unsupported output file '%s'. "
                       "Expected .kicad_pcb, .kicad_sch, .kicad_sym, or .kicad_mod\n" ),
                    output );
         return EXIT_CODES::ERR_INVALID_INPUT_FILE;   // contract code 3 — bad input

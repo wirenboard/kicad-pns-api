@@ -30,6 +30,7 @@
 #include <widgets/report_severity.h>
 
 #include <board_stackup_manager/board_stackup.h>
+#include <board_tables/generated_table_schema.h>
 #include <constraints/pcb_constraint.h>
 #include <drc/drc_item.h>
 #include <padstack.h>
@@ -68,10 +69,11 @@ types::PadType ToProtoEnum( PAD_ATTRIB aValue )
 {
     switch( aValue )
     {
-    case PAD_ATTRIB::PTH:   return types::PadType::PT_PTH;
-    case PAD_ATTRIB::SMD:   return types::PadType::PT_SMD;
-    case PAD_ATTRIB::CONN:  return types::PadType::PT_EDGE_CONNECTOR;
-    case PAD_ATTRIB::NPTH:  return types::PadType::PT_NPTH;
+    case PAD_ATTRIB::PTH:           return types::PadType::PT_PTH;
+    case PAD_ATTRIB::SMD:           return types::PadType::PT_SMD;
+    case PAD_ATTRIB::CONN:          return types::PadType::PT_EDGE_CONNECTOR;
+    case PAD_ATTRIB::NPTH:          return types::PadType::PT_NPTH;
+    case PAD_ATTRIB::NON_COMPONENT: return types::PadType::PT_NON_COMPONENT;
 
     default:
         wxCHECK_MSG( false, types::PadType::PT_UNKNOWN,
@@ -90,6 +92,7 @@ PAD_ATTRIB FromProtoEnum( types::PadType aValue )
     case types::PadType::PT_SMD:            return PAD_ATTRIB::SMD;
     case types::PadType::PT_EDGE_CONNECTOR: return PAD_ATTRIB::CONN;
     case types::PadType::PT_NPTH:           return PAD_ATTRIB::NPTH;
+    case types::PadType::PT_NON_COMPONENT:  return PAD_ATTRIB::NON_COMPONENT;
 
     default:
         wxCHECK_MSG( false,  PAD_ATTRIB::PTH,
@@ -323,50 +326,48 @@ CustomRuleConstraintType ToProtoEnum( DRC_CONSTRAINT_T aValue )
 {
     switch( aValue )
     {
-    case NULL_CONSTRAINT:                 return CustomRuleConstraintType::CRCT_UNKNOWN;
-    case CLEARANCE_CONSTRAINT:            return CustomRuleConstraintType::CRCT_CLEARANCE;
-    case CREEPAGE_CONSTRAINT:             return CustomRuleConstraintType::CRCT_CREEPAGE;
-    case HOLE_CLEARANCE_CONSTRAINT:       return CustomRuleConstraintType::CRCT_HOLE_CLEARANCE;
-    case HOLE_TO_HOLE_CONSTRAINT:         return CustomRuleConstraintType::CRCT_HOLE_TO_HOLE;
-    case EDGE_CLEARANCE_CONSTRAINT:       return CustomRuleConstraintType::CRCT_EDGE_CLEARANCE;
-    case HOLE_SIZE_CONSTRAINT:            return CustomRuleConstraintType::CRCT_HOLE_SIZE;
-    case COURTYARD_CLEARANCE_CONSTRAINT:  return CustomRuleConstraintType::CRCT_COURTYARD_CLEARANCE;
-    case SILK_CLEARANCE_CONSTRAINT:       return CustomRuleConstraintType::CRCT_SILK_CLEARANCE;
-    case TEXT_HEIGHT_CONSTRAINT:          return CustomRuleConstraintType::CRCT_TEXT_HEIGHT;
-    case TEXT_THICKNESS_CONSTRAINT:       return CustomRuleConstraintType::CRCT_TEXT_THICKNESS;
-    case TRACK_WIDTH_CONSTRAINT:          return CustomRuleConstraintType::CRCT_TRACK_WIDTH;
-    case TRACK_SEGMENT_LENGTH_CONSTRAINT: return CustomRuleConstraintType::CRCT_TRACK_SEGMENT_LENGTH;
-    case ANNULAR_WIDTH_CONSTRAINT:        return CustomRuleConstraintType::CRCT_ANNULAR_WIDTH;
-    case ZONE_CONNECTION_CONSTRAINT:      return CustomRuleConstraintType::CRCT_ZONE_CONNECTION;
-    case THERMAL_RELIEF_GAP_CONSTRAINT:   return CustomRuleConstraintType::CRCT_THERMAL_RELIEF_GAP;
-    case THERMAL_SPOKE_WIDTH_CONSTRAINT:  return CustomRuleConstraintType::CRCT_THERMAL_SPOKE_WIDTH;
-    case MIN_RESOLVED_SPOKES_CONSTRAINT:  return CustomRuleConstraintType::CRCT_MIN_RESOLVED_SPOKES;
-    case MICROVIA_STACK_DEPTH_CONSTRAINT: return CustomRuleConstraintType::CRCT_MICROVIA_STACK_DEPTH;
-    case MICROVIA_ASPECT_RATIO_CONSTRAINT: return CustomRuleConstraintType::CRCT_MICROVIA_ASPECT_RATIO;
-    case SOLDER_MASK_EXPANSION_CONSTRAINT:return CustomRuleConstraintType::CRCT_SOLDER_MASK_EXPANSION;
+    case NULL_CONSTRAINT:                   return CustomRuleConstraintType::CRCT_UNKNOWN;
+    case CLEARANCE_CONSTRAINT:              return CustomRuleConstraintType::CRCT_CLEARANCE;
+    case CREEPAGE_CONSTRAINT:               return CustomRuleConstraintType::CRCT_CREEPAGE;
+    case HOLE_CLEARANCE_CONSTRAINT:         return CustomRuleConstraintType::CRCT_HOLE_CLEARANCE;
+    case HOLE_TO_HOLE_CONSTRAINT:           return CustomRuleConstraintType::CRCT_HOLE_TO_HOLE;
+    case EDGE_CLEARANCE_CONSTRAINT:         return CustomRuleConstraintType::CRCT_EDGE_CLEARANCE;
+    case HOLE_SIZE_CONSTRAINT:              return CustomRuleConstraintType::CRCT_HOLE_SIZE;
+    case COURTYARD_CLEARANCE_CONSTRAINT:    return CustomRuleConstraintType::CRCT_COURTYARD_CLEARANCE;
+    case SILK_CLEARANCE_CONSTRAINT:         return CustomRuleConstraintType::CRCT_SILK_CLEARANCE;
+    case TEXT_HEIGHT_CONSTRAINT:            return CustomRuleConstraintType::CRCT_TEXT_HEIGHT;
+    case LINE_WIDTH_CONSTRAINT:             return CustomRuleConstraintType::CRCT_LINE_WIDTH;
+    case TRACK_WIDTH_CONSTRAINT:            return CustomRuleConstraintType::CRCT_TRACK_WIDTH;
+    case TRACK_SEGMENT_LENGTH_CONSTRAINT:   return CustomRuleConstraintType::CRCT_TRACK_SEGMENT_LENGTH;
+    case ANNULAR_WIDTH_CONSTRAINT:          return CustomRuleConstraintType::CRCT_ANNULAR_WIDTH;
+    case ZONE_CONNECTION_CONSTRAINT:        return CustomRuleConstraintType::CRCT_ZONE_CONNECTION;
+    case THERMAL_RELIEF_GAP_CONSTRAINT:     return CustomRuleConstraintType::CRCT_THERMAL_RELIEF_GAP;
+    case THERMAL_SPOKE_WIDTH_CONSTRAINT:    return CustomRuleConstraintType::CRCT_THERMAL_SPOKE_WIDTH;
+    case MIN_RESOLVED_SPOKES_CONSTRAINT:    return CustomRuleConstraintType::CRCT_MIN_RESOLVED_SPOKES;
+    case MICROVIA_STACK_DEPTH_CONSTRAINT:   return CustomRuleConstraintType::CRCT_MICROVIA_STACK_DEPTH;
+    case HOLE_ASPECT_RATIO_CONSTRAINT:      return CustomRuleConstraintType::CRCT_HOLE_ASPECT_RATIO;
+    case SOLDER_MASK_EXPANSION_CONSTRAINT:  return CustomRuleConstraintType::CRCT_SOLDER_MASK_EXPANSION;
     case SOLDER_PASTE_ABS_MARGIN_CONSTRAINT:return CustomRuleConstraintType::CRCT_SOLDER_PASTE_ABS_MARGIN;
     case SOLDER_PASTE_REL_MARGIN_CONSTRAINT:return CustomRuleConstraintType::CRCT_SOLDER_PASTE_REL_MARGIN;
-    case DISALLOW_CONSTRAINT:             return CustomRuleConstraintType::CRCT_DISALLOW;
-    case VIA_DIAMETER_CONSTRAINT:         return CustomRuleConstraintType::CRCT_VIA_DIAMETER;
-    case LENGTH_CONSTRAINT:               return CustomRuleConstraintType::CRCT_LENGTH;
-    case SKEW_CONSTRAINT:                 return CustomRuleConstraintType::CRCT_SKEW;
-    case DIFF_PAIR_GAP_CONSTRAINT:        return CustomRuleConstraintType::CRCT_DIFF_PAIR_GAP;
-    case MAX_UNCOUPLED_CONSTRAINT:        return CustomRuleConstraintType::CRCT_MAX_UNCOUPLED;
-    case DIFF_PAIR_INTRA_SKEW_CONSTRAINT: return CustomRuleConstraintType::CRCT_DIFF_PAIR_INTRA_SKEW;
-    case VIA_COUNT_CONSTRAINT:            return CustomRuleConstraintType::CRCT_VIA_COUNT;
-    case PHYSICAL_CLEARANCE_CONSTRAINT:   return CustomRuleConstraintType::CRCT_PHYSICAL_CLEARANCE;
+    case DISALLOW_CONSTRAINT:               return CustomRuleConstraintType::CRCT_DISALLOW;
+    case VIA_DIAMETER_CONSTRAINT:           return CustomRuleConstraintType::CRCT_VIA_DIAMETER;
+    case LENGTH_CONSTRAINT:                 return CustomRuleConstraintType::CRCT_LENGTH;
+    case SKEW_CONSTRAINT:                   return CustomRuleConstraintType::CRCT_SKEW;
+    case DIFF_PAIR_GAP_CONSTRAINT:          return CustomRuleConstraintType::CRCT_DIFF_PAIR_GAP;
+    case MAX_UNCOUPLED_CONSTRAINT:          return CustomRuleConstraintType::CRCT_MAX_UNCOUPLED;
+    case DIFF_PAIR_INTRA_SKEW_CONSTRAINT:   return CustomRuleConstraintType::CRCT_DIFF_PAIR_INTRA_SKEW;
+    case VIA_COUNT_CONSTRAINT:              return CustomRuleConstraintType::CRCT_VIA_COUNT;
+    case PHYSICAL_CLEARANCE_CONSTRAINT:     return CustomRuleConstraintType::CRCT_PHYSICAL_CLEARANCE;
     case PHYSICAL_HOLE_CLEARANCE_CONSTRAINT:return CustomRuleConstraintType::CRCT_PHYSICAL_HOLE_CLEARANCE;
-    case ASSERTION_CONSTRAINT:            return CustomRuleConstraintType::CRCT_ASSERTION;
-    case CONNECTION_WIDTH_CONSTRAINT:     return CustomRuleConstraintType::CRCT_CONNECTION_WIDTH;
-    case TRACK_ANGLE_CONSTRAINT:          return CustomRuleConstraintType::CRCT_TRACK_ANGLE;
-    case VIA_DANGLING_CONSTRAINT:         return CustomRuleConstraintType::CRCT_VIA_DANGLING;
-    case BRIDGED_MASK_CONSTRAINT:         return CustomRuleConstraintType::CRCT_BRIDGED_MASK;
-    case SOLDER_MASK_SLIVER_CONSTRAINT:   return CustomRuleConstraintType::CRCT_SOLDER_MASK_SLIVER;
-    case NET_CHAIN_LENGTH_CONSTRAINT:        return CustomRuleConstraintType::CRCT_NET_CHAIN_LENGTH;
-    case NET_CHAIN_STUB_LENGTH_CONSTRAINT:
-        return CustomRuleConstraintType::CRCT_NET_CHAIN_STUB_LENGTH;
-    case NET_CHAIN_RETURN_PATH_CONSTRAINT:
-        return CustomRuleConstraintType::CRCT_NET_CHAIN_RETURN_PATH;
+    case ASSERTION_CONSTRAINT:              return CustomRuleConstraintType::CRCT_ASSERTION;
+    case CONNECTION_WIDTH_CONSTRAINT:       return CustomRuleConstraintType::CRCT_CONNECTION_WIDTH;
+    case TRACK_ANGLE_CONSTRAINT:            return CustomRuleConstraintType::CRCT_TRACK_ANGLE;
+    case VIA_DANGLING_CONSTRAINT:           return CustomRuleConstraintType::CRCT_VIA_DANGLING;
+    case BRIDGED_MASK_CONSTRAINT:           return CustomRuleConstraintType::CRCT_BRIDGED_MASK;
+    case SOLDER_MASK_SLIVER_CONSTRAINT:     return CustomRuleConstraintType::CRCT_SOLDER_MASK_SLIVER;
+    case NET_CHAIN_LENGTH_CONSTRAINT:       return CustomRuleConstraintType::CRCT_NET_CHAIN_LENGTH;
+    case NET_CHAIN_STUB_LENGTH_CONSTRAINT:  return CustomRuleConstraintType::CRCT_NET_CHAIN_STUB_LENGTH;
+    case NET_CHAIN_RETURN_PATH_CONSTRAINT:  return CustomRuleConstraintType::CRCT_NET_CHAIN_RETURN_PATH;
 
     default:
         wxCHECK_MSG( false, CustomRuleConstraintType::CRCT_UNKNOWN,
@@ -380,48 +381,48 @@ DRC_CONSTRAINT_T FromProtoEnum( CustomRuleConstraintType aValue )
 {
     switch( aValue )
     {
-    case CustomRuleConstraintType::CRCT_UNKNOWN:               return NULL_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_CLEARANCE:             return CLEARANCE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_CREEPAGE:              return CREEPAGE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_HOLE_CLEARANCE:        return HOLE_CLEARANCE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_HOLE_TO_HOLE:          return HOLE_TO_HOLE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_EDGE_CLEARANCE:        return EDGE_CLEARANCE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_HOLE_SIZE:             return HOLE_SIZE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_COURTYARD_CLEARANCE:   return COURTYARD_CLEARANCE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_SILK_CLEARANCE:        return SILK_CLEARANCE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_TEXT_HEIGHT:           return TEXT_HEIGHT_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_TEXT_THICKNESS:        return TEXT_THICKNESS_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_TRACK_WIDTH:           return TRACK_WIDTH_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_TRACK_SEGMENT_LENGTH:  return TRACK_SEGMENT_LENGTH_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_ANNULAR_WIDTH:         return ANNULAR_WIDTH_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_ZONE_CONNECTION:       return ZONE_CONNECTION_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_THERMAL_RELIEF_GAP:    return THERMAL_RELIEF_GAP_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_THERMAL_SPOKE_WIDTH:   return THERMAL_SPOKE_WIDTH_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_MIN_RESOLVED_SPOKES:   return MIN_RESOLVED_SPOKES_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_MICROVIA_STACK_DEPTH:  return MICROVIA_STACK_DEPTH_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_MICROVIA_ASPECT_RATIO: return MICROVIA_ASPECT_RATIO_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_SOLDER_MASK_EXPANSION: return SOLDER_MASK_EXPANSION_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_UNKNOWN:                return NULL_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_CLEARANCE:              return CLEARANCE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_CREEPAGE:               return CREEPAGE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_HOLE_CLEARANCE:         return HOLE_CLEARANCE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_HOLE_TO_HOLE:           return HOLE_TO_HOLE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_EDGE_CLEARANCE:         return EDGE_CLEARANCE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_HOLE_SIZE:              return HOLE_SIZE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_COURTYARD_CLEARANCE:    return COURTYARD_CLEARANCE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_SILK_CLEARANCE:         return SILK_CLEARANCE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_TEXT_HEIGHT:            return TEXT_HEIGHT_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_LINE_WIDTH:             return LINE_WIDTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_TRACK_WIDTH:            return TRACK_WIDTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_TRACK_SEGMENT_LENGTH:   return TRACK_SEGMENT_LENGTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_ANNULAR_WIDTH:          return ANNULAR_WIDTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_ZONE_CONNECTION:        return ZONE_CONNECTION_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_THERMAL_RELIEF_GAP:     return THERMAL_RELIEF_GAP_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_THERMAL_SPOKE_WIDTH:    return THERMAL_SPOKE_WIDTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_MIN_RESOLVED_SPOKES:    return MIN_RESOLVED_SPOKES_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_MICROVIA_STACK_DEPTH:   return MICROVIA_STACK_DEPTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_HOLE_ASPECT_RATIO:      return HOLE_ASPECT_RATIO_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_SOLDER_MASK_EXPANSION:  return SOLDER_MASK_EXPANSION_CONSTRAINT;
     case CustomRuleConstraintType::CRCT_SOLDER_PASTE_ABS_MARGIN:return SOLDER_PASTE_ABS_MARGIN_CONSTRAINT;
     case CustomRuleConstraintType::CRCT_SOLDER_PASTE_REL_MARGIN:return SOLDER_PASTE_REL_MARGIN_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_DISALLOW:              return DISALLOW_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_VIA_DIAMETER:          return VIA_DIAMETER_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_LENGTH:                return LENGTH_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_SKEW:                  return SKEW_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_DIFF_PAIR_GAP:         return DIFF_PAIR_GAP_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_MAX_UNCOUPLED:         return MAX_UNCOUPLED_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_DIFF_PAIR_INTRA_SKEW:  return DIFF_PAIR_INTRA_SKEW_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_VIA_COUNT:             return VIA_COUNT_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_PHYSICAL_CLEARANCE:    return PHYSICAL_CLEARANCE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_DISALLOW:               return DISALLOW_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_VIA_DIAMETER:           return VIA_DIAMETER_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_LENGTH:                 return LENGTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_SKEW:                   return SKEW_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_DIFF_PAIR_GAP:          return DIFF_PAIR_GAP_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_MAX_UNCOUPLED:          return MAX_UNCOUPLED_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_DIFF_PAIR_INTRA_SKEW:   return DIFF_PAIR_INTRA_SKEW_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_VIA_COUNT:              return VIA_COUNT_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_PHYSICAL_CLEARANCE:     return PHYSICAL_CLEARANCE_CONSTRAINT;
     case CustomRuleConstraintType::CRCT_PHYSICAL_HOLE_CLEARANCE:return PHYSICAL_HOLE_CLEARANCE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_ASSERTION:             return ASSERTION_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_CONNECTION_WIDTH:      return CONNECTION_WIDTH_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_TRACK_ANGLE:           return TRACK_ANGLE_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_VIA_DANGLING:          return VIA_DANGLING_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_BRIDGED_MASK:          return BRIDGED_MASK_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_SOLDER_MASK_SLIVER:    return SOLDER_MASK_SLIVER_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_NET_CHAIN_LENGTH:         return NET_CHAIN_LENGTH_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_NET_CHAIN_STUB_LENGTH: return NET_CHAIN_STUB_LENGTH_CONSTRAINT;
-    case CustomRuleConstraintType::CRCT_NET_CHAIN_RETURN_PATH: return NET_CHAIN_RETURN_PATH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_ASSERTION:              return ASSERTION_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_CONNECTION_WIDTH:       return CONNECTION_WIDTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_TRACK_ANGLE:            return TRACK_ANGLE_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_VIA_DANGLING:           return VIA_DANGLING_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_BRIDGED_MASK:           return BRIDGED_MASK_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_SOLDER_MASK_SLIVER:     return SOLDER_MASK_SLIVER_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_NET_CHAIN_LENGTH:       return NET_CHAIN_LENGTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_NET_CHAIN_STUB_LENGTH:  return NET_CHAIN_STUB_LENGTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_NET_CHAIN_RETURN_PATH:  return NET_CHAIN_RETURN_PATH_CONSTRAINT;
 
     default:
         wxCHECK_MSG( false, NULL_CONSTRAINT,
@@ -637,9 +638,9 @@ types::ZoneCornerSmoothingMode ToProtoEnum( ZONE_SETTINGS::CORNER_SMOOTHING aVal
 {
     switch( aValue )
     {
-    case ZONE_SETTINGS::CORNER_SMOOTHING::NO_SMOOTHING:    return types::ZoneCornerSmoothingMode::ZCSM_NONE;
-    case ZONE_SETTINGS::CORNER_SMOOTHING::CHAMFER: return types::ZoneCornerSmoothingMode::ZCSM_CHAMFER;
-    case ZONE_SETTINGS::CORNER_SMOOTHING::FILLET:  return types::ZoneCornerSmoothingMode::ZCSM_FILLET;
+    case ZONE_SETTINGS::CORNER_SMOOTHING::NO_SMOOTHING: return types::ZoneCornerSmoothingMode::ZCSM_NONE;
+    case ZONE_SETTINGS::CORNER_SMOOTHING::CHAMFER:      return types::ZoneCornerSmoothingMode::ZCSM_CHAMFER;
+    case ZONE_SETTINGS::CORNER_SMOOTHING::FILLET:       return types::ZoneCornerSmoothingMode::ZCSM_FILLET;
 
     default:
         wxCHECK_MSG( false, types::ZoneCornerSmoothingMode::ZCSM_UNKNOWN,
@@ -670,9 +671,9 @@ types::ThievingPattern ToProtoEnum( THIEVING_PATTERN aValue )
 {
     switch( aValue )
     {
-    case THIEVING_PATTERN::DOTS:       return types::ThievingPattern::TP_DOTS;
-    case THIEVING_PATTERN::SQUARES:    return types::ThievingPattern::TP_SQUARES;
-    case THIEVING_PATTERN::HATCH: return types::ThievingPattern::TP_CROSSHATCH;
+    case THIEVING_PATTERN::DOTS:    return types::ThievingPattern::TP_DOTS;
+    case THIEVING_PATTERN::SQUARES: return types::ThievingPattern::TP_SQUARES;
+    case THIEVING_PATTERN::HATCH:   return types::ThievingPattern::TP_CROSSHATCH;
 
     default:
         wxCHECK_MSG( false, types::ThievingPattern::TP_UNKNOWN,
@@ -1832,6 +1833,40 @@ JOB_EXPORT_PCB_DRILL::MAP_FORMAT FromProtoEnum( DrillMapFormat aValue )
 
 
 template<>
+kiapi::common::types::Units ToProtoEnum( GENERATED_TABLE_UNITS aValue )
+{
+    switch( aValue )
+    {
+    case GENERATED_TABLE_UNITS::MM:   return kiapi::common::types::Units::U_MM;
+    case GENERATED_TABLE_UNITS::INCH: return kiapi::common::types::Units::U_INCH;
+    case GENERATED_TABLE_UNITS::MILS: return kiapi::common::types::Units::U_MILS;
+    default:
+        wxCHECK_MSG( false, kiapi::common::types::Units::U_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<GENERATED_TABLE_UNITS>" );
+    }
+}
+
+
+template<>
+GENERATED_TABLE_UNITS FromProtoEnum( kiapi::common::types::Units aValue )
+{
+    // A table has no rendering for metres or tenths, so they read back as millimetres rather
+    // than as a broken table
+    switch( aValue )
+    {
+    case kiapi::common::types::Units::U_INCH: return GENERATED_TABLE_UNITS::INCH;
+    case kiapi::common::types::Units::U_MILS: return GENERATED_TABLE_UNITS::MILS;
+    case kiapi::common::types::Units::U_MM:
+    case kiapi::common::types::Units::U_UNKNOWN:
+    case kiapi::common::types::Units::U_METERS:
+    case kiapi::common::types::Units::U_TENTHS:
+    default:
+        return GENERATED_TABLE_UNITS::MM;
+    }
+}
+
+
+template<>
 kiapi::common::types::Units ToProtoEnum( JOB_EXPORT_PCB_DRILL::DRILL_UNITS aValue )
 {
     switch( aValue )
@@ -1980,6 +2015,150 @@ JOB_EXPORT_PCB_ODB::ODB_COMPRESSION FromProtoEnum( OdbCompression aValue )
 
 
 template<>
+OdbVariantPackaging ToProtoEnum( JOB_EXPORT_PCB_ODB::VARIANT_PACKAGING aValue )
+{
+    switch( aValue )
+    {
+    case JOB_EXPORT_PCB_ODB::VARIANT_PACKAGING::SEPARATE: return OdbVariantPackaging::ODBVP_SEPARATE;
+    case JOB_EXPORT_PCB_ODB::VARIANT_PACKAGING::COMBINED: return OdbVariantPackaging::ODBVP_COMBINED;
+    default:
+        wxCHECK_MSG( false, OdbVariantPackaging::ODBVP_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<JOB_EXPORT_PCB_ODB::VARIANT_PACKAGING>" );
+    }
+}
+
+
+template <>
+OdbOrigin ToProtoEnum( JOB_EXPORT_PCB_ODB::ORIGIN aValue )
+{
+    switch( aValue )
+    {
+    case JOB_EXPORT_PCB_ODB::ORIGIN::ABSOLUTE_COORDS: return OdbOrigin::ODBO_ABSOLUTE;
+    case JOB_EXPORT_PCB_ODB::ORIGIN::AUX: return OdbOrigin::ODBO_AUX;
+    case JOB_EXPORT_PCB_ODB::ORIGIN::GRID: return OdbOrigin::ODBO_GRID;
+    default: wxCHECK_MSG( false, OdbOrigin::ODBO_UNKNOWN, "Unhandled ODB++ origin" );
+    }
+}
+
+
+template <>
+JOB_EXPORT_PCB_ODB::ORIGIN FromProtoEnum( OdbOrigin aValue )
+{
+    switch( aValue )
+    {
+    case OdbOrigin::ODBO_AUX: return JOB_EXPORT_PCB_ODB::ORIGIN::AUX;
+    case OdbOrigin::ODBO_GRID: return JOB_EXPORT_PCB_ODB::ORIGIN::GRID;
+    case OdbOrigin::ODBO_ABSOLUTE:
+    case OdbOrigin::ODBO_UNKNOWN:
+    default: return JOB_EXPORT_PCB_ODB::ORIGIN::ABSOLUTE_COORDS;
+    }
+}
+
+
+template <>
+FabDataSet ToProtoEnum( JOB_EXPORT_PCB_FAB::DATA_SET aValue )
+{
+    switch( aValue )
+    {
+    case JOB_EXPORT_PCB_FAB::DATA_SET::USERDEF: return FabDataSet::FDS_USERDEF;
+    case JOB_EXPORT_PCB_FAB::DATA_SET::BOM: return FabDataSet::FDS_BOM;
+    case JOB_EXPORT_PCB_FAB::DATA_SET::STACKUP: return FabDataSet::FDS_STACKUP;
+    case JOB_EXPORT_PCB_FAB::DATA_SET::FABRICATION: return FabDataSet::FDS_FABRICATION;
+    case JOB_EXPORT_PCB_FAB::DATA_SET::ASSEMBLY: return FabDataSet::FDS_ASSEMBLY;
+    case JOB_EXPORT_PCB_FAB::DATA_SET::TEST: return FabDataSet::FDS_TEST;
+    case JOB_EXPORT_PCB_FAB::DATA_SET::STENCIL: return FabDataSet::FDS_STENCIL;
+    case JOB_EXPORT_PCB_FAB::DATA_SET::DFX: return FabDataSet::FDS_DFX;
+    default: wxCHECK_MSG( false, FabDataSet::FDS_UNKNOWN, "Unhandled fabrication data set" );
+    }
+}
+
+
+template <>
+JOB_EXPORT_PCB_FAB::DATA_SET FromProtoEnum( FabDataSet aValue )
+{
+    switch( aValue )
+    {
+    case FabDataSet::FDS_BOM: return JOB_EXPORT_PCB_FAB::DATA_SET::BOM;
+    case FabDataSet::FDS_STACKUP: return JOB_EXPORT_PCB_FAB::DATA_SET::STACKUP;
+    case FabDataSet::FDS_FABRICATION: return JOB_EXPORT_PCB_FAB::DATA_SET::FABRICATION;
+    case FabDataSet::FDS_ASSEMBLY: return JOB_EXPORT_PCB_FAB::DATA_SET::ASSEMBLY;
+    case FabDataSet::FDS_TEST: return JOB_EXPORT_PCB_FAB::DATA_SET::TEST;
+    case FabDataSet::FDS_STENCIL: return JOB_EXPORT_PCB_FAB::DATA_SET::STENCIL;
+    case FabDataSet::FDS_DFX: return JOB_EXPORT_PCB_FAB::DATA_SET::DFX;
+    case FabDataSet::FDS_USERDEF:
+    case FabDataSet::FDS_UNKNOWN: return JOB_EXPORT_PCB_FAB::DATA_SET::USERDEF;
+
+    // A value from a newer client must not turn into the broadest data set
+    default: return JOB_EXPORT_PCB_FAB::DATA_SET::COUNT;
+    }
+}
+
+
+template <>
+FabNetNamePolicy ToProtoEnum( JOB_EXPORT_PCB_FAB::NET_NAMES aValue )
+{
+    switch( aValue )
+    {
+    case JOB_EXPORT_PCB_FAB::NET_NAMES::INCLUDE: return FabNetNamePolicy::FNNP_INCLUDE;
+    case JOB_EXPORT_PCB_FAB::NET_NAMES::ANONYMIZE: return FabNetNamePolicy::FNNP_ANONYMIZE;
+    default: wxCHECK_MSG( false, FabNetNamePolicy::FNNP_UNKNOWN, "Unhandled net name policy" );
+    }
+}
+
+
+template <>
+JOB_EXPORT_PCB_FAB::NET_NAMES FromProtoEnum( FabNetNamePolicy aValue )
+{
+    switch( aValue )
+    {
+    case FabNetNamePolicy::FNNP_ANONYMIZE: return JOB_EXPORT_PCB_FAB::NET_NAMES::ANONYMIZE;
+    case FabNetNamePolicy::FNNP_INCLUDE:
+    case FabNetNamePolicy::FNNP_UNKNOWN:
+    default: return JOB_EXPORT_PCB_FAB::NET_NAMES::INCLUDE;
+    }
+}
+
+
+template <>
+Ipc2581RefDes ToProtoEnum( JOB_EXPORT_PCB_IPC2581::REF_DES aValue )
+{
+    switch( aValue )
+    {
+    case JOB_EXPORT_PCB_IPC2581::REF_DES::INCLUDE: return Ipc2581RefDes::IPC2581RD_INCLUDE;
+    case JOB_EXPORT_PCB_IPC2581::REF_DES::OMIT: return Ipc2581RefDes::IPC2581RD_OMIT;
+    default: wxCHECK_MSG( false, Ipc2581RefDes::IPC2581RD_UNKNOWN, "Unhandled reference designator policy" );
+    }
+}
+
+
+template <>
+JOB_EXPORT_PCB_IPC2581::REF_DES FromProtoEnum( Ipc2581RefDes aValue )
+{
+    switch( aValue )
+    {
+    case Ipc2581RefDes::IPC2581RD_OMIT: return JOB_EXPORT_PCB_IPC2581::REF_DES::OMIT;
+    case Ipc2581RefDes::IPC2581RD_INCLUDE:
+    case Ipc2581RefDes::IPC2581RD_UNKNOWN:
+    default: return JOB_EXPORT_PCB_IPC2581::REF_DES::INCLUDE;
+    }
+}
+
+
+template<>
+JOB_EXPORT_PCB_ODB::VARIANT_PACKAGING FromProtoEnum( OdbVariantPackaging aValue )
+{
+    switch( aValue )
+    {
+    case OdbVariantPackaging::ODBVP_COMBINED: return JOB_EXPORT_PCB_ODB::VARIANT_PACKAGING::COMBINED;
+    case OdbVariantPackaging::ODBVP_SEPARATE:
+    case OdbVariantPackaging::ODBVP_UNKNOWN:
+    default:
+        return JOB_EXPORT_PCB_ODB::VARIANT_PACKAGING::SEPARATE;
+    }
+}
+
+
+template<>
 StatsOutputFormat ToProtoEnum( JOB_EXPORT_PCB_STATS::OUTPUT_FORMAT aValue )
 {
     switch( aValue )
@@ -2068,61 +2247,31 @@ JOB_EXPORT_PCB_POS::UNITS FromProtoEnum( kiapi::common::types::Units aValue )
 
 
 template<>
-kiapi::common::types::Units ToProtoEnum( JOB_EXPORT_PCB_IPC2581::IPC2581_UNITS aValue )
+kiapi::common::types::Units ToProtoEnum( JOB_EXPORT_PCB_FAB::UNITS aValue )
 {
     switch( aValue )
     {
-    case JOB_EXPORT_PCB_IPC2581::IPC2581_UNITS::INCH: return kiapi::common::types::Units::U_INCH;
-    case JOB_EXPORT_PCB_IPC2581::IPC2581_UNITS::MM:   return kiapi::common::types::Units::U_MM;
+    case JOB_EXPORT_PCB_FAB::UNITS::INCH: return kiapi::common::types::Units::U_INCH;
+    case JOB_EXPORT_PCB_FAB::UNITS::MM:   return kiapi::common::types::Units::U_MM;
     default:
         wxCHECK_MSG( false, kiapi::common::types::Units::U_UNKNOWN,
-                     "Unhandled case in ToProtoEnum<JOB_EXPORT_PCB_IPC2581::IPC2581_UNITS>" );
+                     "Unhandled case in ToProtoEnum<JOB_EXPORT_PCB_FAB::UNITS>" );
     }
 }
 
 
 template<>
-JOB_EXPORT_PCB_IPC2581::IPC2581_UNITS FromProtoEnum( kiapi::common::types::Units aValue )
+JOB_EXPORT_PCB_FAB::UNITS FromProtoEnum( kiapi::common::types::Units aValue )
 {
     switch( aValue )
     {
-    case kiapi::common::types::Units::U_INCH: return JOB_EXPORT_PCB_IPC2581::IPC2581_UNITS::INCH;
-    case kiapi::common::types::Units::U_MM:   return JOB_EXPORT_PCB_IPC2581::IPC2581_UNITS::MM;
+    case kiapi::common::types::Units::U_INCH: return JOB_EXPORT_PCB_FAB::UNITS::INCH;
+    case kiapi::common::types::Units::U_MM:   return JOB_EXPORT_PCB_FAB::UNITS::MM;
     case kiapi::common::types::Units::U_UNKNOWN:
     case kiapi::common::types::Units::U_METERS:
     case kiapi::common::types::Units::U_TENTHS:
     default:
-        return JOB_EXPORT_PCB_IPC2581::IPC2581_UNITS::MM;
-    }
-}
-
-
-template<>
-kiapi::common::types::Units ToProtoEnum( JOB_EXPORT_PCB_ODB::ODB_UNITS aValue )
-{
-    switch( aValue )
-    {
-    case JOB_EXPORT_PCB_ODB::ODB_UNITS::INCH: return kiapi::common::types::Units::U_INCH;
-    case JOB_EXPORT_PCB_ODB::ODB_UNITS::MM:   return kiapi::common::types::Units::U_MM;
-    default:
-        wxCHECK_MSG( false, kiapi::common::types::Units::U_UNKNOWN,
-                     "Unhandled case in ToProtoEnum<JOB_EXPORT_PCB_ODB::ODB_UNITS>" );
-    }
-}
-
-
-template<>
-JOB_EXPORT_PCB_ODB::ODB_UNITS FromProtoEnum( kiapi::common::types::Units aValue )
-{
-    switch( aValue )
-    {
-    case kiapi::common::types::Units::U_INCH: return JOB_EXPORT_PCB_ODB::ODB_UNITS::INCH;
-    case kiapi::common::types::Units::U_MM:   return JOB_EXPORT_PCB_ODB::ODB_UNITS::MM;
-    case kiapi::common::types::Units::U_UNKNOWN:
-    case kiapi::common::types::Units::U_METERS:
-    case kiapi::common::types::Units::U_TENTHS:
-    default:
-        return JOB_EXPORT_PCB_ODB::ODB_UNITS::MM;
+        return JOB_EXPORT_PCB_FAB::UNITS::MM;
     }
 }
 
@@ -2254,8 +2403,10 @@ DrcErrorType ToProtoEnum( PCB_DRC_CODE aValue )
     case DRCE_MALFORMED_MICROVIA_STACK_SPAN: return DrcErrorType::DRCET_MALFORMED_MICROVIA_STACK_SPAN;
     case DRCE_MICROVIA_STACK_NOT_FILLED:     return DrcErrorType::DRCET_MICROVIA_STACK_NOT_FILLED;
     case DRCE_MICROVIA_STACK_DEPTH:          return DrcErrorType::DRCET_MICROVIA_STACK_DEPTH;
-    case DRCE_MICROVIA_ASPECT_RATIO:         return DrcErrorType::DRCET_MICROVIA_ASPECT_RATIO;
-    case DRCE_MICROVIA_CROSSES_CORE: return DrcErrorType::DRCET_MICROVIA_CROSSES_CORE;
+    case DRCE_HOLE_ASPECT_RATIO:             return DrcErrorType::DRCET_HOLE_ASPECT_RATIO;
+    case DRCE_MICROVIA_CROSSES_CORE:         return DrcErrorType::DRCET_MICROVIA_CROSSES_CORE;
+    case DRCE_MICROVIA_SPANS_DIELECTRICS: return DrcErrorType::DRCET_MICROVIA_SPANS_DIELECTRICS;
+    case DRCE_COPPER_OUTSIDE_BOARD:          return DrcErrorType::DRCET_COPPER_OUTSIDE_BOARD;
     case DRCE_OVERLAPPING_FOOTPRINTS:        return DrcErrorType::DRCET_OVERLAPPING_FOOTPRINTS;
     case DRCE_MISSING_COURTYARD:             return DrcErrorType::DRCET_MISSING_COURTYARD;
     case DRCE_MALFORMED_COURTYARD:           return DrcErrorType::DRCET_MALFORMED_COURTYARD;
@@ -2282,7 +2433,7 @@ DrcErrorType ToProtoEnum( PCB_DRC_CODE aValue )
     case DRCE_SILK_EDGE_CLEARANCE:           return DrcErrorType::DRCET_SILK_EDGE_CLEARANCE;
     case DRCE_SOLDERMASK_BRIDGE:             return DrcErrorType::DRCET_SOLDERMASK_BRIDGE;
     case DRCE_TEXT_HEIGHT:                   return DrcErrorType::DRCET_TEXT_HEIGHT;
-    case DRCE_TEXT_THICKNESS:                return DrcErrorType::DRCET_TEXT_THICKNESS;
+    case DRCE_LINE_WIDTH:                    return DrcErrorType::DRCET_LINE_WIDTH;
     case DRCE_LENGTH_OUT_OF_RANGE:           return DrcErrorType::DRCET_LENGTH_OUT_OF_RANGE;
     case DRCE_SKEW_OUT_OF_RANGE:             return DrcErrorType::DRCET_SKEW_OUT_OF_RANGE;
     case DRCE_NET_CHAIN_STUB_TOO_LONG:       return DrcErrorType::DRCET_NET_CHAIN_STUB_TOO_LONG;
@@ -2341,8 +2492,10 @@ PCB_DRC_CODE FromProtoEnum( DrcErrorType aValue )
     case DrcErrorType::DRCET_MALFORMED_MICROVIA_STACK_SPAN:       return DRCE_MALFORMED_MICROVIA_STACK_SPAN;
     case DrcErrorType::DRCET_MICROVIA_STACK_NOT_FILLED:           return DRCE_MICROVIA_STACK_NOT_FILLED;
     case DrcErrorType::DRCET_MICROVIA_STACK_DEPTH:                return DRCE_MICROVIA_STACK_DEPTH;
-    case DrcErrorType::DRCET_MICROVIA_ASPECT_RATIO:               return DRCE_MICROVIA_ASPECT_RATIO;
-    case DrcErrorType::DRCET_MICROVIA_CROSSES_CORE: return DRCE_MICROVIA_CROSSES_CORE;
+    case DrcErrorType::DRCET_HOLE_ASPECT_RATIO:                   return DRCE_HOLE_ASPECT_RATIO;
+    case DrcErrorType::DRCET_MICROVIA_CROSSES_CORE:               return DRCE_MICROVIA_CROSSES_CORE;
+    case DrcErrorType::DRCET_MICROVIA_SPANS_DIELECTRICS:          return DRCE_MICROVIA_SPANS_DIELECTRICS;
+    case DrcErrorType::DRCET_COPPER_OUTSIDE_BOARD:                return DRCE_COPPER_OUTSIDE_BOARD;
     case DrcErrorType::DRCET_OVERLAPPING_FOOTPRINTS:              return DRCE_OVERLAPPING_FOOTPRINTS;
     case DrcErrorType::DRCET_MISSING_COURTYARD:                   return DRCE_MISSING_COURTYARD;
     case DrcErrorType::DRCET_MALFORMED_COURTYARD:                 return DRCE_MALFORMED_COURTYARD;
@@ -2369,7 +2522,7 @@ PCB_DRC_CODE FromProtoEnum( DrcErrorType aValue )
     case DrcErrorType::DRCET_SILK_EDGE_CLEARANCE:                 return DRCE_SILK_EDGE_CLEARANCE;
     case DrcErrorType::DRCET_SOLDERMASK_BRIDGE:                   return DRCE_SOLDERMASK_BRIDGE;
     case DrcErrorType::DRCET_TEXT_HEIGHT:                         return DRCE_TEXT_HEIGHT;
-    case DrcErrorType::DRCET_TEXT_THICKNESS:                      return DRCE_TEXT_THICKNESS;
+    case DrcErrorType::DRCET_LINE_WIDTH:                          return DRCE_LINE_WIDTH;
     case DrcErrorType::DRCET_LENGTH_OUT_OF_RANGE:                 return DRCE_LENGTH_OUT_OF_RANGE;
     case DrcErrorType::DRCET_NET_CHAIN_STUB_TOO_LONG:             return DRCE_NET_CHAIN_STUB_TOO_LONG;
     case DrcErrorType::DRCET_NET_CHAIN_RETURN_PATH_BREAK:         return DRCE_NET_CHAIN_RETURN_PATH_BREAK;
@@ -2529,9 +2682,6 @@ LENGTH_TUNING_MODE FromProtoEnum( types::TuningPatternMode aValue )
     default:
     case types::TuningPatternMode::TPM_UNKNOWN:        return LENGTH_TUNING_MODE::SINGLE;
     }
-
-    wxCHECK_MSG( false, LENGTH_TUNING_MODE::SINGLE,
-                 "Unhandled case in FromProtoEnum<types::TuningPatternMode>" );
 }
 
 
@@ -2564,9 +2714,6 @@ PNS::MEANDER_SIDE FromProtoEnum( types::TuningPatternMeanderSide aValue )
     default:
     case types::TuningPatternMeanderSide::TPMS_UNKNOWN: return PNS::MEANDER_SIDE_DEFAULT;
     }
-
-    wxCHECK_MSG( false, PNS::MEANDER_SIDE_DEFAULT,
-                 "Unhandled case in FromProtoEnum<types::TuningPatternMeanderSide>" );
 }
 
 template<>
@@ -2595,9 +2742,6 @@ PNS::MEANDER_STYLE FromProtoEnum( types::TuningPatternCornerStyle aValue )
     default:
     case types::TuningPatternCornerStyle::TPCS_UNKNOWN:   return PNS::MEANDER_STYLE_CHAMFER;
     }
-
-    wxCHECK_MSG( false, PNS::MEANDER_STYLE_CHAMFER,
-                 "Unhandled case in FromProtoEnum<types::TuningPatternCornerStyle>" );
 }
 
 template<>
@@ -2628,9 +2772,6 @@ PNS::MEANDER_PLACER_BASE::TUNING_STATUS FromProtoEnum( types::TuningPatternStatu
     default:
     case types::TuningPatternStatus::TPS_UNKNOWN:   return PNS::MEANDER_PLACER_BASE::TUNED;
     }
-
-    wxCHECK_MSG( false, PNS::MEANDER_PLACER_BASE::TUNED,
-                 "Unhandled case in FromProtoEnum<types::TuningPatternStatus>" );
 }
 
 
@@ -2662,9 +2803,6 @@ PCB_VIA_STITCH_LAYOUT FromProtoEnum( types::ViaStitchLayout aValue )
     default:
     case types::ViaStitchLayout::VSL_UNKNOWN:   return PCB_VIA_STITCH_LAYOUT::PLAIN;
     }
-
-    wxCHECK_MSG( false, PCB_VIA_STITCH_LAYOUT::PLAIN,
-                 "Unhandled case in FromProtoEnum<types::ViaStitchLayout>" );
 }
 
 
@@ -2694,9 +2832,6 @@ PCB_VIA_STITCH_MODE FromProtoEnum( types::ViaStitchMode aValue )
     default:
     case types::ViaStitchMode::VSM_UNKNOWN: return PCB_VIA_STITCH_MODE::STITCH;
     }
-
-    wxCHECK_MSG( false, PCB_VIA_STITCH_MODE::STITCH,
-                 "Unhandled case in FromProtoEnum<types::ViaStitchMode>" );
 }
 
 
@@ -2726,9 +2861,6 @@ VIA_STACK_STYLE FromProtoEnum( types::ViaStackStyle aValue )
     default:
     case types::ViaStackStyle::VSK_UNKNOWN:   return VIA_STACK_STYLE::STACKED;
     }
-
-    wxCHECK_MSG( false, VIA_STACK_STYLE::STACKED,
-                 "Unhandled case in FromProtoEnum<types::ViaStackStyle>" );
 }
 
 

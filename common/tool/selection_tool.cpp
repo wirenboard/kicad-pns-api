@@ -33,7 +33,7 @@ SELECTION_TOOL::SELECTION_TOOL( const std::string& aName ) :
     m_additive( false ),
     m_subtractive( false ),
     m_exclusive_or( false ),
-    m_multiple( false ),
+    m_inSelectMultiple( false ),
     m_skip_heuristics( false ),
     m_highlight_modifier( false ),
     m_drag_additive( false ),
@@ -269,6 +269,20 @@ bool SELECTION_TOOL::doSelectionMenu( COLLECTOR* aCollector )
     highlightGroup.SetLayer( LAYER_SELECT_OVERLAY );
     getView()->Add( &highlightGroup );
 
+    auto clearHighlight =
+            [&]()
+            {
+                if( selectAll )
+                {
+                    for( int i = 0; i < aCollector->GetCount(); ++i )
+                        unhighlight( ( *aCollector )[i], BRIGHTENED, &highlightGroup );
+                }
+                else if( current )
+                {
+                    unhighlight( current, BRIGHTENED, &highlightGroup );
+                }
+            };
+
     do
     {
         /// This must be the second time through the loop, and the user has requested the full,
@@ -353,19 +367,13 @@ bool SELECTION_TOOL::doSelectionMenu( COLLECTOR* aCollector )
 
         SetContextMenu( &menu, CMENU_NOW );
 
-        while( TOOL_EVENT* evt = Wait() )
+        TOOL_EVENT* evt = nullptr;
+
+        while( ( evt = Wait() ) )
         {
             if( evt->Action() == TA_CHOICE_MENU_UPDATE )
             {
-                if( selectAll )
-                {
-                    for( int i = 0; i < aCollector->GetCount(); ++i )
-                        unhighlight( ( *aCollector )[i], BRIGHTENED, &highlightGroup );
-                }
-                else if( current )
-                {
-                    unhighlight( current, BRIGHTENED, &highlightGroup );
-                }
+                clearHighlight();
 
                 int id = *evt->GetCommandId();
 
@@ -395,15 +403,7 @@ bool SELECTION_TOOL::doSelectionMenu( COLLECTOR* aCollector )
             }
             else if( evt->Action() == TA_CHOICE_MENU_CHOICE )
             {
-                if( selectAll )
-                {
-                    for( int i = 0; i < aCollector->GetCount(); ++i )
-                        unhighlight( ( *aCollector )[i], BRIGHTENED, &highlightGroup );
-                }
-                else if( current )
-                {
-                    unhighlight( current, BRIGHTENED, &highlightGroup );
-                }
+                clearHighlight();
 
                 std::optional<int> id = evt->GetCommandId();
 
@@ -440,6 +440,15 @@ bool SELECTION_TOOL::doSelectionMenu( COLLECTOR* aCollector )
 
             getView()->UpdateItems();
             getEditFrame<EDA_DRAW_FRAME>()->GetCanvas()->Refresh();
+        }
+
+        // A shutdown is not a choice, even with an item highlighted
+        if( !evt )
+        {
+            clearHighlight();
+            selectAll = false;
+            current = nullptr;
+            showMoreChoices = false;
         }
     }
     while( showMoreChoices );

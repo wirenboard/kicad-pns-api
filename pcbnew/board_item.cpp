@@ -21,10 +21,13 @@
 
 #include <wx/debug.h>
 #include <wx/msgdlg.h>
+
 #include <i18n_utility.h>
 #include <macros.h>
 #include <board.h>
+#include <board_item_index.h>
 #include <board_design_settings.h>
+#include <board_design_settings_defaults.h>
 #include <lset.h>
 #include <pcb_group.h>
 #include <pcb_generator.h>
@@ -32,6 +35,7 @@
 #include <font/font.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
+#include <view/view.h>
 
 
 bool BOARD_ITEM::FitsEnabledLayers( const LSET& aEnabledLayers, int aCopperLayerCount ) const
@@ -53,6 +57,7 @@ bool BOARD_ITEM::IsGroupableType() const
     case PCB_TEXTBOX_T:
     case PCB_TABLE_T:
     case PCB_DRILL_CHART_T:
+    case PCB_STACKUP_TABLE_T:
     case PCB_DRILL_MAP_T:
     case PCB_GROUP_T:
     case PCB_GENERATOR_T:
@@ -104,8 +109,8 @@ BOARD* BOARD_ITEM::GetBoard()
 BOARD_ITEM::~BOARD_ITEM()
 {
     // Backup for code paths that skip ::Remove(). Do not use the parent chain, it may be freed.
-    if( m_boardCacheOwner )
-        m_boardCacheOwner->UncacheItemByPtr( this );
+    if( m_owningIndex )
+        m_owningIndex->UnbindItem( *this );
 }
 
 
@@ -120,10 +125,11 @@ void BOARD_ITEM::SetUuid( const KIID& aUuid )
     if( m_Uuid == aUuid )
         return;
 
-    // Use the owner, not GetBoard(). The parent chain may name a wrong or dead board.
-    if( BOARD* board = m_boardCacheOwner )
+    // Use the index that holds us, not GetBoard(). The parent chain may name a wrong or dead
+    // board.
+    if( BOARD_ITEM_INDEX* owningIndex = m_owningIndex )
     {
-        board->RebindItemUuid( this, aUuid );
+        owningIndex->Rebind( *this, aUuid );
         return;
     }
 
@@ -189,6 +195,17 @@ PCB_LAYER_ID BOARD_ITEM::GetLayer() const
     return m_layer;
 }
 
+
+PCB_LAYER_ID BOARD_ITEM::GetFlippedLayer( PCB_LAYER_ID aLayer ) const
+{
+    const BOARD* board = GetBoard();
+
+    if( board )
+        return board->FlipLayer( aLayer );
+
+    return ::FlipLayer( aLayer );
+}
+
 int BOARD_ITEM::BoardLayerCount() const
 {
     const BOARD* board = GetBoard();
@@ -224,11 +241,19 @@ LSET BOARD_ITEM::BoardLayerSet() const
 
 wxString BOARD_ITEM::GetLayerName() const
 {
-    if( const BOARD* board = GetBoard() )
-        return board->GetLayerName( m_layer );
+    return GetLayerName( m_layer );
+}
+
+
+wxString BOARD_ITEM::GetLayerName( PCB_LAYER_ID aLayer ) const
+{
+    const BOARD* board = GetBoard();
+
+    if( board )
+        return board->GetLayerName( aLayer );
 
     // If no parent, return standard name
-    return BOARD::GetStandardLayerName( m_layer );
+    return BOARD::GetStandardLayerName( aLayer );
 }
 
 
@@ -332,7 +357,7 @@ void BOARD_ITEM::SwapItemData( BOARD_ITEM* aImage )
     // which would leave the cache holding dangling pointers to the destroyed children.
     if( board )
     {
-        board->UncacheChildrenById( this );
+        board->UncacheChildrenById( *this );
     }
 
     swapData( aImage );
@@ -344,7 +369,7 @@ void BOARD_ITEM::SwapItemData( BOARD_ITEM* aImage )
 
     if( board )
     {
-        board->CacheChildrenById( this );
+        board->CacheChildrenById( *this );
     }
 }
 
@@ -354,18 +379,25 @@ BOARD_ITEM* BOARD_ITEM::Duplicate( bool addToParentGroup, BOARD_COMMIT* aCommit 
     BOARD_ITEM* dupe = static_cast<BOARD_ITEM*>( Clone() );
     dupe->ResetUuid();
 
-    if( addToParentGroup )
-    {
-        wxCHECK_MSG( aCommit, dupe, "Must supply a commit to update parent group" );
-
-        if( EDA_GROUP* group = dupe->GetParentGroup() )
-        {
-            aCommit->Modify( group->AsEdaItem(), nullptr, RECURSE_MODE::NO_RECURSE );
-            group->AddItem( dupe );
-        }
-    }
+    SetDuplicateGroup( dupe, addToParentGroup, aCommit );
 
     return dupe;
+}
+
+
+void BOARD_ITEM::SetDuplicateGroup( BOARD_ITEM* aDupe, bool addToParentGroup, BOARD_COMMIT* aCommit ) const
+{
+    aDupe->SetParentGroup( nullptr );
+
+    EDA_GROUP* group = GetParentGroup();
+
+    if( !addToParentGroup || !group )
+        return;
+
+    wxCHECK_RET( aCommit, "Must supply a commit to update parent group" );
+
+    aCommit->Modify( group->AsEdaItem(), nullptr, RECURSE_MODE::NO_RECURSE );
+    group->AddItem( aDupe );
 }
 
 
@@ -373,7 +405,8 @@ void BOARD_ITEM::TransformShapeToPolygon( SHAPE_POLY_SET& aBuffer, PCB_LAYER_ID 
                                           int aClearance, int aError, ERROR_LOC aErrorLoc,
                                           bool ignoreLineWidth ) const
 {
-    wxLogDebug( wxT( "%s doesn't implement TransformShapeToPolygon()" ), GetClass() );
+    wxCHECK_MSG( false, /* void */,
+                 wxString::Format( wxT( "%s doesn't implement TransformShapeToPolygon()" ), GetClass() ) );
 }
 
 
@@ -382,6 +415,21 @@ double BOARD_ITEM::GetCoverageArea( int aTextMargin ) const
     SHAPE_POLY_SET poly;
     TransformShapeToPolygon( poly, UNDEFINED_LAYER, 0, ARC_LOW_DEF, ERROR_OUTSIDE );
     return polygonArea( poly );
+}
+
+
+LSET BOARD_ITEM::viewVisibleLayers( const KIGFX::VIEW* aView ) const
+{
+    const BOARD* board = GetBoard();
+    LSET         visible;
+
+    for( PCB_LAYER_ID layer : board ? board->GetEnabledLayers() : LSET::AllLayersMask() )
+    {
+        if( aView->IsLayerVisibleCached( layer ) )
+            visible.set( layer );
+    }
+
+    return visible;
 }
 
 
@@ -470,6 +518,12 @@ void BOARD_ITEM::Mirror( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection 
 }
 
 
+void BOARD_ITEM::Mirror( const SEG& aAxis )
+{
+    wxMessageBox( wxT( "virtual BOARD_ITEM::Mirror used, should not occur" ), GetClass() );
+}
+
+
 wxString BOARD_ITEM::GetParentAsString() const
 {
     if( FOOTPRINT* fp = dynamic_cast<FOOTPRINT*>( m_parent ) )
@@ -525,7 +579,8 @@ static struct BOARD_ITEM_DESC
                     &BOARD_ITEM::SetY, &BOARD_ITEM::GetY, PROPERTY_DISPLAY::PT_COORD,
                     ORIGIN_TRANSFORMS::ABS_Y_COORD ) );
         propMgr.AddProperty( new PROPERTY_ENUM<BOARD_ITEM, PCB_LAYER_ID>( _HKI( "Layer" ),
-                    &BOARD_ITEM::SetLayer, &BOARD_ITEM::GetLayer ) ).SetIsCopyable();
+                    &BOARD_ITEM::SetLayer, &BOARD_ITEM::GetLayer ) )
+                .SetIsCopyable();
         propMgr.AddProperty( new PROPERTY<BOARD_ITEM, bool>( _HKI( "Locked" ),
                     &BOARD_ITEM::SetLocked, &BOARD_ITEM::IsLocked ) )
                .SetAvailableFunc( isNotFootprintHolder );

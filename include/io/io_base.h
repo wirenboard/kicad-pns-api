@@ -162,6 +162,31 @@ public:
                                 const std::map<std::string, UTF8>* aProperties = nullptr );
 
     /**
+     * Ask a library load running on this plugin to end early.  Called from another thread while an asynchronous load
+     * is in flight, so it must return at once.  Plugins with no wait worth cutting short ignore it.
+     */
+    virtual void CancelLoad() {}
+
+    /// Called after the loads that were cancelled have ended, to clear what CancelLoad() left behind
+    virtual void ResumeLoad() noexcept {}
+
+    /// Return true if the plugin builds its content from other libraries, so it goes stale when they reload
+    virtual bool UsesOtherLibraries() const { return false; }
+
+    /**
+     * Have the destructor leave the library cache unfreed.  Only for use as the process exits, since freeing the
+     * caches of thousands of libraries one item at a time holds it up for seconds.  The cache stays usable until the
+     * plugin is destroyed, so threads still reading it are safe.  Plugins without a large cache ignore it.
+     */
+    virtual void LeakCacheAtExit() {}
+
+    /**
+     * Stop and join any thread that reads other libraries through the library adapter.  Called before the plugin
+     * is retired, while every library such a thread could reach is still alive.  The plugin is not used again.
+     */
+    virtual void StopBackgroundRefresh() {}
+
+    /**
      * Return true if the library at @a aLibraryPath is writable.
      *
      * The system libraries are typically read only because of where they are installed..
@@ -207,10 +232,14 @@ public:
     virtual bool SupportsConfigurationDialog() const { return false; }
 
     /**
+     * @param aLibraryPath is the fully expanded path of the library to configure
      * @return a new instance of dialog that configures this plugin, or nullptr if this plugin
      *         does not support a configuration dialog.  Caller takes ownership.
      */
-    virtual DIALOG_SHIM* CreateConfigurationDialog( wxWindow* aParent ) { return nullptr; }
+    virtual DIALOG_SHIM* CreateConfigurationDialog( wxWindow* aParent, const wxString& aLibraryPath )
+    {
+        return nullptr;
+    }
 
     virtual void Report( const wxString& aText,
                          SEVERITY aSeverity = RPT_SEVERITY_UNDEFINED ) const;

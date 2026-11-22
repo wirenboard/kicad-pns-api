@@ -34,7 +34,7 @@
 
 #include <wx/log.h>
 
-#include <trace_helpers.h>
+#include <git/kigit_trace.h>
 
 /**
  * Registry of background git cleanup threads that outlive the owning project
@@ -101,7 +101,6 @@ public:
         m_entries.emplace_back();
         ENTRY& entry = m_entries.back();
         entry.m_label = aLabel;
-        entry.m_created = std::chrono::steady_clock::now();
         entry.m_state = state;
 
         try
@@ -117,9 +116,7 @@ public:
                         }
                         catch( ... )
                         {
-                            wxLogTrace( traceGit,
-                                        "Orphan git thread [%s] threw an exception",
-                                        label.c_str() );
+                            wxLogTrace( KIGIT::traceKigit, "Orphan git thread [%s] threw an exception", label.c_str() );
                         }
 
                         {
@@ -136,16 +133,9 @@ public:
             throw;
         }
 
-        wxLogTrace( traceGit, "Registered orphan git thread [%s]", aLabel.c_str() );
+        wxLogTrace( KIGIT::traceKigit, "Registered orphan git thread [%s]", aLabel.c_str() );
         return true;
     }
-
-    /**
-     * Return the number of tracked orphan threads that have not yet
-     * finished executing.  Threads that JoinAll() detached after a timeout
-     * are no longer tracked and do not contribute to this count.
-     */
-    size_t TrackedCount() const;
 
     /**
      * Join all registered orphan threads, giving them up to @a aTimeout to
@@ -174,7 +164,6 @@ private:
     {
         std::thread                           m_thread;
         std::string                           m_label;
-        std::chrono::steady_clock::time_point m_created;
         std::shared_ptr<SHARED_STATE>         m_state;
     };
 
@@ -182,7 +171,7 @@ private:
     // with m_mutex held.
     void reapLocked();
 
-    mutable std::mutex           m_mutex;
+    std::mutex                   m_mutex;
     std::vector<ENTRY>           m_entries;
     bool                         m_shuttingDown = false;
 };

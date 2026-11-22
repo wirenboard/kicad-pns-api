@@ -113,6 +113,7 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
     submenuExport->Add( SCH_ACTIONS::drawSheetOnClipboard,   ACTION_MENU::NORMAL, _( "Drawing to Clipboard" ) );
     submenuExport->Add( SCH_ACTIONS::exportNetlist,          ACTION_MENU::NORMAL, _( "Netlist..." ) );
     submenuExport->Add( SCH_ACTIONS::exportSymbolsToLibrary, ACTION_MENU::NORMAL, _( "Symbols..." ) );
+    submenuExport->Add( ACTIONS::exportForOlderVersion, ACTION_MENU::NORMAL, _( "For Older KiCad Version..." ) );
     fileMenu->Add( submenuExport );
 
     fileMenu->AppendSeparator();
@@ -189,6 +190,7 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
     showHidePanels->SetTitle( _( "Panels" ) );
 
     showHidePanels->Add( ACTIONS::showProperties,    ACTION_MENU::CHECK );
+    showHidePanels->Add( ACTIONS::showGitCommitPane, ACTION_MENU::CHECK );
     showHidePanels->Add( ACTIONS::showSearch,        ACTION_MENU::CHECK );
     showHidePanels->Add( SCH_ACTIONS::showHierarchy, ACTION_MENU::CHECK );
 
@@ -349,8 +351,18 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
     submenuVariants->Add( SCH_ACTIONS::copyVariant );
     toolsMenu->Add( submenuVariants );
 
+    ACTION_MENU* submenuActionPlugins = new ACTION_MENU( false, selTool );
+    submenuActionPlugins->SetTitle( _( "External Plugins" ) );
+    submenuActionPlugins->SetIcon( BITMAPS::puzzle_piece );
+
+    if( Pgm().GetCommonSettings()->m_Api.enable_server && AddApiPluginMenuItems( submenuActionPlugins ) > 0 )
+        submenuActionPlugins->AppendSeparator();
+
+    submenuActionPlugins->Add( ACTIONS::pluginsReload );
+    submenuActionPlugins->Add( ACTIONS::pluginsShowFolder );
+
     toolsMenu->AppendSeparator();
-    toolsMenu->Add( ACTIONS::pluginsReload );
+    toolsMenu->Add( submenuActionPlugins );
 
     //-- Preferences menu -----------------------------------------------
     //

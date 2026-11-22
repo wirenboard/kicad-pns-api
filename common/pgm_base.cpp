@@ -26,6 +26,9 @@
  *        (locale handling)
  */
 
+#include <wx/app.h>
+#include <wx/dialog.h>
+#include <wx/eventfilter.h>
 #include <wx/html/htmlwin.h>
 #include <wx/fs_zip.h>
 #include <wx/dir.h>
@@ -44,9 +47,11 @@
 #include <api/python_manager.h>
 #include <app_monitor.h>
 #include <background_jobs_monitor.h>
+#include <bitmap_store.h>
 #include <bitmaps.h>
 #include <build_version.h>
 #include <common.h>
+#include <database/access_fast_exit.h>
 #include <confirm.h>
 #include <core/arraydim.h>
 #include <id.h>
@@ -59,6 +64,7 @@
 #include <pgm_base.h>
 #include <design_block_library_adapter.h>
 #include <policy_keys.h>
+#include <scoped_set_reset.h>
 #include <settings/common_settings.h>
 #include <settings/settings_manager.h>
 #include <string_utils.h>
@@ -152,6 +158,7 @@ PGM_BASE::PGM_BASE()
     m_locale = nullptr;
     m_Printing = false;
     m_Quitting = false;
+    m_sessionEnding = false;
     m_argcUtf8 = 0;
     m_argvUtf8 = nullptr;
     m_splash = nullptr;
@@ -182,6 +189,22 @@ PGM_BASE::~PGM_BASE()
 
 void PGM_BASE::Destroy()
 {
+    // The preload reads the design block libraries, so it has to stop before they go
+    if( m_libraryPreloadReturn.valid() )
+    {
+        if( m_libraryPreloadInProgress.load() )
+            m_libraryPreloadAbort.store( true );
+
+        m_libraryPreloadReturn.wait();
+    }
+
+    // Freeing thousands of cached libraries one item at a time would hold up the exit for seconds
+    if( m_library_manager )
+        m_library_manager->LeakCachesAtExit();
+
+    // Clean up library IO plugins before static destruction
+    m_library_manager.reset();
+
     KICAD_CURL::Cleanup();
 
     APP_MONITOR::SENTRY::Instance()->Cleanup();
@@ -190,12 +213,23 @@ void PGM_BASE::Destroy()
     winrt::uninit_apartment();
 #endif
 
+    // A project that failed to unload still holds its lock, and removing the lock file during
+    // static destruction would run after wxWidgets has torn down its filename conversion.
+    if( m_settings_manager )
+        m_settings_manager->ReleaseProjectLocks();
+
     // Shut down the thread pool explicitly here, before static destruction begins.
     // On macOS, if the thread pool destructor runs during static destruction
     // (via __cxa_finalize_ranges), the condition variables may be in an invalid state,
     // causing a crash. By destroying the thread pool here, we ensure it's cleaned up
     // while the C++ runtime is still in a valid state.
     m_singleton.Shutdown();
+}
+
+
+void PGM_BASE::ExitIfTeardownUnsafe()
+{
+    ExitFastIfAccessWorkerAbandoned( m_runResult );
 }
 
 
@@ -323,8 +357,7 @@ wxString PGM_BASE::DesktopAppIdForProgram( const wxString& aPgmName )
     if( aPgmName == wxT( "kicad" ) )
         return wxT( KICAD_DESKTOP_APP_NAME );
 
-    if( aPgmName == wxT( "eeschema" ) || aPgmName == wxT( "pcbnew" )
-        || aPgmName == wxT( "gerbview" ) || aPgmName == wxT( "bitmap2component" )
+    if( aPgmName == wxT( "eeschema" ) || aPgmName == wxT( "pcbnew" ) || aPgmName == wxT( "gerbview" )
         || aPgmName == wxT( "pcb_calculator" ) )
     {
         // pcb_calculator installs as pcbcalculator to satisfy freedesktop naming rules.
@@ -498,6 +531,27 @@ bool PGM_BASE::InitPgm( bool aHeadless, bool aIsUnitTest )
 
     if( ADVANCED_CFG::GetCfg().m_UpdateUIEventInterval != 0 )
         wxUpdateUIEvent::SetUpdateInterval( ADVANCED_CFG::GetCfg().m_UpdateUIEventInterval );
+
+#if defined( __WXMSW__ ) || defined( __WXOSX__ )
+    // wx ends a session by closing the top window with an ordinary close event. Calling wx's handler
+    // here instead of Skip() keeps that close inside the flag's scope
+    if( !aHeadless )
+    {
+        App().Bind( wxEVT_QUERY_END_SESSION,
+                    [this]( wxCloseEvent& aEvent )
+                    {
+                        SCOPED_SET_RESET<bool> sessionEnding( m_sessionEnding, true );
+                        App().OnQueryEndSession( aEvent );
+                    } );
+
+        App().Bind( wxEVT_END_SESSION,
+                    [this]( wxCloseEvent& aEvent )
+                    {
+                        SCOPED_SET_RESET<bool> sessionEnding( m_sessionEnding, true );
+                        App().OnEndSession( aEvent );
+                    } );
+    }
+#endif
 
     // Now the application can safely start, show the splash screen
     if( !aHeadless )
@@ -732,10 +786,11 @@ void PGM_BASE::SetLanguagePath()
 #endif
     wxLocale::AddCatalogLookupPathPrefix( PATHS::GetLocaleDataPath() );
 
-    if( wxGetEnv( wxT( "KICAD_RUN_FROM_BUILD_DIR" ), nullptr ) )
+    if( PATHS::RunningFromBuildDir() )
     {
-        wxFileName fn( Pgm().GetExecutablePath() );
-        fn.RemoveLastDir();
+        // On macOS the executable path is the .app bundle, not the build root.
+        wxFileName fn;
+        fn.AssignDir( PATHS::GetStockDataPath( true ) );
         fn.AppendDir( wxT( "translation" ) );
         wxLocale::AddCatalogLookupPathPrefix( fn.GetPath() );
     }
@@ -891,10 +946,6 @@ void PGM_BASE::WritePdfBrowserInfos()
 
 void PGM_BASE::PreloadDesignBlockLibraries( KIWAY* aKiway )
 {
-    // TODO(JE) much of this code can be shared across the 3 preloads
-    constexpr static int interval = 150;
-    constexpr static int timeLimit = 120000;
-
     if( m_libraryPreloadInProgress.load() )
         return;
 
@@ -904,56 +955,23 @@ void PGM_BASE::PreloadDesignBlockLibraries( KIWAY* aKiway )
     auto preload =
         [this, aKiway]() -> void
         {
+            // A task that starts after its cancel must not reach the project that is going away
+            if( m_libraryPreloadAbort.load() )
+            {
+                m_libraryPreloadAbort.store( false );
+                Pgm().GetBackgroundJobMonitor().Remove( m_libraryPreloadBackgroundJob );
+                m_libraryPreloadBackgroundJob.reset();
+                m_libraryPreloadInProgress.store( false );
+                return;
+            }
+
             std::shared_ptr<BACKGROUND_JOB_REPORTER> reporter =
                     m_libraryPreloadBackgroundJob->m_reporter;
 
             DESIGN_BLOCK_LIBRARY_ADAPTER* adapter = aKiway->Prj().DesignBlockLibs();
 
-            int elapsed = 0;
-            bool aborted = false;
-
             reporter->Report( _( "Loading Design Block Libraries" ) );
-            adapter->AsyncLoad();
-
-            while( true )
-            {
-                if( m_libraryPreloadAbort.load() )
-                {
-                    m_libraryPreloadAbort.store( false );
-                    aborted = true;
-                    break;
-                }
-
-                std::this_thread::sleep_for( std::chrono::milliseconds( interval ) );
-
-                if( std::optional<float> loadStatus = adapter->AsyncLoadProgress() )
-                {
-                    float progress = *loadStatus;
-                    reporter->SetCurrentProgress( progress );
-
-                    if( progress >= 1 )
-                        break;
-                }
-                else
-                {
-                    reporter->SetCurrentProgress( 1 );
-                    break;
-                }
-
-                elapsed += interval;
-
-                if( elapsed > timeLimit )
-                    break;
-            }
-
-            // AbortAsyncLoad() sets the adapter's worker abort flag and then blocks,
-            // so workers exit at their next checkpoint. BlockUntilLoaded() alone just
-            // waits for each future to complete naturally, which can hang indefinitely
-            // if a worker is stuck on a stalled network or filesystem operation.
-            if( aborted )
-                adapter->AbortAsyncLoad();
-            else
-                adapter->BlockUntilLoaded();
+            adapter->RunPreload( *reporter, m_libraryPreloadAbort );
 
             Pgm().GetBackgroundJobMonitor().Remove( m_libraryPreloadBackgroundJob );
             m_libraryPreloadBackgroundJob.reset();
@@ -964,9 +982,26 @@ void PGM_BASE::PreloadDesignBlockLibraries( KIWAY* aKiway )
             aKiway->ExpressMail( FRAME_PCB_EDITOR, MAIL_RELOAD_LIB, payload, nullptr, true );
         };
 
-    thread_pool& tp = GetKiCadThreadPool();
+    // The preload waits on loads it queues on the pool, so it must not hold a pool thread itself
     m_libraryPreloadInProgress.store( true );
-    m_libraryPreloadReturn = tp.submit_task( preload );
+    m_libraryPreloadReturn = std::async( std::launch::async, preload );
+}
+
+
+void PGM_BASE::CancelDesignBlockPreload()
+{
+    if( m_libraryPreloadReturn.valid() )
+        m_libraryPreloadAbort.store( true );
+}
+
+
+void PGM_BASE::WaitForDesignBlockPreload()
+{
+    if( m_libraryPreloadReturn.valid() )
+        m_libraryPreloadReturn.wait();
+
+    // The preload has ended, so a flag it never read can only stop the next one
+    m_libraryPreloadAbort.store( false );
 }
 
 
@@ -1040,6 +1075,40 @@ void PGM_BASE::ClearLibraryLoadMessages()
         if( statusBar )
             statusBar->ClearWarningMessages( "load" );
     }
+}
+
+
+int PGM_BASE::FilterAppEvent( wxEvent& aEvent )
+{
+    // Windows hear a theme switch in no set order, and each reloads its icons from the store
+    if( aEvent.GetEventType() == wxEVT_SYS_COLOUR_CHANGED )
+        GetBitmapStore()->ThemeChanged();
+
+    if( aEvent.GetEventType() == wxEVT_SHOW )
+    {
+        wxShowEvent& event = static_cast<wxShowEvent&>( aEvent );
+        wxDialog*    dialog = dynamic_cast<wxDialog*>( event.GetEventObject() );
+
+        if( dialog )
+        {
+            if( event.IsShown() && dialog->IsModal() )
+            {
+                m_ModalDialogs.push_back( dialog );
+            }
+            // Under GTK, sometimes the modal flag is cleared before hiding
+            else if( !event.IsShown() && !m_ModalDialogs.empty() )
+            {
+                // If we close the expected dialog, remove it from our stack
+                if( m_ModalDialogs.back() == dialog )
+                    m_ModalDialogs.pop_back();
+                // If an out-of-order, remove all dialogs added after the closed one
+                else if( auto it = std::ranges::find( m_ModalDialogs, dialog ); it != m_ModalDialogs.end() )
+                    m_ModalDialogs.erase( it, m_ModalDialogs.end() );
+            }
+        }
+    }
+
+    return wxEventFilter::Event_Skip;
 }
 
 

@@ -29,28 +29,28 @@
 const int projectLocalSettingsVersion = 7;
 
 
-PROJECT_LOCAL_SETTINGS::PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxString& aFilename ) :
+PROJECT_LOCAL_SETTINGS::PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxString& aFilename,
+                                                const BOARD_OPACITY_DEFAULTS& aOpacityDefaults ) :
         JSON_SETTINGS( aFilename, SETTINGS_LOC::PROJECT, projectLocalSettingsVersion,
                        /* aCreateIfMissing = */ true, /* aCreateIfDefault = */ false,
                        /* aWriteFile = */ true ),
-        // clang-format off: suggestion is less readable.
         m_ActiveLayer( UNDEFINED_LAYER ),
         m_ContrastModeDisplay( HIGH_CONTRAST_MODE::NORMAL ),
         m_NetColorMode( NET_COLOR_MODE::RATSNEST ),
         m_AutoTrackWidth( true ),
         m_ZoneDisplayMode( ZONE_DISPLAY_MODE::SHOW_FILLED ),
         m_PrototypeZoneFill( false ),
-        m_TrackOpacity( 1.0 ),
-        m_ViaOpacity( 1.0 ),
-        m_PadOpacity( 1.0 ),
-        m_ZoneOpacity( 0.6 ),
-        m_ShapeOpacity( 1.0 ),
-        m_ImageOpacity( 0.6 ),
+        m_TrackOpacity( aOpacityDefaults.m_TrackOpacity ),
+        m_ViaOpacity( aOpacityDefaults.m_ViaOpacity ),
+        m_PadOpacity( aOpacityDefaults.m_PadOpacity ),
+        m_ZoneOpacity( aOpacityDefaults.m_ZoneOpacity ),
+        m_ShapeOpacity( aOpacityDefaults.m_ShapeOpacity ),
+        m_ImageOpacity( aOpacityDefaults.m_ImageOpacity ),
+        m_OutsideGroupOpacity( aOpacityDefaults.m_OutsideGroupOpacity ),
         m_PcbSelectionFilter(),
         m_GitIntegrationDisabled( false ),
         m_project( aProject ),
         m_wasMigrated( false )
-// clang-format on: suggestion is less readable.
 {
     // Keep old files around
     m_deleteLegacyAfterMigration = false;
@@ -184,12 +184,20 @@ PROJECT_LOCAL_SETTINGS::PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxStrin
                            &m_ContrastModeDisplay, HIGH_CONTRAST_MODE::NORMAL,
                            HIGH_CONTRAST_MODE::NORMAL, HIGH_CONTRAST_MODE::HIDDEN ) );
 
-    m_params.emplace_back( new PARAM<double>( "board.opacity.tracks", &m_TrackOpacity, 1.0 ) );
-    m_params.emplace_back( new PARAM<double>( "board.opacity.vias", &m_ViaOpacity, 1.0 ) );
-    m_params.emplace_back( new PARAM<double>( "board.opacity.pads", &m_PadOpacity, 1.0 ) );
-    m_params.emplace_back( new PARAM<double>( "board.opacity.zones", &m_ZoneOpacity, 0.6 ) );
-    m_params.emplace_back( new PARAM<double>( "board.opacity.images", &m_ImageOpacity, 0.6 ) );
-    m_params.emplace_back( new PARAM<double>( "board.opacity.shapes", &m_ShapeOpacity, 1.0 ) );
+    m_params.emplace_back( new PARAM<double>( "board.opacity.tracks", &m_TrackOpacity,
+                                              aOpacityDefaults.m_TrackOpacity ) );
+    m_params.emplace_back( new PARAM<double>( "board.opacity.vias", &m_ViaOpacity,
+                                              aOpacityDefaults.m_ViaOpacity ) );
+    m_params.emplace_back( new PARAM<double>( "board.opacity.pads", &m_PadOpacity,
+                                              aOpacityDefaults.m_PadOpacity ) );
+    m_params.emplace_back( new PARAM<double>( "board.opacity.zones", &m_ZoneOpacity,
+                                              aOpacityDefaults.m_ZoneOpacity ) );
+    m_params.emplace_back( new PARAM<double>( "board.opacity.images", &m_ImageOpacity,
+                                              aOpacityDefaults.m_ImageOpacity ) );
+    m_params.emplace_back( new PARAM<double>( "board.opacity.shapes", &m_ShapeOpacity,
+                                              aOpacityDefaults.m_ShapeOpacity ) );
+    m_params.emplace_back( new PARAM<double>( "board.opacity.outside_group", &m_OutsideGroupOpacity,
+                                              aOpacityDefaults.m_OutsideGroupOpacity ) );
 
     m_params.emplace_back( new PARAM_LIST<wxString>( "board.hidden_nets", &m_HiddenNets, {} ) );
 
@@ -556,14 +564,9 @@ PROJECT_LOCAL_SETTINGS::PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxStrin
                 if( Contains( ptr ) )
                 {
                     if( At( ptr ).is_array() && !At( ptr ).empty() )
-                    {
-                        At( ptr ).push_back(
-                                VisibilityLayerToString( VISIBILITY_LAYER::VIA_STITCHING ) );
-                    }
+                        At( ptr ).push_back( VisibilityLayerToString( VISIBILITY_LAYER::VIA_STITCHING ) );
                     else
-                    {
                         At( "board" ).erase( "visible_items" );
-                    }
 
                     m_wasMigrated = true;
                 }
@@ -588,8 +591,7 @@ bool PROJECT_LOCAL_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce
 {
     wxASSERT( m_project );
 
-    Set( "meta.filename",
-         m_project->GetProjectName() + "." + FILEEXT::ProjectLocalSettingsFileExtension );
+    Set( "meta.filename", m_project->GetProjectName() + "." + FILEEXT::ProjectLocalSettingsFileExtension );
 
     // Even if parameters were not modified, we should resave after migration
     bool force = aForce || m_wasMigrated;
@@ -606,6 +608,7 @@ bool PROJECT_LOCAL_SETTINGS::SaveAs( const wxString& aDirectory, const wxString&
 {
     Set( "meta.filename", aFile + "." + FILEEXT::ProjectLocalSettingsFileExtension );
     SetFilename( aFile );
+    SetReadOnly( false );
 
     // If we're actually going ahead and doing the save, the flag that keeps code from doing the
     // save should be cleared at this point.
@@ -624,16 +627,14 @@ const PROJECT_FILE_STATE* PROJECT_LOCAL_SETTINGS::GetFileState( const wxString& 
                             } );
 
     if( it != m_files.end() )
-    {
         return &( *it );
-    }
 
     return nullptr;
 }
 
 
-void PROJECT_LOCAL_SETTINGS::SaveFileState( const wxString& aFileName,
-                                            const WINDOW_SETTINGS* aWindowCfg, bool aOpen )
+void PROJECT_LOCAL_SETTINGS::SaveFileState( const wxString& aFileName, const WINDOW_SETTINGS* aWindowCfg,
+                                            bool aOpen )
 {
     auto it = std::find_if( m_files.begin(), m_files.end(),
                             [&aFileName]( const PROJECT_FILE_STATE& a )

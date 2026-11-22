@@ -27,6 +27,7 @@
 #include <macros.h>
 #include <string_utils.h>
 #include <gal/graphics_abstraction_layer.h>
+#include <font/glyph_types.h>
 #include <font/stroke_font.h>
 #include <font/outline_font.h>
 #include <trigo.h>
@@ -143,7 +144,9 @@ FONT* FONT::getDefaultFont()
 FONT* FONT::GetFont( const wxString& aFontName, bool aBold, bool aItalic,
                      const std::vector<wxString>* aEmbeddedFiles, bool aForDrawingSheet )
 {
-    if( aFontName.empty() || aFontName.StartsWith( KICAD_FONT_NAME ) )
+    static const wxString s_kicadFontName( KICAD_FONT_NAME );
+
+    if( aFontName.empty() || aFontName.StartsWith( s_kicadFontName ) )
         return getDefaultFont();
 
     std::tuple<wxString, bool, bool, bool> key = { aFontName, aBold, aItalic, aForDrawingSheet };

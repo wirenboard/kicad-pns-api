@@ -139,6 +139,16 @@ private:
     void setState( STATE aNewState );
 
     /**
+     * Set the panel's cursor-in-canvas state from the pointer position after a capture change.
+     */
+    void syncCursorInCanvas();
+
+    /**
+     * @return true if the window under the pointer is the panel or one of its children.
+     */
+    bool isPointerOverCanvas() const;
+
+    /**
      * Compute new viewport settings while in autopanning mode.
      *
      * @param aEvent is an event to be processed and decide if autopanning should happen.
@@ -154,6 +164,12 @@ private:
      * @param y Mouse position
      */
     void handleCursorCapture( int x, int y );
+
+    /**
+     * Repaint only when the canvas keeps a retained scene. Other canvases repaint from the refresh
+     * the mouse event posts.
+     */
+    void repaintRetained();
 
     /**
      * Send an event to refresh mouse position.

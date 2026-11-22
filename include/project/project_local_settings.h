@@ -23,6 +23,7 @@
 #define KICAD_PROJECT_LOCAL_SETTINGS_H
 
 #include <layer_ids.h>
+#include <project/board_opacity_defaults.h>
 #include <project/board_project_settings.h>
 #include <project/sch_project_settings.h>
 #include <settings/json_settings.h>
@@ -54,7 +55,11 @@ struct KICOMMON_API PROJECT_FILE_STATE
 class KICOMMON_API PROJECT_LOCAL_SETTINGS : public JSON_SETTINGS
 {
 public:
-    PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxString& aFilename );
+    /**
+     * @param aOpacityDefaults are the board opacities used when the file does not set them.
+     */
+    PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxString& aFilename,
+                            const BOARD_OPACITY_DEFAULTS& aOpacityDefaults = BOARD_OPACITY_DEFAULTS() );
 
     virtual ~PROJECT_LOCAL_SETTINGS() {}
 
@@ -141,6 +146,7 @@ public:
     double m_ZoneOpacity;      ///< Opacity override for filled zones
     double m_ShapeOpacity;     ///< Opacity override for graphic shapes
     double m_ImageOpacity;     ///< Opacity override for user images
+    double m_OutsideGroupOpacity; ///< Opacity override for items outside the entered group
 
     /**
      * A list of netnames that have been manually hidden in the board editor.

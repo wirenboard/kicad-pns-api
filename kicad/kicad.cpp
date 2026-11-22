@@ -154,14 +154,15 @@ bool PGM_KICAD::OnPgmInit()
     {
         wxString name;
         FRAME_T  type;
+        // clang-format off
     } frameTypes[] = { { wxT( "pcb" ), FRAME_PCB_EDITOR },
                        { wxT( "fpedit" ), FRAME_FOOTPRINT_EDITOR },
                        { wxT( "sch" ), FRAME_SCH },
                        { wxT( "calc" ), FRAME_CALC },
-                       { wxT( "bm2cmp" ), FRAME_BM2CMP },
                        { wxT( "ds" ), FRAME_PL_EDITOR },
                        { wxT( "gerb" ), FRAME_GERBER },
                        { wxT( "" ), FRAME_T_COUNT } };
+    // clang-format on
 
     wxString frameName;
 
@@ -178,8 +179,6 @@ bool PGM_KICAD::OnPgmInit()
         if( appType == FRAME_T_COUNT )
         {
             wxLogError( wxT( "Unknown frame: %s" ), frameName );
-            // Clean up
-            OnPgmExit();
             return false;
         }
     }
@@ -288,8 +287,15 @@ bool PGM_KICAD::OnPgmInit()
 
     if( appType == FRAME_MERGETOOL )
     {
-        MERGETOOL_PATHS paths{ parser.GetParam( 0 ), parser.GetParam( 1 ),
-                               parser.GetParam( 2 ), parser.GetParam( 3 ) };
+        // A later project load can change the working directory, so resolve git's relative paths now
+        auto absolute = [&]( size_t aIndex )
+        {
+            wxFileName fn( parser.GetParam( aIndex ) );
+            fn.MakeAbsolute();
+            return fn.GetFullPath();
+        };
+
+        MERGETOOL_PATHS paths{ absolute( 0 ), absolute( 1 ), absolute( 2 ), absolute( 3 ) };
         mergetoolFrame = new MERGETOOL_FRAME( &Kiway, nullptr, paths );
         frame          = mergetoolFrame;
     }
@@ -374,11 +380,6 @@ bool PGM_KICAD::OnPgmInit()
             // OpenProjectFiles() API asks that it report failure to the UI.
             // Nothing further to say here.
 
-            // We've already initialized things at this point, but wx won't call OnExit if
-            // we fail out. Call our own cleanup routine here to ensure the relevant resources
-            // are freed at the right time (if they aren't, segfaults will occur).
-            OnPgmExit();
-
             // Fail the process startup if the file could not be opened,
             // although this is an optional choice, one that can be reversed
             // also in the KIFACE specific OpenProjectFiles() return value.
@@ -440,6 +441,9 @@ bool PGM_KICAD::OnPgmInit()
 
     if( mergetoolFrame )
     {
+        // Closing the host frame must not replace the merge result with an exit code of zero.
+        App().SetExitOnFrameDelete( false );
+
         // Stay hidden; the merge dialog is its own modal. The frame just needs
         // to be the wxApp top window so the modal has a parent and the wxApp
         // loop has something to drive. Defer the run via CallAfter so the
@@ -495,9 +499,12 @@ void PGM_KICAD::OnPgmExit()
     // setting it here the pool wait below can block for up to 120 seconds.
     m_libraryPreloadAbort.store( true );
 
-    // Abort and wait on any background jobs
-    GetKiCadThreadPool().purge();
-    GetKiCadThreadPool().wait();
+    // Abort and wait on any background jobs, if InitPgm() got far enough to start the pool
+    if( m_singleton.m_ThreadPool )
+    {
+        GetKiCadThreadPool().purge();
+        GetKiCadThreadPool().wait();
+    }
 
     Kiway.OnKiwayEnd();
 
@@ -511,9 +518,13 @@ void PGM_KICAD::OnPgmExit()
 
     // Destroy PGM_KICAD earlier than wxApp and static destruction would
     Destroy();
-    GetGitBackend()->Shutdown();
-    delete GetGitBackend();
-    SetGitBackend( nullptr );
+
+    if( GIT_BACKEND* backend = GetGitBackend() )
+    {
+        backend->Shutdown();
+        delete backend;
+        SetGitBackend( nullptr );
+    }
 }
 
 
@@ -593,13 +604,19 @@ struct APP_KICAD : public wxApp
         }
 #endif
 
-        if( !program.OnPgmInit() )
+        // An escaping exception would skip OnPgmExit() and crash the static teardown
+        try
         {
-            program.OnPgmExit();
-            return false;
+            if( program.OnPgmInit() )
+                return true;
+        }
+        catch( ... )
+        {
+            Pgm().HandleException( std::current_exception() );
         }
 
-        return true;
+        program.OnPgmExit();
+        return false;
     }
 
     int OnExit() override
@@ -615,22 +632,28 @@ struct APP_KICAD : public wxApp
         wxLog::EnableLogging( false );
 
         program.OnPgmExit();
+        program.ExitIfTeardownUnsafe();
+
         return ret;
     }
 
 
     int OnRun() override
     {
+        int ret = -1;
+
         try
         {
-            return wxApp::OnRun();
+            ret = wxApp::OnRun();
         }
         catch(...)
         {
             Pgm().HandleException( std::current_exception() );
         }
 
-        return -1;
+        program.SetRunResult( ret );
+
+        return ret;
     }
 
 
@@ -642,33 +665,7 @@ struct APP_KICAD : public wxApp
 
     int FilterEvent( wxEvent& aEvent ) override
     {
-        if( aEvent.GetEventType() == wxEVT_SHOW )
-        {
-            wxShowEvent& event = static_cast<wxShowEvent&>( aEvent );
-            wxDialog*    dialog = dynamic_cast<wxDialog*>( event.GetEventObject() );
-
-            std::vector<void*>& dlgs = Pgm().m_ModalDialogs;
-
-            if( dialog )
-            {
-                if( event.IsShown() && dialog->IsModal() )
-                {
-                    dlgs.push_back( dialog );
-                }
-                // Under GTK, sometimes the modal flag is cleared before hiding
-                else if( !event.IsShown() && !dlgs.empty() )
-                {
-                    // If we close the expected dialog, remove it from our stack
-                    if( dlgs.back() == dialog )
-                        dlgs.pop_back();
-                    // If an out-of-order, remove all dialogs added after the closed one
-                    else if( auto it = std::find( dlgs.begin(), dlgs.end(), dialog ) ; it != dlgs.end() )
-                        dlgs.erase( it, dlgs.end() );
-                }
-            }
-        }
-
-        return Event_Skip;
+        return Pgm().FilterAppEvent( aEvent );
     }
 
 #if defined( DEBUG )

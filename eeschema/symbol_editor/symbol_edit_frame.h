@@ -43,6 +43,9 @@ class EDITOR_TABS_PANEL;
 class EDITOR_TABS_MODEL;
 class EDA_LIST_DIALOG;
 class UNDO_REDO_CONTAINER;
+class API_HANDLER_COMMON;
+class API_HANDLER_LIBRARIES;
+class API_HANDLER_SYMBOL;
 
 
 #define UNITS_ALL _HKI( "ALL" )
@@ -214,9 +217,16 @@ public:
     void SaveAll();
 
     /**
-     * Revert unsaved changes in a symbol, restoring to the last saved state.
+     * Save the given library (including buffered changes) without user interaction.
+     * Used by the API handler; returns false if the library is read-only or the save fails.
      */
-    void Revert( bool aConfirm = true );
+    bool SaveLibraryHeadless( const wxString& aLibrary );
+
+    /**
+     * Revert unsaved changes in a symbol, restoring to the last saved state.
+     * Can modify aTarget if the unsaved changes include a change in symbol name.
+     */
+    void Revert( LIB_ID& aTarget, bool aConfirm = true );
     void RevertAll();
 
     void DeleteSymbolFromLibrary();
@@ -478,9 +488,6 @@ public:
     /// Return true if \a aLibId is an alias for the editor screen symbol.
     bool IsCurrentSymbol( const LIB_ID& aLibId ) const;
 
-    /// Restore the empty editor screen, without any symbol or library selected.
-    void emptyScreen();
-
     void ClearToolbarControl( int aId ) override;
 
 protected:
@@ -489,7 +496,16 @@ protected:
 
     void doReCreateMenuBar() override;
 
+    PLUGIN_ACTION_SCOPE PluginActionScope() const override
+    {
+        return PLUGIN_ACTION_SCOPE::SYMBOL;
+    }
+
     void updateSelectionFilterVisbility() override;
+
+    bool hasUnsavedLibraryEdits( const wxString& aLibNickname ) const override;
+
+    void onPluginAvailabilityChanged( wxCommandEvent& aEvt );
 
 private:
     // Set up the tool framework
@@ -627,6 +643,15 @@ private:
                                                               int aBodyStyle );
 
     /**
+     * Open a new tab over a transient working symbol and screen and make it active.
+     *
+     * For a brand-new symbol with no library identity yet: the tab reads as unnamed and is never
+     * de-duplicated against another tab; RenameSymbolTab() promotes it once a save names it.  The
+     * context takes ownership of both objects.
+     */
+    SYMBOL_EDITOR_TAB_CONTEXT* CreateUnsavedSymbolTab( LIB_SYMBOL* aSymbol, SCH_SCREEN* aScreen );
+
+    /**
      * Resolve the tab context for a panel tab index, or nullptr. The panel owns tab order, so the
      * index maps through the panel's key, not into m_tabContexts directly.
      */
@@ -662,16 +687,18 @@ private:
     bool hasDirtyInactiveInstanceTabs() const;
 
     /**
-     * Close every tab without prompting and return the frame to the empty state. Used by the paths
-     * that leave the tab model. The caller handles any unsaved-change prompting.
-     */
-    void closeAllSymbolTabsSilently();
-
-    /**
      * Close the open tab for aLibId, if any, without prompting and leaving the other tabs open. The
      * panel selects a successor when the closed tab was active.
      */
     void closeSymbolTab( const LIB_ID& aLibId );
+
+    /**
+     * Close the library tabs of aLibrary, or of every library when it is empty, limited to aSymbol
+     * when given. Schematic instance tabs stay open.
+     *
+     * @return the closed active tab's symbol, or an empty LIB_ID.
+     */
+    LIB_ID closeLibraryTabs( const wxString& aLibrary, const wxString& aSymbol );
 
     /**
      * Capture the current view zoom/center for the active tab's snapshot.
@@ -768,6 +795,10 @@ private:
     // accumulated while the app was busy).  Without this guard, opening the symbol library
     // table dialog from within an active SyncLibraries call corrupts the library tree.
     bool        m_syncLibrariesInProgress;
+
+    std::unique_ptr<API_HANDLER_SYMBOL>    m_apiHandler;
+    std::unique_ptr<API_HANDLER_COMMON>    m_apiHandlerCommon;
+    std::unique_ptr<API_HANDLER_LIBRARIES> m_apiLibrariesHandler;
 };
 
 #endif  // SYMBOL_EDIT_FRAME_H

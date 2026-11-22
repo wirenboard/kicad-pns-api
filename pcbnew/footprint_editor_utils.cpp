@@ -64,6 +64,8 @@ void FOOTPRINT_EDIT_FRAME::LoadFootprintFromLibrary( LIB_ID aFPID )
         {
             m_tabsPanel->SelectTab( existing );
 
+            setFPWatcher( GetBoard()->GetFirstFootprint() );
+
             m_treePane->GetLibTree()->ExpandLibId( aFPID );
 
             m_centerItemOnIdle = aFPID;
@@ -278,7 +280,7 @@ void FOOTPRINT_EDIT_FRAME::OnEditItemRequest( BOARD_ITEM* aItem )
         break;
 
     case PCB_PAD_T:
-        ShowPadPropertiesDialog( static_cast<PAD*>( aItem ) );
+        ShowPadPropertiesDialog( static_cast<PAD&>( *aItem ) );
         break;
 
     case PCB_FOOTPRINT_T:
@@ -296,7 +298,6 @@ void FOOTPRINT_EDIT_FRAME::OnEditItemRequest( BOARD_ITEM* aItem )
         break;
 
     case PCB_TABLE_T:
-    case PCB_DRILL_CHART_T:
     {
         DIALOG_TABLE_PROPERTIES dlg( this, static_cast<PCB_TABLE*>( aItem ) );
 
@@ -404,7 +405,7 @@ void FOOTPRINT_EDIT_FRAME::SetActiveLayer( PCB_LAYER_ID aLayer )
 
     m_toolManager->RunAction( PCB_ACTIONS::layerChanged );  // notify other tools
     GetCanvas()->SetFocus();                             // allow capture of hotkeys
-    GetCanvas()->SetHighContrastLayer( aLayer );
+    GetCanvas()->ChangeHighContrastLayer( aLayer );
     GetCanvas()->Refresh();
 }
 
@@ -487,6 +488,14 @@ void FOOTPRINT_EDIT_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
 
         break;
     }
+
+    case MAIL_LIB_SAVE_ALL:
+        mail.SetPayload( SaveModifiedLibraryTabs() ? "success" : "failed" );
+        break;
+
+    case MAIL_LIB_HAS_UNSAVED:
+        mail.SetPayload( HasModifiedFootprintTabs( true ) ? "yes" : "no" );
+        break;
 
     case MAIL_RELOAD_LIB:
         SyncLibraryTree( true );

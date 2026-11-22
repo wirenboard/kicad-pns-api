@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <tool/arc_draw_mode.h>
 #include <tool/tool_action.h>
 #include <tool/actions.h>
 
@@ -102,10 +103,19 @@ public:
     static TOOL_ACTION drawEllipse;
     static TOOL_ACTION drawEllipseArc;
     static TOOL_ACTION drawArc;
+    static TOOL_ACTION drawArcCenter;
+    static TOOL_ACTION drawArcStartEndMid;
+    static TOOL_ACTION drawArcStartEndCenter;
+    static TOOL_ACTION drawArcTangent;
+    static TOOL_ACTION drawArcStartDirEnd;
+
+    /// Tool action that starts the arc tool in the given mode.
+    static const TOOL_ACTION& DrawArcForMode( ARC_DRAW_MODE aMode );
     static TOOL_ACTION drawBezier;
     static TOOL_ACTION drawPolygon;
     static TOOL_ACTION drawLines;
     static TOOL_ACTION placeImage;
+    static TOOL_ACTION        convertImageToOutlines;
     static TOOL_ACTION undoLastSegment;
     static TOOL_ACTION switchSegmentPosture;
     static TOOL_ACTION drawRuleArea;
@@ -331,6 +341,7 @@ public:
     static TOOL_ACTION toggleDottedSecondary;
     static TOOL_ACTION toggleSmithChart;
     static TOOL_ACTION toggleDarkModePlots;
+    static TOOL_ACTION toggleTrackCursor;
     static TOOL_ACTION simAnalysisProperties;
     static TOOL_ACTION runSimulation;
     static TOOL_ACTION stopSimulation;

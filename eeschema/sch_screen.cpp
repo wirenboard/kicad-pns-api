@@ -21,6 +21,7 @@
  */
 
 #include <atomic>
+#include <map>
 #include <stack>
 #include <vector>
 #include <wx/filefn.h>
@@ -390,6 +391,12 @@ bool SCH_SCREEN::PruneUnusedLibSymbol( const wxString& aName )
 
         if( symbol->GetSchSymbolLibraryName() == aName )
             return false;
+
+        for( const LIB_ID& alternate : symbol->GetVariantSymbolOverrides() )
+        {
+            if( alternate.Format().wx_str() == aName )
+                return false;
+        }
     }
 
     if( auto it = m_libSymbols.find( aName ); it != m_libSymbols.end() )
@@ -941,6 +948,10 @@ void SCH_SCREEN::BumpConnectivityRevision( KICAD_T aChangedType )
     if( aChangedType != SCH_LINE_T )
         ++m_connectivitySymbolRevision;
 
+    // Packages spanning sheets are found from the symbols on every screen
+    if( aChangedType == SCH_SYMBOL_T || aChangedType == TYPE_NOT_INIT )
+        SCH_SYMBOL::BumpRefGeneration();
+
     m_connectivityItems.reset();
 }
 
@@ -1110,7 +1121,8 @@ void SCH_SCREEN::Plot( PLOTTER* aPlotter, const SCH_PLOT_OPTS& aPlotOpts, const 
                 std::vector<VECTOR3I> curr_wire_shape = aLine->BuildWireWithHopShape( this, arcRadius );
 
                 // The hop pieces are standalone copies/shapes without the connection map, so
-                // resolve the net-class color and style from the original wire and reuse them.
+                // resolve the net-class width, color and style from the original wire and reuse them.
+                int        penWidth = aLine->GetPenWidth();
                 COLOR4D    lineColor = aLine->GetLineColor();
                 LINE_STYLE lineStyle = aLine->GetEffectiveLineStyle();
 
@@ -1126,6 +1138,7 @@ void SCH_SCREEN::Plot( PLOTTER* aPlotter, const SCH_PLOT_OPTS& aPlotOpts, const 
                         SCH_LINE curr_line( *aLine );
                         curr_line.SetStartPoint( start );
                         curr_line.SetEndPoint( end );
+                        curr_line.SetLineWidth( penWidth );
                         curr_line.SetLineColor( lineColor );
                         curr_line.SetLineStyle( lineStyle );
                         curr_line.Plot( aPlotter, !background, aPlotOpts, 0, 0, { 0, 0 }, false );
@@ -1169,8 +1182,9 @@ void SCH_SCREEN::Plot( PLOTTER* aPlotter, const SCH_PLOT_OPTS& aPlotOpts, const 
             field.ClearRenderCache();
             field.Plot( aPlotter, false, aPlotOpts, sym->GetUnit(), sym->GetBodyStyle(), { 0, 0 }, dnp );
 
-            if( sym->IsSymbolLikePowerLocalLabel() && field.GetId() == FIELD_T::VALUE
-                && ( field.IsVisible() || field.IsForceVisible() ) )
+            if( sym->IsSymbolLikePowerLocalLabel()
+                    && field.GetId() == FIELD_T::VALUE
+                    && ( field.IsVisible() || field.IsForceVisible() ) )
             {
                 sym->PlotLocalPowerIconShape( aPlotter );
             }
@@ -1575,6 +1589,44 @@ void SCH_SCREEN::AddLibSymbol( const wxString& aKey, std::unique_ptr<LIB_SYMBOL>
 }
 
 
+void SCH_SCREEN::IncludeVariantSymbols( const SCH_SYMBOL& aSymbol, bool aRefresh )
+{
+    for( const LIB_ID& alternate : aSymbol.GetVariantSymbolOverrides() )
+    {
+        // Overriding to the symbol's own link changes nothing
+        if( alternate == aSymbol.GetLibId() )
+            continue;
+
+        wxString key = alternate.Format().wx_str();
+
+        if( m_libSymbols.contains( key ) )
+        {
+            if( !aRefresh )
+                continue;
+
+            // A base symbol sharing the key keeps its own copy
+            bool usedAsBase = false;
+
+            for( SCH_ITEM* item : Items().OfType( SCH_SYMBOL_T ) )
+                usedAsBase |= static_cast<SCH_SYMBOL*>( item )->GetSchSymbolLibraryName() == key;
+
+            if( usedAsBase )
+                continue;
+        }
+
+        if( std::unique_ptr<LIB_SYMBOL> libSymbol = aSymbol.LoadAlternateFromLibrary( alternate ) )
+        {
+            libSymbol->SetParent();
+            AddLibSymbol( key, std::move( libSymbol ) );
+
+            // Other instances may hold the replaced definition in their resolved cache
+            for( SCH_ITEM* item : Items().OfType( SCH_SYMBOL_T ) )
+                item->ClearCaches();
+        }
+    }
+}
+
+
 void SCH_SCREEN::FixupEmbeddedData()
 {
     SCHEMATIC* schematic = Schematic();
@@ -1846,6 +1898,19 @@ bool SCH_SCREEN::HasInstanceDataFromOtherProjects() const
         const std::vector<SCH_SYMBOL_INSTANCE> symbolInstances = symbol->GetInstances();
 
         for( const SCH_SYMBOL_INSTANCE& instance : symbolInstances )
+        {
+            if( !hierarchy.HasPath( instance.m_Path ) )
+                return true;
+        }
+    }
+
+    for( const SCH_ITEM* item : Items().OfType( SCH_SHEET_T ) )
+    {
+        const SCH_SHEET* sheet = static_cast<const SCH_SHEET*>( item );
+
+        const std::vector<SCH_SHEET_INSTANCE> sheetInstances = sheet->GetInstances();
+
+        for( const SCH_SHEET_INSTANCE& instance : sheetInstances )
         {
             if( !hierarchy.HasPath( instance.m_Path ) )
                 return true;
@@ -2464,6 +2529,38 @@ int SCH_SCREENS::ChangeSymbolLibNickname( const wxString& aFrom, const wxString&
     }
 
     return cnt;
+}
+
+
+std::vector<SCH_SYMBOL*> SCH_SCREENS::OutdatedSymbols( SYMBOL_LIBRARY_ADAPTER& aLibraries, int aCompareFlags )
+{
+    std::vector<SCH_SYMBOL*>                      outdated;
+    std::map<LIB_ID, std::unique_ptr<LIB_SYMBOL>> flattened;
+
+    for( SCH_SCREEN* screen = GetFirst(); screen; screen = GetNext() )
+    {
+        for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            SCH_SYMBOL*       symbol = static_cast<SCH_SYMBOL*>( item );
+            const LIB_SYMBOL* embedded = symbol->GetLibSymbolRef().get();
+
+            if( !embedded )
+                continue;
+
+            auto it = flattened.find( symbol->GetLibId() );
+
+            if( it == flattened.end() )
+            {
+                LIB_SYMBOL* libSymbol = aLibraries.LoadSymbol( symbol->GetLibId() );
+                it = flattened.emplace( symbol->GetLibId(), libSymbol ? libSymbol->Flatten() : nullptr ).first;
+            }
+
+            if( it->second && it->second->Compare( *embedded, aCompareFlags ) != 0 )
+                outdated.push_back( symbol );
+        }
+    }
+
+    return outdated;
 }
 
 

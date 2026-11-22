@@ -34,6 +34,14 @@ class DS_PROXY_VIEW_ITEM;
 class REPORTER;
 class wxWindow;
 
+class WIDGET_DIFF_CANVAS;
+
+namespace KICAD_DIFF
+{
+class DIFF_CANVAS_CONTEXT;
+struct DOCUMENT_DIFF;
+} // namespace KICAD_DIFF
+
 /**
  * Handle Eeschema job dispatches.
  */
@@ -47,8 +55,10 @@ public:
     int JobExportPlot( JOB* aJob );
     int JobSchErc( JOB* aJob );
     int JobSymUpgrade( JOB* aJob );
+    int JobSymDowngrade( JOB* aJob );
     int JobSymExportSvg( JOB* aJob );
     int JobUpgrade( JOB* aJob );
+    int JobDowngrade( JOB* aJob );
     int JobImport( JOB* aJob );
     int JobSchDiff( JOB* aJob );
     int JobSymDiff( JOB* aJob );
@@ -62,11 +72,18 @@ public:
                         const wxString& aLabelA, const wxString& aLabelB, wxWindow* aParent,
                         REPORTER* aReporter );
 
+    /// Diff two schematics for a window outside the kiface, drawing the first on aBefore and
+    /// the second on aAfter. The result keeps both loaded while the canvases show them.
+    KICAD_DIFF::DIFF_CANVAS_CONTEXT* AttachDiffCanvases( KICAD_DIFF::DOC_KIND aKind, const wxString& aFileA,
+                                                         const wxString& aFileB, WIDGET_DIFF_CANVAS* aBefore,
+                                                         WIDGET_DIFF_CANVAS* aAfter, KICAD_DIFF::DOCUMENT_DIFF& aDiff,
+                                                         REPORTER* aReporter );
+
 private:
     int runSchMerge( const wxString& aAncestor, const wxString& aOurs, const wxString& aTheirs,
                      const wxString& aOutput, bool aInteractive );
     int runSymLibMerge( const wxString& aAncestor, const wxString& aOurs, const wxString& aTheirs,
-                        const wxString& aOutput );
+                        const wxString& aOutput, bool aInteractive );
 
 public:
 

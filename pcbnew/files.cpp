@@ -34,8 +34,10 @@
 #include <pcb_edit_frame.h>
 #include <board_design_settings.h>
 #include <board_loader.h>
+#include <board_tables/generated_table_refresh.h>
 #include <3d_viewer/eda_3d_viewer_frame.h>
 #include <footprint_import_reconciler.h>
+#include <import_design_rules.h>
 #include <footprint_library_adapter.h>
 #include <import_proj_properties.h>
 #include <import_net_names.h>
@@ -71,6 +73,7 @@
 #include <dialogs/dialog_export_2581.h>
 #include <dialogs/dialog_map_layers.h>
 #include <dialogs/dialog_export_odbpp.h>
+#include <pcb_io/odbpp/odb_export_job.h>
 #include <jobs/job_export_pcb_odb.h>
 #include <dialogs/dialog_import_choose_project.h>
 #include <tools/pcb_actions.h>
@@ -87,6 +90,7 @@
 
 #include <wx/stdpaths.h>
 #include <wx/ffile.h>
+#include <wx/file.h>
 #include <wx/filedlg.h>
 #include <wx/txtstrm.h>
 #include <wx/wfstream.h>
@@ -315,11 +319,7 @@ int BOARD_EDITOR_CONTROL::Revert( const TOOL_EVENT& aEvent )
     if( !IsOK( m_frame, wxString::Format( _( "Revert '%s' to last version saved?" ), fn.GetFullPath() ) ) )
         return false;
 
-    m_frame->GetScreen()->SetContentModified( false );    // do not prompt the user for changes
-
-    m_frame->ReleaseFile();
-
-    return m_frame->OpenProjectFiles( std::vector<wxString>( 1, fn.GetFullPath() ), KICTL_REVERT );
+    return m_frame->ReloadFromDisk();
 }
 
 
@@ -471,6 +471,25 @@ int PCB_EDIT_FRAME::inferLegacyEdgeClearance( BOARD* aBoard, bool aShowUserMsg )
 }
 
 
+bool PCB_EDIT_FRAME::ReloadFromDisk()
+{
+    if( IsClosing() )
+        return false;
+
+    wxString fileName = GetBoard()->GetFileName();
+
+    if( fileName.IsEmpty() )
+        return false;
+
+    fileName = Prj().AbsolutePath( fileName );
+
+    // The caller already handled confirmation, so skip the save prompt.
+    GetScreen()->SetContentModified( false );
+    ReleaseFile();
+    return OpenProjectFiles( std::vector<wxString>( 1, fileName ), KICTL_REVERT );
+}
+
+
 bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, int aCtl )
 {
     // This is for python:
@@ -547,12 +566,12 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
 
     // Get rid of any existing warnings about the old board
     GetInfoBar()->Dismiss();
+    m_loadNoticeInfoBar->Dismiss();
 
     if( KISTATUSBAR* statusBar = dynamic_cast<KISTATUSBAR*>( GetStatusBar() ) )
         statusBar->ClearWarningMessages( "load" );
 
-    WX_PROGRESS_REPORTER progressReporter( this, is_new ? _( "Create PCB" ) : _( "Load PCB" ), 1,
-                                           PR_CAN_ABORT );
+    WX_PROGRESS_REPORTER progressReporter( this, is_new ? _( "Create PCB" ) : _( "Load PCB" ), 1, PR_CAN_ABORT );
     WX_STRING_REPORTER loadReporter;
     LOAD_INFO_REPORTER_SCOPE loadReporterScope( &loadReporter );
 
@@ -614,7 +633,10 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
     // Crash-recovery: when zip-format autosave is active, look for autosave files newer than
     // the saved board and offer to recover them before the load happens.
     if( !is_new )
-        CheckForAutosaveFiles( wx_filename.GetPath(), { FILEEXT::KiCadPcbFileExtension } );
+        CheckForAutosaveFiles( wx_filename.GetPath(), { FILEEXT::KiCadPcbFileExtension }, aCtl );
+
+    // custom rules the importer derived, saved with the board once its name is known
+    wxString importedRules;
 
     if( is_new )
     {
@@ -627,8 +649,9 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
     }
     else
     {
-        BOARD*              loadedBoard = nullptr;   // it will be set to non-NULL if loaded OK
-        bool failedLoad = false;
+        BOARD* loadedBoard = nullptr;   // it will be set to non-NULL if loaded OK
+        bool   failedLoad = false;
+        std::map<PCB_LAYER_ID, wxString> renamedLayers;
 
         // importer template footprints, captured at load for reconciliation
         std::vector<std::unique_ptr<FOOTPRINT>> importedLibFootprints;
@@ -640,7 +663,7 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
             if( m_importProperties )
                 props.insert( m_importProperties->begin(), m_importProperties->end() );
 
-            // PCB_IO_EAGLE can use this info to center the BOARD, but it does not yet.
+            // PCB_IO_EAGLE uses these to center the BOARD
             props["page_width"] = std::to_string( GetPageSizeIU().x );
             props["page_height"] = std::to_string( GetPageSizeIU().y );
 
@@ -656,22 +679,24 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
                                                 : static_cast<REPORTER*>( &NULL_REPORTER::GetInstance() );
             loaderOptions.initialize_after_load = false;
 
-            if( aCtl & KICTL_IMPORT_LIB )
-            {
-                loaderOptions.post_load_hook =
-                        [&]( PCB_IO& aPlugin )
+            loaderOptions.post_load_hook =
+                    [&]( PCB_IO& aPlugin )
+                    {
+                        importedRules = aPlugin.GetImportedDesignRules();
+
+                        if( !( aCtl & KICTL_IMPORT_LIB ) )
+                            return;
+
+                        try
                         {
-                            try
-                            {
-                                for( FOOTPRINT* fp : aPlugin.GetImportedCachedLibraryFootprints() )
-                                    importedLibFootprints.emplace_back( fp );
-                            }
-                            catch( const IO_ERROR& )
-                            {
-                                // no cached library, reconcile from placed only
-                            }
-                        };
-            }
+                            for( FOOTPRINT* fp : aPlugin.GetImportedCachedLibraryFootprints() )
+                                importedLibFootprints.emplace_back( fp );
+                        }
+                        catch( const IO_ERROR& )
+                        {
+                            // no cached library, reconcile from placed only
+                        }
+                    };
 
             loaderOptions.plugin_configurator =
                     [&]( PCB_IO& aPlugin )
@@ -682,10 +707,10 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
                             if( !ADVANCED_CFG::GetCfg().m_ImportSkipLayerMapping )
                             {
                                 const auto layerMapCallback =
-                                        [this]( const std::vector<INPUT_LAYER_DESC>& aLayers )
-                                        {
-                                            return DIALOG_MAP_LAYERS::RunModal( this, aLayers );
-                                        };
+                                        [this, &renamedLayers]( const std::vector<INPUT_LAYER_DESC>& aLayers )
+                                {
+                                    return DIALOG_MAP_LAYERS::RunModal( this, aLayers, &renamedLayers );
+                                };
 
                                 mappable_pi->RegisterCallback( layerMapCallback );
                             }
@@ -704,11 +729,9 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
                         }
 
                         aPlugin.SetQueryUserCallback(
-                                [&]( wxString aTitle, int aIcon, wxString aMessage,
-                                     wxString aAction ) -> bool
+                                [&]( wxString aTitle, int aIcon, wxString aMessage, wxString aAction ) -> bool
                                 {
-                                    KIDIALOG dlg( nullptr, aMessage, aTitle,
-                                                  wxOK | wxCANCEL | aIcon );
+                                    KIDIALOG dlg( nullptr, aMessage, aTitle, wxOK | wxCANCEL | aIcon );
 
                                     if( !aAction.IsEmpty() )
                                         dlg.SetOKLabel( aAction );
@@ -719,14 +742,12 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
                                 } );
                     };
 
-            std::unique_ptr<BOARD> loaded =
-                    BOARD_LOADER::Load( fullFileName, pluginType, &Prj(), loaderOptions );
+            std::unique_ptr<BOARD> loaded = BOARD_LOADER::Load( fullFileName, pluginType, &Prj(), loaderOptions );
 
             if( loaded && props.count( IMPORT_PROJ_PROPS::NET_NAME_MAP ) )
             {
                 std::optional<std::map<wxString, wxString>> netNames =
-                        IMPORT_PROJ_PROPS::SplitNetNameMap(
-                                props.at( IMPORT_PROJ_PROPS::NET_NAME_MAP ).wx_str() );
+                        IMPORT_PROJ_PROPS::SplitNetNameMap( props.at( IMPORT_PROJ_PROPS::NET_NAME_MAP ).wx_str() );
 
                 if( !netNames )
                     THROW_IO_ERROR( _( "Invalid imported net-name map." ) );
@@ -788,6 +809,33 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
         {
             for( PCB_LAYER_ID layer : loadedBoard->GetEnabledLayers().Seq() )
                 loadedBoard->SetLayerName( layer, wxEmptyString );
+        }
+        else
+        {
+            for( const auto& [layer, name] : renamedLayers )
+                loadedBoard->SetLayerName( layer, name );
+        }
+
+        if( converted && !renamedLayers.empty() && !GetPcbNewSettings()->m_ImportKeepKiCadLayerNames )
+        {
+            for( const auto& [renamedLayer, name] : renamedLayers )
+            {
+                if( !loadedBoard->IsLayerEnabled( renamedLayer ) )
+                    continue;
+
+                for( PCB_LAYER_ID layer : loadedBoard->GetEnabledLayers() )
+                {
+                    if( layer == renamedLayer || loadedBoard->GetLayerName( layer ) != name )
+                        continue;
+
+                    progressReporter.Hide();
+                    DisplayErrorMessage( this, _( "Duplicate imported layer name" ),
+                                         wxString::Format( _( "Layer name '%s' is already in use." ), name ) );
+                    delete loadedBoard;
+                    Clear_Pcb( false );
+                    return false;
+                }
+            }
         }
 
         // This fixes a focus issue after the progress reporter is done on GTK.  It shouldn't
@@ -877,6 +925,18 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
         {
             m_infoBar->RemoveAllButtons();
             m_infoBar->AddCloseButton();
+
+            if( pluginType == PCB_IO_MGR::KICAD_SEXP && Pgm().GetCommonSettings()->m_Git.enableGit
+                && !Prj().IsNullProject() && Prj().AttachGitRepository() )
+            {
+                // Saving an unmodified board still writes it in the current format
+                m_infoBar->AddLink( _( "Upgrade Format Now" ),
+                                    [this]( wxHyperlinkEvent& )
+                                    {
+                                        CallAfter( [this]() { SaveBoard(); } );
+                                    } );
+            }
+
             m_infoBar->ShowMessage( _( "This file was created by an older version of KiCad. "
                                        "It will be converted to the new format when saved." ),
                                     wxICON_WARNING, WX_INFOBAR::MESSAGE_TYPE::OUTDATED_SAVE );
@@ -909,6 +969,8 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
 
         GetBoard()->SetFileName( fname );
     }
+
+    SaveImportedDesignRules( importedRules, wxFileName( GetBoard()->GetDesignRulesPath() ), loadReporter );
 
     // Lock the file newly opened:
     m_file_checker.reset( lock.release() );
@@ -949,10 +1011,9 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
                 connectivityTimer.msecs() );
 
     // Refresh the 3D view, if any
-    EDA_3D_VIEWER_FRAME* draw3DFrame = Get3DViewerFrame();
+    if( EDA_3D_VIEWER_FRAME* our3DViewer = GetOur3DViewerFrame() )
+        our3DViewer->NewDisplay();
 
-    if( draw3DFrame )
-        draw3DFrame->NewDisplay();
 #if 0 && defined(DEBUG)
     // Output the board object tree to stdout, but please run from command prompt:
     GetBoard()->Show( 0, std::cout );
@@ -972,17 +1033,14 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
         GetCanvas()->SetFocus();
     }
 
-    if( !setProject )
-    {
-        // If we didn't reload the project, we still need to call ProjectChanged() to ensure
-        // frame-specific initialization happens (like registering the autosave saver).
-        // When running under the project manager, KIWAY::ProjectChanged() was called before
-        // this frame existed, so we need to call our own ProjectChanged() now.
-        ProjectChanged();
-    }
+    // The project manager and any project switch above both ran this before the loaded board was installed
+    ProjectChanged();
 
     if( KISTATUSBAR* statusBar = dynamic_cast<KISTATUSBAR*>( GetStatusBar() ) )
         statusBar->AddWarningMessages( "load", loadReporter.GetMessages() );
+
+    // A standalone editor has no project manager to attach the git session for it.
+    RefreshGitCommitPane();
 
     return true;
 }
@@ -1047,6 +1105,8 @@ bool PCB_EDIT_FRAME::SavePcbFile( const wxString& aFileName, bool addToHistory,
         GetBoard()->SynchronizeProperties();
         GetBoard()->SynchronizeNetsAndNetClasses( false );
     }
+
+    RefreshGeneratedTables( *GetBoard() );
 
     wxString   lowerTxt;
 
@@ -1123,6 +1183,9 @@ bool PCB_EDIT_FRAME::SavePcbFile( const wxString& aFileName, bool addToHistory,
 
     m_autoSavePending = false;
     m_autoSaveRequired = false;
+
+    RefreshGitCommitPane();
+
     return true;
 }
 
@@ -1147,6 +1210,7 @@ bool PCB_EDIT_FRAME::SavePcbCopy( const wxString& aFileName, bool aCreateProject
 
     GetBoard()->SynchronizeNetsAndNetClasses( false );
     GetBoard()->SynchronizeProperties();
+    RefreshGeneratedTables( *GetBoard() );
 
     // On Windows, ensure the target file is writeable by clearing problematic attributes like
     // hidden or read-only. This can happen when files are synced via cloud services.
@@ -1221,6 +1285,7 @@ bool PCB_EDIT_FRAME::importFile( const wxString& aFileName, int aFileType,
     case PCB_IO_MGR::ALLEGRO:
     case PCB_IO_MGR::SOLIDWORKS_PCB:
     case PCB_IO_MGR::PADS:
+    case PCB_IO_MGR::TARGET3001:
     {
         int ctl = KICTL_NONKICAD_ONLY;
 
@@ -1265,30 +1330,7 @@ int BOARD_EDITOR_CONTROL::GenIPC2581File( const TOOL_EVENT& aEvent )
 int BOARD_EDITOR_CONTROL::GenerateODBPPFiles( const TOOL_EVENT& aEvent )
 {
     DIALOG_EXPORT_ODBPP dlg( m_frame );
-
-    if( dlg.ShowModal() != wxID_OK )
-        return 0;
-
-    // Refill zones if they are out-of-date so the export matches the current layout.
-    m_toolMgr->GetTool<ZONE_FILLER_TOOL>()->CheckAllZones( m_frame );
-
-    JOB_EXPORT_PCB_ODB job;
-
-    job.SetConfiguredOutputPath( dlg.GetOutputPath() );
-    job.m_filename = m_frame->GetBoard()->GetFileName();
-    job.m_compressionMode = static_cast<JOB_EXPORT_PCB_ODB::ODB_COMPRESSION>( dlg.GetCompressFormat() );
-
-    job.m_precision = dlg.GetPrecision();
-    job.m_units = dlg.GetUnitsString() == "mm" ? JOB_EXPORT_PCB_ODB::ODB_UNITS::MM
-                                               : JOB_EXPORT_PCB_ODB::ODB_UNITS::INCH;
-
-    WX_PROGRESS_REPORTER progressReporter( m_frame, _( "Generate ODB++ Files" ), 3, PR_CAN_ABORT );
-    WX_STRING_REPORTER reporter;
-
-    DIALOG_EXPORT_ODBPP::GenerateODBPPFiles( job, m_frame->GetBoard(), m_frame, &progressReporter, &reporter );
-
-    if( reporter.HasMessage() )
-        DisplayError( m_frame, reporter.GetMessages() );
+    dlg.ShowModal();
 
     return 0;
 }

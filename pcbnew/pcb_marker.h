@@ -38,7 +38,7 @@ class DrcMarker;
 class PCB_MARKER : public BOARD_ITEM, public MARKER_BASE
 {
 public:
-    PCB_MARKER( std::shared_ptr<RC_ITEM> aItem, const VECTOR2I& aPos, int aLayer = F_Cu );
+    PCB_MARKER( std::shared_ptr<DRC_ITEM> aItem, const VECTOR2I& aPos, int aLayer = F_Cu );
 
     ~PCB_MARKER();
 
@@ -53,6 +53,9 @@ public:
     bool Deserialize( const google::protobuf::Any& aContainer ) override;
 
     static PCB_MARKER* FromProto( const kiapi::board::DrcMarker& aMsg );
+
+    static void ToProto( kiapi::board::DrcMarker& aMsg, const PCB_MARKER& aMarker );
+
     static PCB_MARKER* FromLegacyString( const wxString& aData );
 
     void Move( const VECTOR2I& aMoveVector ) override

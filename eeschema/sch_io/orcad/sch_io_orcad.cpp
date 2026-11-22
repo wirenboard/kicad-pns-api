@@ -288,11 +288,11 @@ void readCisVariants( const ALTIUM_COMPOUND_FILE& aFile, const CFB::COMPOUND_FIL
         variant.name = name;
 
         // Capture matches property names without case, so a later spelling replaces an earlier one
-        auto overlay = [&]( uint32_t aOccurrence, const ORCAD_CIS_PROPERTIES& aProperties )
+        auto overlay = [&]( uint32_t aOccurrence, const ORCAD_CIS_PROPERTIES& aOverlay )
         {
             ORCAD_CIS_PROPERTIES& target = variant.props[aOccurrence];
 
-            for( const auto& [property, value] : aProperties )
+            for( const auto& [property, value] : aOverlay )
             {
                 auto existing = std::find_if( target.begin(), target.end(),
                                               [&]( const auto& aExisting )
@@ -827,6 +827,17 @@ SCH_SHEET* SCH_IO_ORCAD::LoadSchematicFile( const wxString& aFileName, SCHEMATIC
 
                     if( it != hierarchyLinks.end() )
                         block.childName = it->second;
+                }
+
+                // A block linked to no folder or back to the root has no imported implementation
+                std::string childKey = OrcadLower( block.childName );
+
+                if( childKey.empty() || childKey == OrcadLower( rootFolder )
+                    || !design.childFolderPages.count( childKey ) )
+                {
+                    warnFn( wxString::Format( _( "Hierarchical block '%s' could not be linked to an imported "
+                                                 "schematic." ),
+                                              wxString::FromUTF8( block.name ) ) );
                 }
             }
         }

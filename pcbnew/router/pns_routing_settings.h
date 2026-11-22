@@ -78,10 +78,10 @@ public:
     /// Enable/disable shoving vias.
     void SetShoveVias( bool aShoveVias ) { m_shoveVias = aShoveVias; }
 
-    /// Return true if loop (redundant track) removal is on.
+    /// Return true if loop removal and completed-route dangling-tail cleanup are enabled.
     bool RemoveLoops() const { return m_removeLoops; }
 
-    /// Enable/disable loop (redundant track) removal.
+    /// Enable/disable loop removal and completed-route dangling-tail cleanup.
     void SetRemoveLoops( bool aRemoveLoops ) { m_removeLoops = aRemoveLoops; }
 
     /// Return true if suggesting the finish of currently placed track is on.
@@ -164,6 +164,12 @@ public:
     double DiffPairGapCouplingRecognitionThreshold() const { return m_diffPairGapCouplingRecognitionThreshold; }
     double DiffPairWidthToMiterRatio() const { return m_diffPairWidthToMiterRatio; }
 
+    void SetKeepDPCouplingWhenDragging( bool aSet ) { m_keepDPCouplingWhenDragging = aSet; }
+    bool GetKeepDPCouplingWhenDragging() const { return m_keepDPCouplingWhenDragging; }
+
+    int GetSpreadTracksDistance() const { return m_spreadTracksDistance; }
+    void SetSpreadTracksDistance( int aDistance ) { m_spreadTracksDistance = aDistance; }
+
 private:
     bool m_shoveVias;
     bool m_startDiagonal;
@@ -181,6 +187,7 @@ private:
     bool m_autoPosture;
     bool m_fixAllSegments;
     bool m_restrictAngles;
+    bool m_keepDPCouplingWhenDragging;
 
     DIRECTION_45::CORNER_MODE m_cornerMode;
 
@@ -190,6 +197,7 @@ private:
     int m_walkaroundIterationLimit;
     int m_shoveIterationLimit;
     int m_viaForcePropIterationLimit;
+    int m_spreadTracksDistance;
     double m_diffPairGapPickupRatioThreshold;
     double m_diffPairGapCouplingRecognitionThreshold;
     double m_walkaroundHugLengthThreshold;

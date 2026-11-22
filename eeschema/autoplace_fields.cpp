@@ -120,7 +120,7 @@ public:
         m_fbox_size = computeFBoxSize( /* aDynamic */ true );
 
         if( SCH_SYMBOL* schSymbol = dynamic_cast<SCH_SYMBOL*>( m_symbol ) )
-            m_is_power_symbol = !schSymbol->IsInNetlist();
+            m_is_power_symbol = !schSymbol->DoNetList();
 
         if( aScreen )
             getPossibleCollisions( m_colliders );
@@ -249,7 +249,7 @@ protected:
     {
         unsigned pin_count = 0;
 
-        for( SCH_PIN* each_pin : m_symbol->GetPins() )
+        for( SCH_PIN* each_pin : m_symbol->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES ) )
         {
             if( !each_pin->IsVisible() && !m_is_power_symbol )
                 continue;
@@ -585,7 +585,7 @@ protected:
                 {
                     BOX2I pinsBox;
 
-                    for( SCH_PIN* each_pin : m_symbol->GetPins() )
+                    for( SCH_PIN* each_pin : m_symbol->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES ) )
                     {
                         if( !each_pin->IsVisible() && !m_is_power_symbol )
                             continue;

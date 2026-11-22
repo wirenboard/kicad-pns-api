@@ -235,6 +235,9 @@ public:
     void GetModifiedNets( std::vector<NET_HANDLE>& aNets ) const override;
 
 
+protected:
+    void removeAntennas( NODE* aNode, const ITEM* aEndItem, const VECTOR2I& aJoin );
+
 private:
     /**
      * Re-route the current track to point aP. Returns true, when routing has completed
@@ -382,6 +385,8 @@ private:
     LINE           m_currentTrace;
 
     ITEM*          m_startItem;
+    ITEM*          m_routeStartItem;
+    VECTOR2I       m_routeStart;
     ITEM*          m_endItem;
 
     bool           m_idle;

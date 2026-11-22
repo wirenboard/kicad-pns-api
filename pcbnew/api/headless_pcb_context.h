@@ -56,9 +56,11 @@ public:
 
     bool IsContentModified() const override { return m_contentModified; }
 
-    void SetContentModified( bool aModified = true ) override { m_contentModified = aModified; }
+    void SetContentModified( bool aModified = true ) override;
 
     bool SaveBoard() override;
+
+    bool SaveBoardAs( const wxString& aFileName ) override;
 
     bool SavePcbCopy( const wxString& aFileName, bool aCreateProject, bool aHeadless ) override;
 

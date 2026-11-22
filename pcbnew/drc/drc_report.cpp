@@ -18,6 +18,7 @@
  */
 
 #include "drc_report.h"
+#include "eda_item.h"
 
 #include <fstream>
 
@@ -31,6 +32,7 @@
 #include <widgets/wx_data_view_hyperlink_renderer.h>
 #include <macros.h>
 #include <json_common.h>
+#include <pcb_marker.h>
 #include <rc_json_schema.h>
 #include <string_utils.h>
 #include <widgets/report_severity.h>
@@ -62,12 +64,10 @@ bool DRC_REPORT::WriteTextReport( const wxString& aFullFileName )
     if( fp == nullptr )
         return false;
 
-    std::map<KIID, EDA_ITEM*> itemMap;
-    m_board->FillItemMap( itemMap );
-
     UNITS_PROVIDER         unitsProvider( pcbIUScale, m_reportUnits );
     BOARD_DESIGN_SETTINGS& bds = m_board->GetDesignSettings();
-    int                    count;
+    BOARD_RC_ITEM_RESOLVER itemResolver( *m_board );
+    int                    count = 0;
 
     wxFileName fn( m_board->GetFileName() );
     fprintf( fp, "** Drc report for %s **\n", TO_UTF8( fn.GetFullName() ) );
@@ -88,7 +88,7 @@ bool DRC_REPORT::WriteTextReport( const wxString& aFullFileName )
         if( severity == RPT_SEVERITY_EXCLUSION )
             severity = bds.GetSeverity( item->GetErrorCode() );
 
-        fprintf( fp, "%s", TO_UTF8( item->ShowReport( &unitsProvider, severity, itemMap ) ) );
+        fprintf( fp, "%s", TO_UTF8( item->ShowReport( &unitsProvider, severity, itemResolver ) ) );
     }
 
     count = m_ratsnestProvider->GetCount();
@@ -100,7 +100,7 @@ bool DRC_REPORT::WriteTextReport( const wxString& aFullFileName )
         const std::shared_ptr<RC_ITEM>& item = m_ratsnestProvider->GetItem( i );
         SEVERITY                        severity = bds.GetSeverity( item->GetErrorCode() );
 
-        fprintf( fp, "%s", TO_UTF8( item->ShowReport( &unitsProvider, severity, itemMap ) ) );
+        fprintf( fp, "%s", TO_UTF8( item->ShowReport( &unitsProvider, severity, itemResolver ) ) );
     }
 
     count = m_fpWarningsProvider->GetCount();
@@ -112,7 +112,7 @@ bool DRC_REPORT::WriteTextReport( const wxString& aFullFileName )
         const std::shared_ptr<RC_ITEM>& item = m_fpWarningsProvider->GetItem( i );
         SEVERITY                        severity = bds.GetSeverity( item->GetErrorCode() );
 
-        fprintf( fp, "%s", TO_UTF8( item->ShowReport( &unitsProvider, severity, itemMap ) ) );
+        fprintf( fp, "%s", TO_UTF8( item->ShowReport( &unitsProvider, severity, itemResolver ) ) );
     }
 
     fprintf( fp, "\n** Ignored checks **\n" );
@@ -145,10 +145,9 @@ bool DRC_REPORT::WriteJsonReport( const wxString& aFullFileName )
 {
     std::ofstream jsonFileStream( aFullFileName.fn_str() );
 
-    UNITS_PROVIDER            unitsProvider( pcbIUScale, m_reportUnits );
-    BOARD_DESIGN_SETTINGS&    bds = m_board->GetDesignSettings();
-    std::map<KIID, EDA_ITEM*> itemMap;
-    m_board->FillItemMap( itemMap );
+    UNITS_PROVIDER         unitsProvider( pcbIUScale, m_reportUnits );
+    BOARD_DESIGN_SETTINGS& bds = m_board->GetDesignSettings();
+    BOARD_RC_ITEM_RESOLVER itemResolver( *m_board );
 
     RC_JSON::DRC_REPORT reportHead;
 
@@ -169,6 +168,26 @@ bool DRC_REPORT::WriteJsonReport( const wxString& aFullFileName )
     if( m_reportedSeverities & RPT_SEVERITY_EXCLUSION )
         reportHead.included_severities.push_back( wxS( "exclusion" ) );
 
+    auto setMarkerLocation = [&]( const std::shared_ptr<RC_ITEM>& aItem, RC_JSON::VIOLATION& aViolation )
+    {
+        const PCB_MARKER* marker = dynamic_cast<const PCB_MARKER*>( aItem->GetParent() );
+
+        if( !marker )
+            return;
+
+        if( IsValidLayer( marker->GetLayer() ) )
+            aViolation.layer = m_board->GetLayerName( marker->GetLayer() );
+        else if( marker->GetPosition() == VECTOR2I() )
+            return;
+
+        RC_JSON::COORDINATE pos;
+        pos.x = EDA_UNIT_UTILS::UI::ToUserUnit( unitsProvider.GetIuScale(), unitsProvider.GetUserUnits(),
+                                                marker->GetPosition().x );
+        pos.y = EDA_UNIT_UTILS::UI::ToUserUnit( unitsProvider.GetIuScale(), unitsProvider.GetUserUnits(),
+                                                marker->GetPosition().y );
+        aViolation.pos = pos;
+    };
+
     for( int i = 0; i < m_markersProvider->GetCount(); ++i )
     {
         const std::shared_ptr<RC_ITEM>& item = m_markersProvider->GetItem( i );
@@ -178,7 +197,8 @@ bool DRC_REPORT::WriteJsonReport( const wxString& aFullFileName )
             severity = bds.GetSeverity( item->GetErrorCode() );
 
         RC_JSON::VIOLATION violation;
-        item->GetJsonViolation( violation, &unitsProvider, severity, itemMap );
+        item->GetJsonViolation( violation, &unitsProvider, severity, itemResolver );
+        setMarkerLocation( item, violation );
 
         reportHead.violations.push_back( violation );
     }
@@ -189,7 +209,8 @@ bool DRC_REPORT::WriteJsonReport( const wxString& aFullFileName )
         SEVERITY                        severity = bds.GetSeverity( item->GetErrorCode() );
 
         RC_JSON::VIOLATION violation;
-        item->GetJsonViolation( violation, &unitsProvider, severity, itemMap );
+        item->GetJsonViolation( violation, &unitsProvider, severity, itemResolver );
+        setMarkerLocation( item, violation );
 
         reportHead.unconnected_items.push_back( violation );
     }
@@ -201,7 +222,8 @@ bool DRC_REPORT::WriteJsonReport( const wxString& aFullFileName )
         SEVERITY                        severity = bds.GetSeverity( item->GetErrorCode() );
 
         RC_JSON::VIOLATION violation;
-        item->GetJsonViolation( violation, &unitsProvider, severity, itemMap );
+        item->GetJsonViolation( violation, &unitsProvider, severity, itemResolver );
+        setMarkerLocation( item, violation );
 
         reportHead.schematic_parity.push_back( violation );
     }

@@ -73,6 +73,8 @@ public:
         SCH_DIPTRACE,         ///< DipTrace schematic format
         SCH_PCAD,             ///< P-CAD 2006 ASCII schematic format
         SCH_ORCAD,            ///< OrCAD Capture schematic format
+        SCH_EASYPC,           ///< Easy-PC / DesignSpark PCB schematic and project
+        SCH_TARGET3001,       ///< TARGET 3001! project
 
         // Add your schematic type here.
         SCH_FILE_UNKNOWN,

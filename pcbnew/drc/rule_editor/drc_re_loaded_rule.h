@@ -21,6 +21,7 @@
 #define DRC_RE_LOADED_RULE_H_
 
 #include <memory>
+#include <vector>
 #include <wx/string.h>
 
 #include <layer_ids.h>
@@ -51,6 +52,10 @@ struct DRC_RE_LOADED_PANEL_ENTRY
     wxString originalRuleText;
     bool     wasEdited = false;
     int      originalEntryCount = 1;
+    int      sourceRule = -1;  ///< Index of the rule in the loaded file, or -1 for a new rule
+
+    /// Shared by entries split out of one rule. Zero when the entry stands alone.
+    int ruleGroupId = 0;
 
     DRC_RE_LOADED_PANEL_ENTRY() = default;
 
@@ -68,6 +73,17 @@ struct DRC_RE_LOADED_PANEL_ENTRY
             layerCondition( aLayers )
     {
     }
+};
+
+
+/**
+ * The text of a rules file that lies outside every rule, kept so a save can reproduce it.
+ */
+struct DRC_RE_FILE_TRIVIA
+{
+    wxString              header;         ///< Everything through the version expression, empty for a new file
+    std::vector<wxString> leadingTrivia;  ///< Comments and blank lines before each rule, by sourceRule
+    wxString              trailer;        ///< Everything after the last rule
 };
 
 

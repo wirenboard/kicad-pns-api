@@ -249,7 +249,7 @@ void BOARD_ADAPTER::addFootprintShapes( const FOOTPRINT* aFootprint, CONTAINER_2
             PCB_TEXTBOX* textbox = static_cast<PCB_TEXTBOX*>( item );
 
             if( textbox->GetLayer() == aLayerId )
-                addShape( textbox, aContainer, aFootprint );
+                addShape( textbox, aContainer, textbox );
 
             break;
         }
@@ -306,8 +306,12 @@ void BOARD_ADAPTER::addFootprintShapes( const FOOTPRINT* aFootprint, CONTAINER_2
 
 
 void BOARD_ADAPTER::createTrackWithMargin( const PCB_TRACK* aTrack, CONTAINER_2D_BASE* aDstContainer,
-                                           PCB_LAYER_ID aLayer, int aMargin )
+                                           PCB_LAYER_ID aLayer, int aMargin, const BOARD_ITEM* aOwner )
 {
+    // aTrack can be an object created on the stack; the 2D objects keep a pointer to the
+    // owner passed here.
+    const BOARD_ITEM& owner = aOwner ? *aOwner : *aTrack;
+
     SFVEC2F start3DU = TO_SFVEC2F( aTrack->GetStart() );
     SFVEC2F end3DU = TO_SFVEC2F( aTrack->GetEnd() );
 
@@ -318,7 +322,7 @@ void BOARD_ADAPTER::createTrackWithMargin( const PCB_TRACK* aTrack, CONTAINER_2D
         const PCB_VIA* via = static_cast<const PCB_VIA*>( aTrack );
         float          width3DU = TO_3DU( via->GetWidth( aLayer ) + aMargin * 2 );
 
-        addFILLED_CIRCLE_2D( aDstContainer, start3DU, width3DU / 2.0, *aTrack );
+        addFILLED_CIRCLE_2D( aDstContainer, start3DU, width3DU / 2.0, owner );
         break;
     }
 
@@ -328,14 +332,15 @@ void BOARD_ADAPTER::createTrackWithMargin( const PCB_TRACK* aTrack, CONTAINER_2D
 
         if( arc->IsDegenerated() )
         {
-            // Draw this very small arc like a track segment (a PCB_TRACE_T)
+            // Draw this very small arc like a track segment (a PCB_TRACE_T).  The stand-in
+            // track is created on the stack, so attribute the geometry to the arc itself.
             PCB_TRACK track( arc->GetParent() );
             track.SetStart( arc->GetStart() );
             track.SetEnd( arc->GetEnd() );
             track.SetWidth( arc->GetWidth() );
             track.SetLayer( arc->GetLayer() );
 
-            createTrackWithMargin( &track, aDstContainer, aLayer, aMargin );
+            createTrackWithMargin( &track, aDstContainer, aLayer, aMargin, arc );
             return;
         }
 
@@ -369,7 +374,7 @@ void BOARD_ADAPTER::createTrackWithMargin( const PCB_TRACK* aTrack, CONTAINER_2D
     case PCB_TRACE_T:    // Track is a usual straight segment
     {
         float width3DU = TO_3DU( aTrack->GetWidth() + aMargin * 2 );
-        addROUND_SEGMENT_2D( aDstContainer, start3DU, end3DU, width3DU, *aTrack );
+        addROUND_SEGMENT_2D( aDstContainer, start3DU, end3DU, width3DU, owner );
         break;
     }
 
@@ -748,16 +753,17 @@ void BOARD_ADAPTER::addShape( const PCB_SHAPE* aShape, CONTAINER_2D_BASE* aConta
 
             EDA_ANGLE startAngle = origStartAngle;
             EDA_ANGLE arcAngle = endAngle - startAngle;
-            if( !aShape->ShortenArcForEndings( startAngle, arcAngle, aShape->GetRadius(), linewidth ) )
+
+            if( aShape->ShortenArcForEndings( startAngle, arcAngle, aShape->GetRadius(), linewidth ) )
             {
-                break;
+                // Rotate the original start point by the angular offset from shortening.
+                VECTOR2I arcStart = aShape->GetStart();
+                RotatePoint( arcStart, aShape->GetCenter(), origStartAngle - startAngle );
+
+                createArcSegments( aShape->GetCenter(), arcStart, arcAngle, segCount, linewidth, aContainer,
+                                   *aOwner );
             }
 
-            // Rotate the original start point by the angular offset from shortening.
-            VECTOR2I arcStart = aShape->GetStart();
-            RotatePoint( arcStart, aShape->GetCenter(), origStartAngle - startAngle );
-
-            createArcSegments( aShape->GetCenter(), arcStart, arcAngle, segCount, linewidth, aContainer, *aOwner );
             break;
         }
 
@@ -766,13 +772,13 @@ void BOARD_ADAPTER::addShape( const PCB_SHAPE* aShape, CONTAINER_2D_BASE* aConta
             VECTOR2I segStart = aShape->GetStart();
             VECTOR2I segEnd = aShape->GetEnd();
 
-            if( !EDA_SHAPE::ShortenSegmentForEndings( segStart, segEnd, aShape->GetStartEnding(),
-                                                      aShape->GetEndEnding(), linewidth ) )
+            if( EDA_SHAPE::ShortenSegmentForEndings( segStart, segEnd, aShape->GetStartEnding(),
+                                                     aShape->GetEndEnding(), linewidth ) )
             {
-                break;
+                addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( segStart ), TO_SFVEC2F( segEnd ), linewidth3DU,
+                                     *aOwner );
             }
 
-            addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( segStart ), TO_SFVEC2F( segEnd ), linewidth3DU, *aOwner );
             break;
         }
 
@@ -833,21 +839,19 @@ void BOARD_ADAPTER::addShape( const PCB_SHAPE* aShape, CONTAINER_2D_BASE* aConta
 
                     std::vector<VECTOR2I> pts;
 
-                    if( !aShape->GetShortenedBodyPolyPoints( outline, outlineIdx, pts, linewidth ) )
+                    if( aShape->GetShortenedBodyPolyPoints( outline, outlineIdx, pts, linewidth ) )
                     {
-                        continue;
-                    }
+                        for( size_t i = 0; i + 1 < pts.size(); i++ )
+                        {
+                            addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( pts[i] ), TO_SFVEC2F( pts[i + 1] ),
+                                                 linewidth3DU, *aOwner );
+                        }
 
-                    for( size_t i = 0; i + 1 < pts.size(); i++ )
-                    {
-                        addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( pts[i] ), TO_SFVEC2F( pts[i + 1] ), linewidth3DU,
-                                             *aOwner );
-                    }
-
-                    if( outline.IsClosed() )
-                    {
-                        addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( pts.back() ), TO_SFVEC2F( pts.front() ),
-                                             linewidth3DU, *aOwner );
+                        if( outline.IsClosed() )
+                        {
+                            addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( pts.back() ), TO_SFVEC2F( pts.front() ),
+                                                 linewidth3DU, *aOwner );
+                        }
                     }
                 }
             }
@@ -855,8 +859,6 @@ void BOARD_ADAPTER::addShape( const PCB_SHAPE* aShape, CONTAINER_2D_BASE* aConta
         }
 
         case SHAPE_T::ELLIPSE:
-        case SHAPE_T::ELLIPSE_ARC:
-        {
             if( isSolidFill )
             {
                 SHAPE_POLY_SET polyList;
@@ -870,8 +872,8 @@ void BOARD_ADAPTER::addShape( const PCB_SHAPE* aShape, CONTAINER_2D_BASE* aConta
 
                 if( margin != 0 )
                 {
-                    CORNER_STRATEGY cornerStr =
-                            margin >= 0 ? CORNER_STRATEGY::ROUND_ALL_CORNERS : CORNER_STRATEGY::ALLOW_ACUTE_CORNERS;
+                    CORNER_STRATEGY cornerStr = margin > 0 ? CORNER_STRATEGY::ROUND_ALL_CORNERS
+                                                           : CORNER_STRATEGY::ALLOW_ACUTE_CORNERS;
                     polyList.Inflate( margin, cornerStr, aShape->GetMaxError() );
                 }
 
@@ -896,12 +898,35 @@ void BOARD_ADAPTER::addShape( const PCB_SHAPE* aShape, CONTAINER_2D_BASE* aConta
                 for( SHAPE* shape : shapes )
                     delete shape;
             }
+
+            break;
+
+        case SHAPE_T::ELLIPSE_ARC:
+        {
+            const VECTOR2D        center( aShape->GetEllipseCenter() );
+            const int             majorR = aShape->GetEllipseMajorRadius();
+            const int             minorR = aShape->GetEllipseMinorRadius();
+            const EDA_ANGLE&      rot = aShape->GetEllipseRotation();
+            const EDA_ANGLE&      start = aShape->GetEllipseStartAngle();
+            const EDA_ANGLE&      end = aShape->GetEllipseEndAngle();
+            SHAPE_ELLIPSE         ellipse( center, majorR, minorR, rot, start, end );
+            SHAPE_LINE_CHAIN      chain = ellipse.ConvertToPolyline( aShape->GetMaxError() );
+            std::vector<VECTOR2I> pts;
+
+            if( aShape->GetShortenedBodyPolyPoints( chain, 0, pts, linewidth ) )
+            {
+                for( size_t i = 0; i + 1 < pts.size(); i++ )
+                {
+                    addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( pts[i] ), TO_SFVEC2F( pts[i + 1] ), linewidth3DU,
+                                         *aOwner );
+                }
+            }
+
             break;
         }
 
         default:
-            wxFAIL_MSG( wxT( "BOARD_ADAPTER::addShape no implementation for " )
-                        + aShape->SHAPE_T_asString() );
+            wxFAIL_MSG( wxT( "BOARD_ADAPTER::addShape no implementation for " ) + aShape->SHAPE_T_asString() );
             break;
         }
     }
@@ -923,8 +948,7 @@ void BOARD_ADAPTER::addShape( const PCB_SHAPE* aShape, CONTAINER_2D_BASE* aConta
             STROKE_PARAMS::Stroke( shape, lineStyle, aShape->GetWidth(), &renderSettings,
                     [&]( const VECTOR2I& a, const VECTOR2I& b )
                     {
-                        addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( a ), TO_SFVEC2F( b ),
-                                             linewidth3DU, *aOwner );
+                        addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( a ), TO_SFVEC2F( b ), linewidth3DU, *aOwner );
                     } );
         }
 
@@ -941,56 +965,57 @@ void BOARD_ADAPTER::addShape( const PCB_SHAPE* aShape, CONTAINER_2D_BASE* aConta
 
         VECTOR2I startPt, endPt;
 
-        if( aShape->GetLineEndingEndpoints( startPt, endPt ) )
-        {
-            auto addEnding = [&]( const LINE_ENDING& aEnding, const VECTOR2I& aPoint, const EDA_ANGLE& aTangent )
-            {
-                if( aEnding.GetStyle() == LINE_ENDING_STYLE::NONE )
-                    return;
-
-                std::vector<VECTOR2I> polygon;
-                aEnding.GetShapes( aPoint, aTangent, linewidth, polygon );
-
-                if( polygon.empty() )
-                    return;
-
-                if( aEnding.GetStyle() == LINE_ENDING_STYLE::ARROW_OPEN )
+        auto addEnding =
+                [&]( const LINE_ENDING& aEnding, const VECTOR2I& aPoint, const EDA_ANGLE& aTangent )
                 {
-                    // Open V-shape: draw as thick line segments, not a filled polygon.
-                    int   strokeW = aEnding.GetStrokeWidth() > 0 ? aEnding.GetStrokeWidth() : linewidth;
-                    float stroke3DU = TO_3DU( strokeW );
+                    if( aEnding.GetStyle() == LINE_ENDING_STYLE::NONE )
+                        return;
 
-                    for( size_t ii = 0; ii + 1 < polygon.size(); ii++ )
-                    {
-                        addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( polygon[ii] ), TO_SFVEC2F( polygon[ii + 1] ),
-                                             stroke3DU, *aOwner );
-                    }
-                }
-                else
-                {
-                    if( aEnding.GetStrokeWidth() > 0 )
-                    {
-                        float stroke3DU = TO_3DU( aEnding.GetStrokeWidth() );
+                    std::vector<VECTOR2I> pts;
+                    aEnding.GetShapes( aPoint, aTangent, linewidth, pts );
 
-                        for( size_t ii = 0; ii < polygon.size(); ii++ )
+                    if( pts.empty() )
+                        return;
+
+                    if( aEnding.GetStyle() == LINE_ENDING_STYLE::ARROW_OPEN )
+                    {
+                        // Open V-shape: draw as thick line segments, not a filled polygon.
+                        int   strokeW = aEnding.GetStrokeWidth() > 0 ? aEnding.GetStrokeWidth() : linewidth;
+                        float stroke3DU = TO_3DU( strokeW );
+
+                        for( size_t ii = 0; ii + 1 < pts.size(); ii++ )
                         {
-                            size_t next = ( ii + 1 ) % polygon.size();
-
-                            addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( polygon[ii] ), TO_SFVEC2F( polygon[next] ),
+                            addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( pts[ii] ), TO_SFVEC2F( pts[ii + 1] ),
                                                  stroke3DU, *aOwner );
                         }
                     }
+                    else
+                    {
+                        if( aEnding.GetStrokeWidth() > 0 )
+                        {
+                            float stroke3DU = TO_3DU( aEnding.GetStrokeWidth() );
 
-                    SHAPE_POLY_SET polySet;
-                    polySet.NewOutline();
+                            for( size_t ii = 0; ii < pts.size(); ii++ )
+                            {
+                                size_t next = ( ii + 1 ) % pts.size();
 
-                    for( const VECTOR2I& pt : polygon )
-                        polySet.Append( pt );
+                                addROUND_SEGMENT_2D( aContainer, TO_SFVEC2F( pts[ii] ), TO_SFVEC2F( pts[next] ),
+                                                     stroke3DU, *aOwner );
+                            }
+                        }
 
-                    ConvertPolygonToTriangles( polySet, *aContainer, m_biuTo3Dunits, *aOwner );
-                }
-            };
+                        SHAPE_POLY_SET polySet;
+                        polySet.NewOutline();
 
+                        for( const VECTOR2I& pt : pts )
+                            polySet.Append( pt );
+
+                        ConvertPolygonToTriangles( polySet, *aContainer, m_biuTo3Dunits, *aOwner );
+                    }
+                };
+
+        if( aShape->GetLineEndingEndpoints( startPt, endPt ) )
+        {
             addEnding( aShape->GetStartEnding(), startPt, startTangent );
             addEnding( aShape->GetEndEnding(), endPt, endTangent );
         }
@@ -1009,23 +1034,9 @@ void BOARD_ADAPTER::addShape( const PCB_TEXTBOX* aTextBox, CONTAINER_2D_BASE* aC
     if( !aTextBox->IsBorderEnabled() )
         return;
 
-    // We cannot use PCB_TEXTBOX::TransformShapeToPolygon because it convert the textbox
-    // as filled polygon even if there's no background colour.
-    // So for polygon, we use PCB_SHAPE::TransformShapeToPolygon
-
-    if( aTextBox->GetShape() == SHAPE_T::RECTANGLE )
-    {
-        addShape( static_cast<const PCB_SHAPE*>( aTextBox ), aContainer, aOwner, UNDEFINED_LAYER );
-    }
-    else
-    {
-        SHAPE_POLY_SET polyList;
-
-        aTextBox->PCB_SHAPE::TransformShapeToPolygon( polyList, UNDEFINED_LAYER, 0, aTextBox->GetMaxError(),
-                                                      ERROR_INSIDE );
-
-        ConvertPolygonToTriangles( polyList, *aContainer, m_biuTo3Dunits, *aOwner );
-    }
+    // we use the box polygonal shape to honor the text box rotation and box line style
+    PCB_SHAPE tb_box = aTextBox->GetPolygonalBoxShape();
+    addShape( &tb_box, aContainer, aOwner, UNDEFINED_LAYER );
 }
 
 

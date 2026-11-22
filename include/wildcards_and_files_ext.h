@@ -200,6 +200,7 @@ public:
     static const std::string IdfV3LibraryFileExtension;
 
     static const std::string GencadFileExtension;
+    static const std::string HyperlynxFileExtension;
 
     static const std::string KiCadJobSetFileExtension;
 
@@ -256,6 +257,8 @@ public:
     static wxString EasyEdaArchiveWildcard();
     static wxString EasyEdaProFileWildcard();
     static wxString DipTraceFilesWildcard();
+    static wxString EasyPcFilesWildcard();
+    static wxString Target3001FilesWildcard();
     static wxString OrCadSchematicFilesWildcard();
     static wxString AllegroPcbFilesWildcard();
     static wxString PdfFileWildcard();
@@ -278,10 +281,12 @@ public:
     static wxString ErcFileWildcard();
     static wxString SpiceLibraryFileWildcard();
     static wxString SpiceNetlistFileWildcard();
+    static wxString SpiceSubcircuitFileWildcard();
     static wxString CadstarNetlistFileWildcard();
     static wxString EquFileWildcard();
     static wxString ZipFileWildcard();
     static wxString GencadFileWildcard();
+    static wxString HyperlynxFileWildcard();
     static wxString DxfFileWildcard();
     static wxString GerberJobFileWildcard();
     static wxString SpecctraDsnFileWildcard();

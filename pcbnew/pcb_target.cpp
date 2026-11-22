@@ -24,6 +24,7 @@
 #include <bitmaps.h>
 #include <board.h>
 #include <board_design_settings.h>
+#include <board_design_settings_defaults.h>
 #include <base_units.h>
 #include <settings/color_settings.h>
 #include <settings/settings_manager.h>
@@ -96,7 +97,7 @@ void PCB_TARGET::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
     else
         m_pos.y = aCentre.y - ( m_pos.y - aCentre.y );
 
-    SetLayer( GetBoard()->FlipLayer( GetLayer() ) );
+    SetLayer( GetFlippedLayer( GetLayer() ) );
 }
 
 
@@ -242,13 +243,16 @@ static struct PCB_TARGET_DESC
         REGISTER_TYPE( PCB_TARGET );
         propMgr.InheritsAfter( TYPE_HASH( PCB_TARGET ), TYPE_HASH( BOARD_ITEM ) );
         propMgr.AddProperty( new PROPERTY<PCB_TARGET, int>( _HKI( "Size" ),
-                    &PCB_TARGET::SetSize, &PCB_TARGET::GetSize, PROPERTY_DISPLAY::PT_SIZE ) ).SetIsCopyable();
+                    &PCB_TARGET::SetSize, &PCB_TARGET::GetSize, PROPERTY_DISPLAY::PT_SIZE ) )
+                .SetIsCopyable();
         propMgr.AddProperty( new PROPERTY<PCB_TARGET, int>( _HKI( "Width" ),
-                    &PCB_TARGET::SetWidth, &PCB_TARGET::GetWidth, PROPERTY_DISPLAY::PT_SIZE ) ).SetIsCopyable();
+                    &PCB_TARGET::SetWidth, &PCB_TARGET::GetWidth, PROPERTY_DISPLAY::PT_SIZE ) )
+                .SetIsCopyable();
 
         // TODO change the integer to an enum?
         //shape->SetValues( { { 0, _HKI( "Cross" ) }, { 1, ( "Plus" ) } } );
         propMgr.AddProperty( new PROPERTY<PCB_TARGET, int>( _HKI( "Shape" ),
-                &PCB_TARGET::SetShape, &PCB_TARGET::GetShape ) ).SetIsCopyable();
+                    &PCB_TARGET::SetShape, &PCB_TARGET::GetShape ) )
+                .SetIsCopyable();
     }
 } _PCB_TARGET_DESC;

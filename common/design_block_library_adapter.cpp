@@ -44,7 +44,7 @@ DESIGN_BLOCK_LIBRARY_ADAPTER::DESIGN_BLOCK_LIBRARY_ADAPTER( LIBRARY_MANAGER& aMa
 
 DESIGN_BLOCK_LIBRARY_ADAPTER::~DESIGN_BLOCK_LIBRARY_ADAPTER()
 {
-    evictOwnedGlobalEntries();
+    retireAllLibraries();
 }
 
 
@@ -109,7 +109,7 @@ void DESIGN_BLOCK_LIBRARY_ADAPTER::enumerateLibrary( LIB_DATA* aLib, const wxStr
 
 std::optional<LIB_STATUS> DESIGN_BLOCK_LIBRARY_ADAPTER::LoadOne( LIB_DATA* aLib )
 {
-    aLib->status.load_status = LOAD_STATUS::LOADING;
+    setStatus( aLib, { LOAD_STATUS::LOADING } );
 
     std::map<std::string, UTF8> options = aLib->row->GetOptionsMap();
 
@@ -118,16 +118,13 @@ std::optional<LIB_STATUS> DESIGN_BLOCK_LIBRARY_ADAPTER::LoadOne( LIB_DATA* aLib 
         wxArrayString dummyList;
         dbplugin( aLib )->DesignBlockEnumerate( dummyList, getUri( aLib->row ), false, &options );
         wxLogTrace( traceLibraries, "DB: %s: library enumerated %zu items", aLib->row->Nickname(), dummyList.size() );
-        aLib->status.load_status = LOAD_STATUS::LOADED;
+        return setStatus( aLib, { LOAD_STATUS::LOADED } );
     }
     catch( IO_ERROR& e )
     {
-        aLib->status.load_status = LOAD_STATUS::LOAD_ERROR;
-        aLib->status.error = LIBRARY_ERROR( e.Problem(), e.Where() );
         wxLogTrace( traceLibraries, "DB: %s: plugin threw exception: %s", aLib->row->Nickname(), e.What() );
+        return setStatus( aLib, { LOAD_STATUS::LOAD_ERROR, LIBRARY_ERROR( e.Problem(), e.Where() ) } );
     }
-
-    return aLib->status;
 }
 
 
@@ -138,10 +135,8 @@ std::optional<LIB_STATUS> DESIGN_BLOCK_LIBRARY_ADAPTER::LoadOne( const wxString&
     if( result.has_value() )
         return LoadOne( *result );
 
-    return LIB_STATUS{
-        .load_status = LOAD_STATUS::LOAD_ERROR,
-        .error = LIBRARY_ERROR( { result.error() } )
-    };
+    return LIB_STATUS{ .load_status = LOAD_STATUS::LOAD_ERROR,
+                       .error = LIBRARY_ERROR( { result.error() } ) };
 }
 
 
@@ -360,6 +355,7 @@ DESIGN_BLOCK_LIBRARY_ADAPTER::SAVE_T DESIGN_BLOCK_LIBRARY_ADAPTER::SaveDesignBlo
             return SAVE_SKIPPED;
 
         dbplugin( lib )->DesignBlockSave( getUri( lib->row ), aDesignBlock, &options );
+        return SAVE_OK;
     }
 
     return SAVE_SKIPPED;

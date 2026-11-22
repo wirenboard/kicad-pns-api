@@ -58,7 +58,15 @@ public:
 
     wxPanel* GetDetailsPanel() { return m_detailsPanel; }
 
-    void     SetPreviewWidget( DESIGN_BLOCK_PREVIEW_WIDGET* aPreview );
+    /**
+     * Set how the preview is built. On a modern canvas it waits for the details panel's first
+     * paint, so a pane that is never shown never creates a render thread.
+     */
+    void SetPreviewWidgetFactory( std::function<DESIGN_BLOCK_PREVIEW_WIDGET*( wxWindow* aParent )> aFactory );
+
+    /**
+     * Null on a modern canvas until the details panel has been shown.
+     */
     DESIGN_BLOCK_PREVIEW_WIDGET* GetPreviewWidget() const { return m_preview; }
 
     void     FinishSetup();
@@ -93,6 +101,9 @@ protected:
     void onOpenLibsTimer( wxTimerEvent& aEvent );
 
     void onDesignBlockSelected( wxCommandEvent& aEvent );
+    void onDetailsPaint( wxPaintEvent& aEvent );
+    void createPreview();
+    void displaySelectedDesignBlock();
 
     /**
      * Handle the selection of an item. This is called when either the search box or the tree
@@ -120,6 +131,8 @@ protected:
 
     LIB_TREE*                    m_tree;
     DESIGN_BLOCK_PREVIEW_WIDGET* m_preview;
+
+    std::function<DESIGN_BLOCK_PREVIEW_WIDGET*( wxWindow* aParent )> m_previewFactory;
 
     DESIGN_BLOCK_PANE*    m_parent;
     EDA_DRAW_FRAME*       m_frame;

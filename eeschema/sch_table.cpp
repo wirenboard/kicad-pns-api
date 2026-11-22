@@ -111,7 +111,9 @@ void SCH_TABLE::Serialize( google::protobuf::Any& aContainer ) const
     PackStroke( *table.mutable_separators_stroke(), m_separatorsStroke, schIUScale );
 
     kiapi::common::PackCustomProperties( table.mutable_custom_properties(), *this );
-    aContainer.PackFrom( table );
+
+    if( !aContainer.PackFrom( table ) )
+        wxFAIL_MSG( wxT( "Failed to pack SCH_TABLE" ) );
 }
 
 
@@ -173,6 +175,7 @@ bool SCH_TABLE::Deserialize( const google::protobuf::Any& aContainer )
     if( table.has_separators_stroke() )
         kiapi::common::UnpackStroke( m_separatorsStroke, table.separators_stroke(), schIUScale );
 
+    Normalize();
     return true;
 }
 
@@ -364,11 +367,23 @@ bool SCH_TABLE::operator<( const SCH_ITEM& aItem ) const
     if( m_separatorsStroke != other.m_separatorsStroke )
         return m_separatorsStroke < other.m_separatorsStroke;
 
-    if( m_colWidths != other.m_colWidths )
-        return false;
+    if( GetColCount() != other.GetColCount() )
+        return GetColCount() < other.GetColCount();
 
-    if( m_rowHeights != other.m_rowHeights )
-        return false;
+    for( int col = 0; col < GetColCount(); ++col )
+    {
+        if( GetColWidth( col ) != other.GetColWidth( col ) )
+            return GetColWidth( col ) < other.GetColWidth( col );
+    }
+
+    if( GetRowCount() != other.GetRowCount() )
+        return GetRowCount() < other.GetRowCount();
+
+    for( int row = 0; row < GetRowCount(); ++row )
+    {
+        if( GetRowHeight( row ) != other.GetRowHeight( row ) )
+            return GetRowHeight( row ) < other.GetRowHeight( row );
+    }
 
     for( int ii = 0; ii < (int) m_cells.size(); ++ii )
     {

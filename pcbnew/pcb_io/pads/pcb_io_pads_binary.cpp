@@ -232,6 +232,9 @@ void PCB_IO_PADS_BINARY::loadNets()
 
     std::shared_ptr<NET_SETTINGS> netSettings = m_loadBoard->GetDesignSettings().m_NetSettings;
 
+    // Without this flag BOARD::SetProject drops the imported net classes
+    m_loadBoard->m_LegacyNetclassesLoaded = true;
+
     for( const PADS_IO::BIN_NET_CLASS_DEF& nc : netClasses )
     {
         if( nc.name.empty() || nc.nets.empty() )
@@ -259,8 +262,12 @@ void PCB_IO_PADS_BINARY::loadNets()
 
         // Label assignments are rebuilt from schematic labels on every connectivity pass, so a
         // board-side membership has to be a pattern assignment to survive
-        for( const std::string& net : nc.nets )
-            netSettings->SetNetclassPatternAssignment( PADS_COMMON::ConvertInvertedNetName( net ), className );
+        for( const std::string& netname : nc.nets )
+        {
+            wxString kicadNetname = PADS_COMMON::ConvertInvertedNetName( netname );
+            wxString literalNetnamePattern = EscapeString( kicadNetname, CTX_REGEX );
+            netSettings->SetNetclassPatternAssignment( literalNetnamePattern, className );
+        }
     }
 
     // Each differential pair becomes one DiffPair_<name> net class.

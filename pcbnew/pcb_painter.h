@@ -25,18 +25,22 @@
 #define PCB_PAINTER_H
 
 #include <frame_type.h>
+#include <gal/definitions.h>
 #include <gal/painter.h>
 #include <kiid.h>
 #include <padstack.h>   // PAD_DRILL_SHAPE
 #include <pcb_display_options.h>
 #include <math/vector2d.h>
+#include <bitset>
 #include <memory>
+#include <set>
 #include <unordered_set>
 #include <geometry/shape_segment.h>
 
 
 class EDA_ITEM;
 class PCB_DISPLAY_OPTIONS;
+class PCBNEW_SETTINGS;
 class PCB_VIEWERS_SETTINGS_BASE;
 class BOARD_ITEM;
 class PCB_ARC;
@@ -66,6 +70,12 @@ class TEXT_ATTRIBUTES;
 class PCB_BOARD_OUTLINE;
 class PCB_GRID_ITEM;
 struct DRILL_SYMBOL_ENTRY;
+
+/**
+ * @return the Pcbnew settings the painter reads its display options from, or nullptr without them.
+ */
+PCBNEW_SETTINGS* pcbconfig();
+
 
 namespace KIFONT
 {
@@ -109,6 +119,26 @@ public:
         return GetColor( static_cast<const BOARD_ITEM*>( nullptr ), aLayer );
     }
 
+    /**
+     * Let the canvas fade these VIEW layers as a whole for high contrast, see GAL::SetSceneLayerDim().
+     * Only layers whose dim does not depend on the item qualify.
+     */
+    void SetCanvasFadedLayers( const std::bitset<MAX_LAYERS_FOR_VIEW>& aLayers ) { m_canvasFadedLayers = aLayers; }
+
+    bool IsCanvasFadedLayer( int aLayer ) const;
+
+    bool HasCanvasFadedLayers() const { return m_canvasFadedLayers.any(); }
+
+    /**
+     * @copydoc RENDER_SETTINGS::GetLayerDim()
+     */
+    bool GetLayerDim( int aLayer, COLOR4D& aToward, double& aKeep ) const override;
+
+    /**
+     * @copydoc RENDER_SETTINGS::IsDimExempt()
+     */
+    bool IsDimExempt( const VIEW_ITEM* aItem ) const override;
+
     bool GetShowPageLimits() const override;
 
     inline bool IsBackgroundDark() const override
@@ -138,6 +168,11 @@ public:
 
     NET_COLOR_MODE GetNetColorMode() const { return m_netColorMode; }
     void SetNetColorMode( NET_COLOR_MODE aMode ) { m_netColorMode = aMode; }
+
+    bool IsGroupEditModeActive() const { return m_groupEditModeActive; }
+    void SetGroupEditModeActive( bool aActive ) { m_groupEditModeActive = aActive; }
+
+    double GetOutsideGroupOpacity() const { return m_outsideGroupOpacity; }
 
     std::map<int, KIGFX::COLOR4D>& GetNetColorMap() { return m_netColors; }
 
@@ -197,6 +232,11 @@ protected:
     double m_imageOpacity;           ///< Opacity override for user images
     double m_filledShapeOpacity;     ///< Opacity override for graphic shapes
 
+    bool   m_groupEditModeActive; ///< True when inside an entered group
+    double m_outsideGroupOpacity; ///< Opacity override for items outside the entered group
+
+    bool isInEnteredGroup( const BOARD_ITEM* aItem ) const;
+
     wxString m_highlightedNetChain;  ///< Active highlighted chain name (if any)
 
     /// Gates the constraint-shadow draw
@@ -204,6 +244,9 @@ protected:
 
     /// Selected constraint members shadow highlighted
     std::unordered_set<KIID> m_highlightedConstraintMembers;
+
+    /** Layers the canvas fades for high contrast, see SetCanvasFadedLayers() */
+    std::bitset<MAX_LAYERS_FOR_VIEW> m_canvasFadedLayers;
 };
 
 
@@ -222,11 +265,15 @@ public:
 
     virtual bool Draw( const VIEW_ITEM* aItem, int aLayer ) override;
 
-    /// @copydoc PAINTER::HasUniformColor()
     virtual bool HasUniformColor( const VIEW_ITEM* aItem, int aLayer ) const override;
 
 protected:
     PCB_VIEWERS_SETTINGS_BASE* viewer_settings();
+
+    /**
+     * True when a zone's only visual is its outline, as for a rule area or outline-only display.
+     */
+    bool zoneOutlineOnly( const ZONE* aZone ) const;
 
     // Drawing functions for various types of PCB-specific items
     void draw( const PCB_TRACK* aTrack, int aLayer );
@@ -296,13 +343,12 @@ protected:
      *
      * @param aItem the board item (for color lookup)
      * @param aCenter center point of the indicator
-     * @param aDrillSize diameter of the backdrill
-     * @param aStartLayer layer where backdrill starts
-     * @param aEndLayer layer where backdrill ends
+     * @param aBackdrillSize diameter of the backdrill
+     * @param aMustCutLayer layer the backdrill must cut
+     * @param aOffset dash offset (so that top and bottom backdrills at the same radius will alternate colors)
      */
-    void drawBackdrillIndicator( const BOARD_ITEM* aItem, const VECTOR2D& aCenter,
-                                 int aDrillSize, PCB_LAYER_ID aStartLayer,
-                                 PCB_LAYER_ID aEndLayer );
+    void drawBackdrillIndicator( const BOARD_ITEM* aItem, const VECTOR2D& aCenter, int aBackdrillSize,
+                                 PCB_LAYER_ID aMustCutLayer, int aOffset );
 
     /**
      * Draw post-machining indicator (dashed circle) at the given center point.

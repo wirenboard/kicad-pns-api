@@ -62,7 +62,7 @@ WIDGET_DIFF_CANVAS::WIDGET_DIFF_CANVAS( wxWindow* aParent, GAL_TYPE aBackend, wx
     m_view = new KIGFX::VIEW();
     m_view->SetGAL( m_gal );
 
-    auto target = m_backend == GAL_TYPE_OPENGL ? KIGFX::TARGET_CACHED : KIGFX::TARGET_NONCACHED;
+    auto target = IsAccelerated( m_backend ) ? KIGFX::TARGET_CACHED : KIGFX::TARGET_NONCACHED;
 
     for( int i = 0; i < KIGFX::VIEW::VIEW_MAX_LAYERS; i++ )
         m_view->SetLayerTarget( i, target );
@@ -104,6 +104,7 @@ WIDGET_DIFF_CANVAS::WIDGET_DIFF_CANVAS( wxWindow* aParent, GAL_TYPE aBackend, wx
     SetMinSize( wxSize( -1, 100 ) );
 
     Bind( wxEVT_LEFT_DOWN, &WIDGET_DIFF_CANVAS::onLeftDown, this );
+    Bind( wxEVT_LEFT_UP, &WIDGET_DIFF_CANVAS::onLeftUp, this );
     Bind( wxEVT_LEFT_DCLICK, &WIDGET_DIFF_CANVAS::onDoubleClick, this );
     Bind( wxEVT_MOTION, &WIDGET_DIFF_CANVAS::onMotion, this );
     Bind( wxEVT_LEAVE_WINDOW, &WIDGET_DIFF_CANVAS::onLeave, this );
@@ -142,8 +143,22 @@ void WIDGET_DIFF_CANVAS::SetScene( KICAD_DIFF::DIFF_SCENE aScene )
 }
 
 
+void WIDGET_DIFF_CANVAS::SetChangeOutlinesShown( bool aShown )
+{
+    if( m_changeOutlinesShown == aShown )
+        return;
+
+    m_changeOutlinesShown = aShown;
+    buildRenderScene();
+    rebuildOverlay();
+}
+
+
 void WIDGET_DIFF_CANVAS::SetWorldUnitLength( double aWorldUnitLength )
 {
+    if( m_gal->GetWorldUnitLength() == aWorldUnitLength )
+        return;
+
     m_gal->SetWorldUnitLength( aWorldUnitLength );
     m_gal->ComputeWorldScreenMatrix();
     ZoomToFit();
@@ -162,7 +177,8 @@ void WIDGET_DIFF_CANVAS::SetContextPainter( std::unique_ptr<KIGFX::PAINTER> aPai
 }
 
 
-void WIDGET_DIFF_CANVAS::SetContextItems( const std::vector<KIGFX::VIEW_ITEM*>& aItems )
+void WIDGET_DIFF_CANVAS::SetContextItems( const std::vector<KIGFX::VIEW_ITEM*>& aItems,
+                                          std::shared_ptr<const void>           aOwner )
 {
     if( !m_contextGroup )
         return;
@@ -173,6 +189,8 @@ void WIDGET_DIFF_CANVAS::SetContextItems( const std::vector<KIGFX::VIEW_ITEM*>& 
             m_view->Remove( item );
     }
 
+    // The old items are out of the view, so whatever kept them alive may go
+    m_contextOwner = std::move( aOwner );
     m_contextGroupItems.clear();
     m_itemCategories.clear();
     m_hasNativeContext = false;
@@ -224,7 +242,7 @@ void WIDGET_DIFF_CANVAS::HighlightChange( std::optional<KIID_PATH> aChangeId )
         {
             EDA_ITEM* eda = dynamic_cast<EDA_ITEM*>( item );
 
-            if( !eda || eda->m_Uuid != *focusKiid )
+            if( !eda || getItemId( *eda ) != *focusKiid )
                 continue;
 
             const BOX2I bb = item->ViewBBox();
@@ -322,7 +340,7 @@ void WIDGET_DIFF_CANVAS::refreshItemDimming()
     if( !m_itemDimmer )
         return;
 
-    // Item Uuids of the hidden changes (a change id's last element is its item).
+    // Item IDs of the hidden changes (a change id's last element is its item).
     std::set<KIID> hiddenItems;
 
     for( const KIID_PATH& path : m_hiddenChanges )
@@ -337,11 +355,17 @@ void WIDGET_DIFF_CANVAS::refreshItemDimming()
             continue;
 
         EDA_ITEM*  eda = dynamic_cast<EDA_ITEM*>( item );
-        const bool hidden = eda && hiddenItems.count( eda->m_Uuid ) > 0;
+        const bool hidden = eda && hiddenItems.count( getItemId( *eda ) ) > 0;
 
         m_itemDimmer( item, hidden );
         m_view->Update( item, KIGFX::REPAINT );
     }
+}
+
+
+KIID WIDGET_DIFF_CANVAS::getItemId( const EDA_ITEM& aItem ) const
+{
+    return m_itemIdGetter ? m_itemIdGetter( aItem ) : aItem.m_Uuid;
 }
 
 
@@ -390,13 +414,13 @@ void WIDGET_DIFF_CANVAS::ZoomToFit()
         return;
     }
 
-    BOX2I bb = m_scene.documentBBox;
+    BOX2I bb = m_focusBox ? *m_focusBox : m_scene.documentBBox;
     bool  haveBox = bb.GetWidth() > 0 && bb.GetHeight() > 0;
 
     // Also frame the context items so the whole board fits, not just the changes.
     for( KIGFX::VIEW_ITEM* item : m_contextGroupItems )
     {
-        if( !item )
+        if( !item || m_focusBox )
             continue;
 
         BOX2I ib = item->ViewBBox();
@@ -441,13 +465,8 @@ void WIDGET_DIFF_CANVAS::ZoomToBBox( const BOX2I& aBBox )
     if( !aBBox.GetWidth() || !aBBox.GetHeight() )
         return;
 
-    BOX2D viewport( VECTOR2D( aBBox.GetLeft(), aBBox.GetTop() ), VECTOR2D( aBBox.GetWidth(), aBBox.GetHeight() ) );
-
-    // Inflate slightly so the outermost shape isn't flush with the edge.
-    viewport.Inflate( aBBox.GetWidth() * 0.05, aBBox.GetHeight() * 0.05 );
-
-    m_view->SetViewport( viewport );
-    Refresh();
+    // The base fit is redone on each resize until the view moves, so a fit before layout does not stay small
+    EDA_DRAW_PANEL_GAL::ZoomToFit( aBBox, 1.10 );
 }
 
 
@@ -457,6 +476,18 @@ void WIDGET_DIFF_CANVAS::CenterOnHighlight()
 
     if( !bb || bb->GetWidth() <= 0 || bb->GetHeight() <= 0 )
         return;
+
+    BOX2I focus = *bb;
+    focus.Inflate( std::max( bb->GetWidth(), bb->GetHeight() ) );
+
+    // A part in a sheet-wide fit is too small to read, but a closer zoom the user chose is kept
+    const BOX2D viewport = m_view->GetViewport();
+
+    if( focus.GetWidth() < viewport.GetWidth() && focus.GetHeight() < viewport.GetHeight() )
+    {
+        ZoomToBBox( focus );
+        return;
+    }
 
     const VECTOR2I center = bb->GetCenter();
     m_view->SetCenter( VECTOR2D( center.x, center.y ) );
@@ -468,6 +499,14 @@ void WIDGET_DIFF_CANVAS::CenterOnHighlight()
 void WIDGET_DIFF_CANVAS::buildRenderScene()
 {
     m_renderScene = m_scene;
+
+    if( !m_changeOutlinesShown )
+    {
+        m_renderScene.addedShapes.clear();
+        m_renderScene.removedShapes.clear();
+        m_renderScene.modifiedShapes.clear();
+        m_renderScene.conflictShapes.clear();
+    }
 
     if( m_hasNativeContext )
     {
@@ -556,8 +595,21 @@ void WIDGET_DIFF_CANVAS::onLeftDown( wxMouseEvent& aEvent )
     SetFocus();
     aEvent.Skip();
 
+    if( m_leftDragPans )
+    {
+        m_leftPanning = true;
+        m_leftPanLast = VECTOR2D( aEvent.GetX(), aEvent.GetY() );
+    }
+
     if( m_pickHandler )
         m_pickHandler( picked );
+}
+
+
+void WIDGET_DIFF_CANVAS::onLeftUp( wxMouseEvent& aEvent )
+{
+    aEvent.Skip();
+    m_leftPanning = false;
 }
 
 
@@ -607,6 +659,18 @@ void WIDGET_DIFF_CANVAS::onMotion( wxMouseEvent& aEvent )
 {
     aEvent.Skip();
 
+    // The view controls pan on the middle button only, so the left drag is done here.
+    if( m_leftPanning && aEvent.Dragging() && aEvent.LeftIsDown() )
+    {
+        VECTOR2D pos( aEvent.GetX(), aEvent.GetY() );
+        VECTOR2D delta = m_view->ToWorld( pos, false ) - m_view->ToWorld( m_leftPanLast, false );
+
+        m_view->SetCenter( m_view->GetCenter() - delta );
+        m_leftPanLast = pos;
+        Refresh();
+        return;
+    }
+
     std::optional<KIID_PATH>       hovered;
     const KICAD_DIFF::SCENE_SHAPE* shape = shapeAt( aEvent.GetPosition() );
 
@@ -637,6 +701,7 @@ void WIDGET_DIFF_CANVAS::onMotion( wxMouseEvent& aEvent )
 void WIDGET_DIFF_CANVAS::onLeave( wxMouseEvent& aEvent )
 {
     aEvent.Skip();
+    m_leftPanning = false;
 
     if( !m_hover && !m_hoverBox->shown )
         return;

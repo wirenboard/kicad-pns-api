@@ -27,10 +27,6 @@
 #include <thread>
 #include <vector>
 
-#ifdef __unix__
-#include <unistd.h>
-#endif
-
 #include <qa_utils/file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 #include <pcbnew_utils/board_test_utils.h>
@@ -40,6 +36,9 @@
 #include <footprint_library_adapter.h>
 #include <libraries/library_manager.h>
 #include <libraries/library_table.h>
+#include <netinfo.h>
+#include <pad.h>
+#include <pcb_io/pcb_io_mgr.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 
 
@@ -130,18 +129,9 @@ BOOST_AUTO_TEST_CASE( IsFootprintLibWritableHandlesFailedLoad )
  * plugin's IO_ERROR and return SAVE_SKIPPED, so the editor reported success and lost the
  * user's edits.  SaveFootprint() must now let the IO_ERROR propagate.
  */
-BOOST_AUTO_TEST_CASE( SaveFootprintReadOnlyFilePropagatesError )
+BOOST_AUTO_TEST_CASE( SaveFootprintReadOnlyFilePropagatesError,
+                      *boost::unit_test::precondition( KI_TEST::WriteBitsBind ) )
 {
-#ifdef __unix__
-    // The superuser ignores mode bits, so a read-only file stays writable and this path
-    // cannot be exercised.
-    if( ::geteuid() == 0 )
-    {
-        BOOST_TEST_MESSAGE( "Skipping read-only footprint save test when running as root." );
-        return;
-    }
-#endif
-
     // FootprintSave validates the whole containing directory as a library, so it needs a
     // private directory no unrelated .kicad_mod can pollute.
     KI_TEST::SCOPED_TEMP_DIR    tmpLib( "kicad_qa_adapter_save_readonly" );
@@ -172,6 +162,52 @@ BOOST_AUTO_TEST_CASE( SaveFootprintReadOnlyFilePropagatesError )
                                   std::filesystem::perm_options::remove );
 
     BOOST_CHECK_THROW( adapter.SaveFootprint( nickname, fp ), IO_ERROR );
+}
+
+
+/**
+ * A footprint cached after a library save must not retain net pointers owned by its source
+ * board.  The footprint chooser later clones this cache entry and adds it to a preview board;
+ * if the source board has been destroyed, connectivity dereferences a dangling NETINFO_ITEM.
+ */
+BOOST_AUTO_TEST_CASE( SavedFootprintCacheDoesNotRetainBoardNets )
+{
+    KI_TEST::SCOPED_TEMP_DIR    tmpLib( "kicad_qa_adapter_cached_nets" );
+    const std::filesystem::path libPath = tmpLib.CreateChildDir( "kicad_qa_adapter_cached_nets.pretty" );
+
+    LIBRARY_MANAGER                manager;
+    TEST_FOOTPRINT_LIBRARY_ADAPTER adapter( manager );
+
+    const wxString nickname = wxS( "CachedNets" );
+    adapter.SeedLoadedLibrary( nickname, libPath.string() );
+    adapter.RefreshLibraryIfChanged( nickname );
+
+    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
+    NETINFO_ITEM*          net = new NETINFO_ITEM( board.get(), wxS( "SourceBoardNet" ), 1 );
+    board->Add( net );
+
+    FOOTPRINT* footprint = new FOOTPRINT( board.get() );
+    board->Add( footprint );
+    footprint->SetFPID( LIB_ID( nickname, wxS( "cached_nets" ) ) );
+
+    PAD* pad = new PAD( footprint );
+    pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
+    pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( pcbIUScale.mmToIU( 1 ), pcbIUScale.mmToIU( 1 ) ) );
+    pad->SetLayerSet( LSET( { F_Cu } ) );
+    pad->SetNet( net );
+    footprint->Add( pad );
+
+    BOOST_REQUIRE( adapter.SaveFootprint( nickname, footprint ) == FOOTPRINT_LIBRARY_ADAPTER::SAVE_OK );
+
+    // The cache entry now outlives the board and every NETINFO_ITEM it owns, as it can when the
+    // user closes the source board before opening the footprint chooser.
+    board.reset();
+
+    std::unique_ptr<FOOTPRINT> loaded( adapter.LoadFootprint( nickname, wxS( "cached_nets" ), false ) );
+    BOOST_REQUIRE( loaded );
+    BOOST_REQUIRE_EQUAL( loaded->Pads().size(), 1u );
+    BOOST_CHECK_EQUAL( loaded->GetBoard(), nullptr );
+    BOOST_CHECK_EQUAL( loaded->Pads().front()->GetNet(), NETINFO_LIST::OrphanedItem() );
 }
 
 
@@ -523,5 +559,39 @@ BOOST_AUTO_TEST_CASE( RemovedLibraryStopsServingPreloadedFootprints )
     BOOST_CHECK_MESSAGE( !fp, "a library removed from the table must not keep serving preloaded "
                               "footprints" );
 }
+
+/*
+ * Copying a footprint renewed the uuid of every user field, so each save of a footprint with a field
+ * such as Lifecycle rewrote that line and two edits of it always collided in git.
+ */
+BOOST_AUTO_TEST_CASE( SaveKeepsUserFieldUuids )
+{
+    KI_TEST::SCOPED_TEMP_DIR tmpLib( "kicad_qa_user_field_uuid" );
+
+    wxFileName source( getResistorLibPath(), wxS( "R_0402_1005Metric.kicad_mod" ) );
+    source.RemoveLastDir();
+    source.AppendDir( wxS( "Lifecycle_SMD.pretty" ) );
+
+    const std::filesystem::path libPath = tmpLib.CreateChildDir( "Lifecycle_SMD.pretty" );
+    std::filesystem::copy_file( source.GetFullPath().ToStdString(), libPath / "R_0402_1005Metric.kicad_mod" );
+
+    IO_RELEASER<PCB_IO> plugin( PCB_IO_MGR::FindPlugin( PCB_IO_MGR::KICAD_SEXP ) );
+    const wxString      lib = KI_TEST::ToWxPath( libPath );
+
+    std::unique_ptr<FOOTPRINT> footprint( plugin->FootprintLoad( lib, wxS( "R_0402_1005Metric" ), true ) );
+    BOOST_REQUIRE( footprint );
+
+    const PCB_FIELD* lifecycle = footprint->GetField( wxS( "Lifecycle" ) );
+    BOOST_REQUIRE( lifecycle );
+
+    const KIID uuid = lifecycle->m_Uuid;
+    plugin->FootprintSave( lib, footprint.get() );
+
+    IO_RELEASER<PCB_IO>        reader( PCB_IO_MGR::FindPlugin( PCB_IO_MGR::KICAD_SEXP ) );
+    std::unique_ptr<FOOTPRINT> saved( reader->FootprintLoad( lib, wxS( "R_0402_1005Metric" ), true ) );
+    BOOST_REQUIRE( saved && saved->GetField( wxS( "Lifecycle" ) ) );
+    BOOST_CHECK_EQUAL( saved->GetField( wxS( "Lifecycle" ) )->m_Uuid.AsString(), uuid.AsString() );
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()

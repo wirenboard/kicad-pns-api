@@ -299,6 +299,21 @@ DOCUMENT_GEOMETRY ExtractBoardGeometry( const BOARD& aBoard, const KIGFX::COLOR4
         out.polygons.push_back( std::move( poly ) );
     }
 
+    // Through-hole pads report every copper layer, so clamp to the layers this board has
+    const LSET enabled = aBoard.GetEnabledLayers();
+
+    for( DOCUMENT_SEGMENT& seg : out.segments )
+        seg.layers &= enabled;
+
+    for( DOCUMENT_POLYGON& poly : out.polygons )
+        poly.layers &= enabled;
+
+    for( DOCUMENT_CIRCLE& circle : out.circles )
+        circle.layers &= enabled;
+
+    for( PCB_LAYER_ID layer : enabled.Seq() )
+        out.layerNames[layer] = aBoard.GetLayerName( layer );
+
     return out;
 }
 
@@ -336,6 +351,21 @@ DOCUMENT_GEOMETRY ExtractFootprintGeometry( const FOOTPRINT& aFootprint, const K
     {
         poly.layers = LSET( { aFootprint.GetLayer() } );
         out.polygons.push_back( std::move( poly ) );
+    }
+
+    return out;
+}
+
+
+DOCUMENT_GEOMETRY ExtractFootprintGeometry( const std::map<wxString, const FOOTPRINT*>& aFootprints,
+                                            const KIGFX::COLOR4D&                       aColor )
+{
+    DOCUMENT_GEOMETRY out;
+
+    for( const auto& [name, footprint] : aFootprints )
+    {
+        if( footprint )
+            AppendGeometry( out, ExtractFootprintGeometry( *footprint, aColor ) );
     }
 
     return out;

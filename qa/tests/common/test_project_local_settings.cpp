@@ -30,6 +30,7 @@
 #include <project.h>
 #include <project/project_local_settings.h>
 #include <settings/layer_settings_utils.h>
+#include <settings/common_settings.h>
 #include <settings/settings_manager.h>
 #include <wildcards_and_files_ext.h>
 
@@ -44,6 +45,7 @@ class PROJECT_LOCAL_SETTINGS_FIXTURE
 public:
     PROJECT_LOCAL_SETTINGS_FIXTURE()
     {
+        m_originalDir = fs::current_path();
         m_tempDir = fs::temp_directory_path() / "kicad_project_local_settings_test";
         fs::remove_all( m_tempDir );
         fs::create_directories( m_tempDir );
@@ -51,6 +53,7 @@ public:
 
     ~PROJECT_LOCAL_SETTINGS_FIXTURE()
     {
+        fs::current_path( m_originalDir );
         fs::remove_all( m_tempDir );
     }
 
@@ -80,6 +83,7 @@ public:
         BOOST_REQUIRE( aSettingsManager.LoadProject( wxString( proPath.string() ) ) );
     }
 
+    fs::path m_originalDir;
     fs::path m_tempDir;
 };
 
@@ -190,6 +194,43 @@ BOOST_AUTO_TEST_CASE( MinimalVisibleItemsAppliesMigration )
     BOOST_CHECK( !localSettings.m_VisibleItems.test( GAL_LAYER_INDEX( LAYER_TRACKS ) ) );
     BOOST_CHECK( !localSettings.m_VisibleItems.test( GAL_LAYER_INDEX( LAYER_ZONES ) ) );
     BOOST_CHECK( !localSettings.m_VisibleItems.test( GAL_LAYER_INDEX( LAYER_PADS ) ) );
+}
+
+
+/**
+ * https://gitlab.com/kicad/code/kicad/-/issues/18812
+ */
+BOOST_AUTO_TEST_CASE( FirstPrlWriterKeepsUserOpacityDefaults )
+{
+    // As the schematic editor writes it before the board is ever opened
+    std::string prlContent = R"({
+        "meta": { "filename": "new_project.kicad_prl", "version": 7 },
+        "project": { "files": [] }
+    })";
+
+    {
+        SETTINGS_MANAGER settingsManager;
+        BOARD_OPACITY_DEFAULTS& userDefaults = settingsManager.GetCommonSettings()->m_BoardOpacityDefaults;
+
+        userDefaults.m_TrackOpacity = 0.25;
+        userDefaults.m_OutsideGroupOpacity = 0.5;
+        writeAndLoadProject( "new_project", prlContent, settingsManager );
+
+        PROJECT_LOCAL_SETTINGS& localSettings = settingsManager.Prj().GetLocalSettings();
+
+        BOOST_CHECK_EQUAL( localSettings.m_TrackOpacity, 0.25 );
+        BOOST_CHECK_EQUAL( localSettings.m_OutsideGroupOpacity, 0.5 );
+
+        localSettings.SaveToFile( settingsManager.Prj().GetProjectPath(), true );
+    }
+
+    SETTINGS_MANAGER settingsManager;
+    settingsManager.GetCommonSettings()->m_BoardOpacityDefaults = BOARD_OPACITY_DEFAULTS();
+
+    fs::path proPath = m_tempDir / "new_project" / "new_project.kicad_pro";
+    BOOST_REQUIRE( settingsManager.LoadProject( wxString( proPath.string() ) ) );
+
+    BOOST_CHECK_EQUAL( settingsManager.Prj().GetLocalSettings().m_TrackOpacity, 0.25 );
 }
 
 

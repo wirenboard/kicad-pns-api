@@ -25,6 +25,7 @@
 #include "project_tree.h"
 #include "project_tree_pane.h"
 #include <dialogs/dialog_git_mr_review.h>
+#include <widgets/git_commit_pane.h>
 #include "local_history_pane.h"
 #include "widgets/bitmap_button.h"
 
@@ -50,6 +51,7 @@
 #include <kiplatform/ui.h>
 #include <kiplatform/policy.h>
 #include <build_version.h>
+#include <jobs/scratch_doc.h>
 #include <kiway.h>
 #include <kiway_mail.h>
 #include <launch_ext.h>
@@ -123,6 +125,8 @@ BEGIN_EVENT_TABLE( KICAD_MANAGER_FRAME, EDA_BASE_FRAME )
     EVT_MENU( ID_IMPORT_PCAD_PROJECT, KICAD_MANAGER_FRAME::OnImportPcadProjectFiles )
     EVT_MENU( ID_IMPORT_GEDA_PROJECT, KICAD_MANAGER_FRAME::OnImportGedaFiles )
     EVT_MENU( ID_IMPORT_DIPTRACE_PROJECT, KICAD_MANAGER_FRAME::OnImportDipTraceFiles )
+    EVT_MENU( ID_IMPORT_EASYPC_PROJECT, KICAD_MANAGER_FRAME::OnImportEasyPcFiles )
+    EVT_MENU( ID_IMPORT_TARGET3001_PROJECT, KICAD_MANAGER_FRAME::OnImportTarget3001Files )
     EVT_MENU( ID_IMPORT_ORCAD_PROJECT, KICAD_MANAGER_FRAME::OnImportOrcadFiles )
     EVT_MENU( ID_COMPARE_PROJECT_BRANCHES,
               KICAD_MANAGER_FRAME::OnCompareProjectBranches )
@@ -142,16 +146,18 @@ END_EVENT_TABLE()
 // See below the purpose of this include
 #include <wx/xml/xml.h>
 
-KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& title,
-                                          const wxPoint& pos, const wxSize&   size ) :
+KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& title, const wxPoint& pos,
+                                          const wxSize& size ) :
         EDA_BASE_FRAME( parent, KICAD_MAIN_FRAME_T, title, pos, size, KICAD_DEFAULT_DRAWFRAME_STYLE,
                         KICAD_MANAGER_FRAME_NAME, &::Kiway, unityScale ),
         m_openSavedWindows( false ),
         m_restoredFromHistory( false ),
         m_active_project( false ),
         m_showHistoryPanel( false ),
+        m_showGitCommitPanel( true ),
         m_projectTreePane( nullptr ),
         m_historyPane( nullptr ),
+        m_gitCommitPane( nullptr ),
         m_launcher( nullptr ),
         m_lastToolbarIconSize( 0 ),
         m_pcmButton( nullptr ),
@@ -248,6 +254,37 @@ KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& titl
 
     if( m_showHistoryPanel )
         m_auimgr.GetPane( m_historyPane ).Show();
+
+    m_gitCommitPane = new GIT_COMMIT_PANE( this );
+    m_auimgr.AddPane( m_gitCommitPane, EDA_PANE()
+                                               .Palette()
+                                               .Name( GitCommitPaneName() )
+                                               .Left()
+                                               .Layer( 1 )
+                                               .Position( 2 )
+                                               .Caption( _( "Version Control" ) )
+                                               .MinSize( wxSize( m_gitCommitPane->GetMinDockWidth(), -1 ) )
+                                               .PaneBorder( false )
+                                               .Floatable( false )
+                                               .Movable( false )
+                                               .CloseButton( true )
+                                               .Hide() );
+
+    if( m_showGitCommitPanel )
+        m_auimgr.GetPane( m_gitCommitPane ).Show();
+
+    // Refresh the changed-file list when the user returns to the project manager, since
+    // edits are made in the separate editor windows.
+    Bind( wxEVT_ACTIVATE,
+          [this]( wxActivateEvent& aEvent )
+          {
+              aEvent.Skip();
+
+              // Reading the status walks the repository, so only do it for a pane the user can
+              // actually see. Showing the pane refreshes it, so the gate cannot leave it stale.
+              if( aEvent.GetActive() && GitCommitPaneShown() )
+                  m_gitCommitPane->RefreshFileList();
+          } );
 
     wxSize client_size = GetClientSize();
     m_notebook = new wxAuiNotebook( this, wxID_ANY, wxPoint( client_size.x, client_size.y ),
@@ -493,6 +530,7 @@ void KICAD_MANAGER_FRAME::setupUIConditions()
     activeProjectCond.Enable( activeProject );
 
     manager->SetConditions( ACTIONS::saveAs,                       activeProjectCond );
+    manager->SetConditions( ACTIONS::exportForOlderVersion, activeProjectCond );
     manager->SetConditions( KICAD_MANAGER_ACTIONS::closeProject,   activeProjectCond );
     manager->SetConditions( KICAD_MANAGER_ACTIONS::archiveProject, activeProjectCond );
     manager->SetConditions( KICAD_MANAGER_ACTIONS::newJobsetFile,  activeProjectCond );
@@ -505,6 +543,13 @@ void KICAD_MANAGER_FRAME::setupUIConditions()
             };
 
     manager->SetConditions( KICAD_MANAGER_ACTIONS::showLocalHistory, ACTION_CONDITIONS().Check( historyCond ) );
+
+    auto gitCommitPaneCond = [this]( const SELECTION& )
+    {
+        return GitCommitPaneShown();
+    };
+
+    manager->SetConditions( ACTIONS::showGitCommitPane, ACTION_CONDITIONS().Check( gitCommitPaneCond ) );
 
     // These are just here for text boxes, search boxes, etc. in places such as the standard
     // file dialogs.
@@ -543,11 +588,11 @@ void KICAD_MANAGER_FRAME::PreloadAllLibraries()
     CallAfter(
             [&]()
             {
-                KIFACE *schface = Kiway().KiFACE( KIWAY::FACE_SCH );
-                schface->PreloadLibraries( &Kiway() );
-
-                KIFACE *pcbface = Kiway().KiFACE( KIWAY::FACE_PCB );
-                pcbface->PreloadLibraries( &Kiway() );
+                for( KIWAY::FACE_T face : { KIWAY::FACE_SCH, KIWAY::FACE_PCB } )
+                {
+                    if( KIFACE* kiface = Kiway().KiFACE( face ) )
+                        kiface->PreloadLibraries( &Kiway() );
+                }
 
                 Pgm().PreloadDesignBlockLibraries( &Kiway() );
             } );
@@ -687,6 +732,24 @@ void KICAD_MANAGER_FRAME::DoWithAcceptedFiles()
 
 bool KICAD_MANAGER_FRAME::canCloseWindow( wxCloseEvent& aEvent )
 {
+    // Shutdown blocks must be determined and vetoed as early as possible, before any jobset prompt
+    if( isBlockableSessionEnd() )
+    {
+        for( size_t i = 0; i < m_notebook->GetPageCount(); i++ )
+        {
+            PANEL_JOBSET* jobset = dynamic_cast<PANEL_JOBSET*>( m_notebook->GetPage( i ) );
+
+            if( jobset && jobset->GetJobsFile()->GetDirty() )
+            {
+                KIPLATFORM::APP::SetShutdownBlockReason( this, _( "Jobset changes are unsaved" ) );
+                return false;
+            }
+        }
+
+        // Drop the reason a cancelled logoff left behind once its jobset has been saved
+        KIPLATFORM::APP::RemoveShutdownBlockReason( this );
+    }
+
     KICAD_SETTINGS* settings = kicadSettings();
     settings->m_OpenProjects = GetSettingsManager()->GetOpenProjects();
 
@@ -774,7 +837,7 @@ void KICAD_MANAGER_FRAME::SaveOpenJobSetsToLocalSettings( bool aIsExplicitUserSa
 
 void KICAD_MANAGER_FRAME::OnExit( wxCommandEvent& event )
 {
-    Close( true );
+    Close( false );
 }
 
 
@@ -784,11 +847,11 @@ bool KICAD_MANAGER_FRAME::CloseProject( bool aSave )
         return false;
 
     // Abort any in-progress background load, since the threads depend on the project not changing
-    KIFACE *schface = Kiway().KiFACE( KIWAY::FACE_SCH );
-    schface->CancelPreload();
-
-    KIFACE *pcbface = Kiway().KiFACE( KIWAY::FACE_PCB );
-    pcbface->CancelPreload();
+    for( KIWAY::FACE_T face : { KIWAY::FACE_SCH, KIWAY::FACE_PCB } )
+    {
+        if( KIFACE* kiface = Kiway().KiFACE( face ) )
+            kiface->CancelPreload();
+    }
 
     // Save the project file for the currently loaded project.
     if( m_active_project )
@@ -848,6 +911,9 @@ bool KICAD_MANAGER_FRAME::CloseProject( bool aSave )
         // Unregister the project saver before unloading the project to prevent
         // dangling references
         Kiway().LocalHistory().UnregisterSaver( &Prj() );
+
+        // Must run before the unload below, which releases the git session without waiting.
+        m_projectTreePane->WaitForGitOperations();
 
         mgr.UnloadProject( &Prj() );
     }
@@ -940,10 +1006,6 @@ bool KICAD_MANAGER_FRAME::LoadProject( const wxFileName& aProjectFileName )
         if( !AskOverrideLock( this, msg ) )
             return false;  // User clicked Cancel - abort project loading entirely
 
-        // Clear the lock so the load below can take it
-        LOCKFILE overridden( fullPath );
-        overridden.OverrideLock();
-
         lockOverrideGranted = true;
     }
 
@@ -959,7 +1021,9 @@ bool KICAD_MANAGER_FRAME::LoadProject( const wxFileName& aProjectFileName )
     // current extension. Be very careful with aProjectFileName vs. Prj().GetProjectPath()
     // from here on out.
 
-    Pgm().GetSettingsManager().LoadProject( fullPath );
+    // The load overrides the lock in place.  Releasing it here and taking it again there would
+    // delete and recreate the lock file, which fails on Windows while another handle is open.
+    Pgm().GetSettingsManager().LoadProject( fullPath, true, lockOverrideGranted );
 
     // Propagate lock override decision to the loaded project
     if( lockOverrideGranted )
@@ -988,7 +1052,8 @@ bool KICAD_MANAGER_FRAME::LoadProject( const wxFileName& aProjectFileName )
         if( dlg.ShowModal() == wxID_YES )
         {
             // The dialog above is the confirmation, skip RestoreCommit's own prompt.
-            Kiway().LocalHistory().RestoreCommit( Prj().GetProjectPath(), head, this, false );
+            if( Kiway().LocalHistory().RestoreCommit( Prj().GetProjectPath(), head, this, false ) )
+                reloadProjectSettings();
         }
         else
         {
@@ -1006,6 +1071,9 @@ bool KICAD_MANAGER_FRAME::LoadProject( const wxFileName& aProjectFileName )
 
     m_projectTreePane->ReCreateTreePrj();
     m_historyPane->RefreshHistory( Prj().GetProjectPath() );
+
+    if( GitCommitPaneShown() )
+        m_gitCommitPane->RefreshFileList();
 
     for( const wxString& jobset : Prj().GetLocalSettings().m_OpenJobSets )
     {
@@ -1066,18 +1134,24 @@ void KICAD_MANAGER_FRAME::CreateNewProject( const wxFileName& aProjectFileName, 
             wxFileName destFileName( aProjectFileName );
             destFileName.SetExt( FILEEXT::ProjectFileExtension );
 
-            // Create a minimal project file if the template project file could not be copied
-            if( !wxFileName::FileExists( srcFileName )
-                || !wxCopyFile( srcFileName, destFileName.GetFullPath() ) )
-            {
-                wxFFile file( destFileName.GetFullPath(), "wb" );
-
-                if( file.IsOpened() )
-                    file.Write( wxT( "{\n}\n") );
-
-                // wxFFile dtor will close the file
-            }
+            // Without the template, the full write below creates the file from defaults
+            if( wxFileName::FileExists( srcFileName ) && !wxCopyFile( srcFileName, destFileName.GetFullPath() ) )
+                wxRemoveFile( destFileName.GetFullPath() );
         }
+    }
+
+    // Nothing else writes a project file until a real change, so a new one is written in full now.
+    // A slot already loaded holds another project's settings, which must not land in the new file
+    wxFileName projectFn( aProjectFileName );
+    projectFn.SetExt( FILEEXT::ProjectFileExtension );
+    projectFn.MakeAbsolute();
+
+    if( !GetSettingsManager()->GetProject( projectFn.GetFullPath() ) )
+    {
+        SCRATCH_PROJECT scratch( *GetSettingsManager(), projectFn.GetFullPath() );
+
+        if( scratch.IsValid() )
+            scratch.GetProject()->GetProjectFile().SaveToFile( projectFn.GetPath(), true );
     }
 
     // Create a "stub" for a schematic root sheet and a board if requested.
@@ -1150,9 +1224,8 @@ void KICAD_MANAGER_FRAME::CreateNewProject( const wxFileName& aProjectFileName, 
 
 void KICAD_MANAGER_FRAME::OnCompareProjectBranches( wxCommandEvent& event )
 {
-    git_repository* repo = ( m_projectTreePane && m_projectTreePane->m_TreeProject )
-                                   ? m_projectTreePane->m_TreeProject->GetGitRepo()
-                                   : nullptr;
+    std::shared_ptr<KIGIT_COMMON> gitCommon = Prj().GetGitCommon();
+    git_repository*               repo = gitCommon->GetRepo();
 
     if( !repo )
     {
@@ -1163,46 +1236,17 @@ void KICAD_MANAGER_FRAME::OnCompareProjectBranches( wxCommandEvent& event )
         return;
     }
 
-    // Seed the picker with the conventional "MR" pair: an integration branch
-    // (main/master) as the base, the current branch as the head. Resolve the
-    // current branch from HEAD so a checked-out feature branch lands at
-    // index 1 (where DIALOG_GIT_MR_REVIEW selects its head ref) instead of
-    // the literal "HEAD" string.
-    wxString currentBranch;
-    git_reference* head = nullptr;
-
-    if( git_repository_head( &head, repo ) == 0 )
-    {
-        const char* shorthand = git_reference_shorthand( head );
-
-        if( shorthand && *shorthand )
-            currentBranch = wxString::FromUTF8( shorthand );
-
-        git_reference_free( head );
-    }
-
     std::vector<wxString> refs;
 
-    auto pushUnique = [&]( const wxString& aRef )
-    {
-        if( aRef.IsEmpty() )
-            return;
+    // libgit2 is not safe for concurrent use of one repository, so read the refs under the git
+    // action lock. If a background operation holds it, fall back to HEAD.
+    if( KIGIT::ACTION_LOCK lock = gitCommon->TryLockAction(); lock.owns_lock() )
+        refs = KIGIT::CompareBranchRefs( repo );
 
-        for( const wxString& existing : refs )
-        {
-            if( existing == aRef )
-                return;
-        }
+    if( refs.empty() )
+        refs.push_back( wxS( "HEAD" ) );
 
-        refs.push_back( aRef );
-    };
-
-    pushUnique( wxS( "main" ) );
-    pushUnique( wxS( "master" ) );
-    pushUnique( currentBranch );
-    pushUnique( wxS( "HEAD" ) );
-
-    DIALOG_GIT_MR_REVIEW dlg( this, repo, refs );
+    DIALOG_GIT_MR_REVIEW dlg( this, gitCommon.get(), refs );
     dlg.ShowModal();
 }
 
@@ -1283,6 +1327,13 @@ void KICAD_MANAGER_FRAME::CommonSettingsChanged( int aFlags )
     }
 
     m_projectTreePane->ReCreateTreePrj();
+
+    // The tree rebuild above does not reach the panel.
+    if( m_gitCommitPane )
+    {
+        m_gitCommitPane->RefreshFileList();
+        m_gitCommitPane->ReloadAdvancedWindow();
+    }
 }
 
 
@@ -1339,12 +1390,7 @@ void KICAD_MANAGER_FRAME::ProjectChanged()
 
     // Register project file saver. Ensures project file participates in
     // autosave history commits without affecting dirty state.
-    Kiway().LocalHistory().RegisterSaver( &Prj(),
-            [this]( const wxString& aProjectPath, std::vector<HISTORY_FILE_DATA>& aFileData )
-            {
-                Prj().SaveToHistory( aProjectPath, aFileData );
-            },
-            Prj().GetHistoryLifetimeToken() );
+    Kiway().LocalHistory().RegisterProjectSaver( &Prj() );
 }
 
 
@@ -1358,6 +1404,7 @@ void KICAD_MANAGER_FRAME::LoadSettings( APP_SETTINGS_BASE* aCfg )
 
     m_leftWinWidth = settings->m_LeftWinWidth;
     m_showHistoryPanel = settings->m_ShowHistoryPanel;
+    m_showGitCommitPanel = settings->m_ShowGitCommitPanel;
 }
 
 
@@ -1371,6 +1418,7 @@ void KICAD_MANAGER_FRAME::SaveSettings( APP_SETTINGS_BASE* aCfg )
 
     settings->m_LeftWinWidth = m_projectTreePane->GetSize().x;
     settings->m_ShowHistoryPanel = m_historyPane && m_auimgr.GetPane( m_historyPane ).IsShown();
+    settings->m_ShowGitCommitPanel = GitCommitPaneShown();
 
     if( !m_isClosing )
         settings->m_OpenProjects = GetSettingsManager()->GetOpenProjects();
@@ -1541,6 +1589,14 @@ void KICAD_MANAGER_FRAME::ToggleLocalHistory()
 }
 
 
+void KICAD_MANAGER_FRAME::reloadProjectSettings()
+{
+    // Editors take the project settings from memory, which still hold what the restore replaced
+    Prj().GetProjectFile().LoadFromFile( Prj().GetProjectPath() );
+    Prj().GetLocalSettings().LoadFromFile( Prj().GetProjectPath() );
+}
+
+
 void KICAD_MANAGER_FRAME::RestoreCommitFromHistory( const wxString& aHash )
 {
     if( !Kiway().PlayersClose( true ) )
@@ -1549,6 +1605,7 @@ void KICAD_MANAGER_FRAME::RestoreCommitFromHistory( const wxString& aHash )
     if( Kiway().LocalHistory().RestoreCommit( Prj().GetProjectPath(), aHash, this ) )
     {
         m_restoredFromHistory = true;  // Mark editors dirty when they reopen
+        reloadProjectSettings();
     }
 
     m_projectTreePane->ReCreateTreePrj();
@@ -1560,4 +1617,35 @@ void KICAD_MANAGER_FRAME::RestoreCommitFromHistory( const wxString& aHash )
 bool KICAD_MANAGER_FRAME::HistoryPanelShown()
 {
     return m_historyPane && m_auimgr.GetPane( m_historyPane ).IsShown();
+}
+
+
+void KICAD_MANAGER_FRAME::ToggleGitCommitPane()
+{
+    wxAuiPaneInfo& pane = m_auimgr.GetPane( m_gitCommitPane );
+    bool           show = !pane.IsShown();
+
+    pane.Show( show );
+
+    if( show )
+        m_gitCommitPane->RefreshFileList();
+
+    m_auimgr.Update();
+}
+
+
+bool KICAD_MANAGER_FRAME::GitCommitPaneShown()
+{
+    return m_gitCommitPane && m_auimgr.GetPane( m_gitCommitPane ).IsShown();
+}
+
+
+void KICAD_MANAGER_FRAME::ShowGitHistory()
+{
+    if( m_gitCommitPane )
+    {
+        // A hidden pane is not refreshed on project load, so it may still hold the previous session
+        m_gitCommitPane->RefreshFileList();
+        m_gitCommitPane->ShowHistory();
+    }
 }

@@ -18,6 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <bitmaps.h>
 #include <sch_line.h>
 #include <dialog_line_properties.h>
 #include <dialogs/dialog_color_picker.h>
@@ -191,7 +192,7 @@ bool DIALOG_LINE_PROPERTIES::TransferDataToWindow()
     }
     else
     {
-        m_colorSwatch->SetSwatchColor( COLOR4D::UNSPECIFIED, false );
+        m_colorSwatch->SetIndeterminate();
     }
 
     if( std::all_of( m_lines.begin() + 1, m_lines.end(),
@@ -376,7 +377,7 @@ bool DIALOG_LINE_PROPERTIES::TransferDataFromWindow()
                 line->SetLineStyle( it->first );
         }
 
-        if( m_colorSwatch->GetSwatchColor() != COLOR4D::UNSPECIFIED )
+        if( !m_colorSwatch->IsIndeterminate() )
             line->SetLineColor( m_colorSwatch->GetSwatchColor() );
 
         // Line endings

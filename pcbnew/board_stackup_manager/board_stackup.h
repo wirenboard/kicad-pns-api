@@ -290,7 +290,7 @@ public:
      * @param aSettings is the current board setting.
      * @return true if changes are made
      */
-    bool SynchronizeWithBoard( BOARD_DESIGN_SETTINGS* aSettings );
+    bool SynchronizeWithBoard( const BOARD_DESIGN_SETTINGS* aSettings );
 
     /**
      * Create a default stackup, according to the current BOARD_DESIGN_SETTINGS settings.
@@ -300,8 +300,7 @@ public:
      * of copper layers to use to calculate a default dielectric thickness.
      * ((<= 0 to use all copper layers)
      */
-    void BuildDefaultStackupList( const BOARD_DESIGN_SETTINGS* aSettings,
-            int aActiveCopperLayersCount = 0 );
+    void BuildDefaultStackupList( const BOARD_DESIGN_SETTINGS* aSettings, int aActiveCopperLayersCount = 0 );
 
     /**
      * Write the stackup info on board file
@@ -325,6 +324,19 @@ public:
      * @return the height (in IU) between the two layers
      */
     int GetLayerDistance( PCB_LAYER_ID aFirstLayer, PCB_LAYER_ID aSecondLayer ) const;
+
+    /**
+     * Calculate the drill depth needed to cut from aFirstLayer /through/ aSecondLayer.  This will
+     * be the thickness of layers between (and including) aFirstLayer and aSecondLayer, plus 1/2 the
+     * thickness of the following dielectric.  (Note that this 1/2 metric has nothing to do with the
+     * 1/2 metric used in GetLayerDistance() -- it's just the physical depth with the greatest
+     * tolerance in either direction.)
+     *
+     * @param aFirstLayer is a copper layer to start drilling (ie: must be F_Cu or B_Cu)
+     * @param aSecondLayer  is a copper layer that must be cut by the drill
+     * @return the depth (in IU) one needs to drill
+     */
+    int GetDrillDepth( PCB_LAYER_ID aFirstLayer, PCB_LAYER_ID aSecondLayer ) const;
 
     /**
      * The name of external copper finish

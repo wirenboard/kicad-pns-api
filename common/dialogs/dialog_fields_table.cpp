@@ -58,6 +58,15 @@
 #endif
 
 
+static constexpr int MAX_COL_WIDTH = 100000;
+
+
+static bool isValidColumnWidth( int aWidth )
+{
+    return aWidth > 0 && aWidth <= MAX_COL_WIDTH;
+}
+
+
 namespace
 {
 template <typename PRESET>
@@ -142,6 +151,79 @@ void FIELDS_TABLE_GRID_TRICKS::showPopupMenu( wxMenu& aMenu, wxGridEvent& aEvent
     }
 
     showFieldsTablePopupMenu( aMenu, aEvent );
+}
+
+
+void FIELDS_TABLE_GRID_TRICKS::appendPopupMenuItems( wxMenu& aMenu )
+{
+    if( m_dialog->m_variantListBox->GetCount() < 2 )
+        return;
+
+    // Snapshot the selection before showing the menu, which can change the grid selection.
+    std::vector<wxGridCellCoords> cells;
+    bool                          hasSelection = m_grid->IsSelection();
+
+    if( m_grid->IsEditable() )
+    {
+        for( int row = 0; row < m_grid->GetNumberRows(); ++row )
+        {
+            for( int col = 0; col < m_grid->GetNumberCols(); ++col )
+            {
+                bool selected = hasSelection ? m_grid->IsInSelection( row, col )
+                                             : row == m_grid->GetGridCursorRow() && col == m_grid->GetGridCursorCol();
+
+                if( selected && m_grid->IsColShown( col ) && m_dataModel->CanCopyCellFromVariant( row, col ) )
+                {
+                    cells.emplace_back( row, col );
+                }
+            }
+        }
+    }
+
+    wxMenu* variantsMenu = new wxMenu;
+
+    for( unsigned int i = 0; i < m_dialog->m_variantListBox->GetCount(); ++i )
+    {
+        wxString name = m_dialog->m_variantListBox->GetString( i );
+        wxString variant = name == GetDefaultVariantName() ? wxString() : name;
+        wxString label = name;
+        label.Replace( wxS( "&" ), wxS( "&&" ) );
+
+        wxMenuItem* item = variantsMenu->Append( wxID_ANY, label );
+        item->Enable( !cells.empty() && variant != m_dataModel->GetCurrentVariant() );
+
+        variantsMenu->Bind(
+                wxEVT_COMMAND_MENU_SELECTED,
+                [this, variant, cells]( wxCommandEvent& )
+                {
+                    copyFromVariant( variant, cells );
+                },
+                item->GetId() );
+    }
+
+    aMenu.AppendSeparator();
+    aMenu.AppendSubMenu( variantsMenu, _( "Copy from Variant" ) )->Enable( !cells.empty() );
+}
+
+
+void FIELDS_TABLE_GRID_TRICKS::copyFromVariant( const wxString& aVariant, const std::vector<wxGridCellCoords>& aCells )
+{
+    if( !m_grid->CommitPendingChanges( false ) || aCells.empty() )
+        return;
+
+    for( const wxGridCellCoords& cell : aCells )
+        m_dataModel->CopyCellFromVariant( cell.GetRow(), cell.GetCol(), aVariant );
+
+    if( m_dataModel->IsEdited() )
+        m_dialog->OnModify();
+    else
+        m_dialog->ClearModify();
+
+    // One change event records the entire copy as a single dialog undo step.
+    wxGridEvent event( m_grid->GetId(), wxEVT_GRID_CELL_CHANGED, m_grid, aCells.front().GetRow(),
+                       aCells.front().GetCol() );
+    m_grid->GetEventHandler()->ProcessEvent( event );
+    m_grid->ForceRefresh();
 }
 
 
@@ -433,13 +515,23 @@ void DIALOG_FIELDS_TABLE::saveJobSettings( JOB_EXPORT_BOM& aJob )
 }
 
 
+void DIALOG_FIELDS_TABLE::rememberLoadedPresets()
+{
+    m_loadedSettings.m_BomPresets = GetUserBomPresets();
+    m_loadedSettings.m_BomSettings = getDataModel()->GetBomSettings();
+    m_loadedSettings.m_BomFmtPresets = GetUserBomFmtPresets();
+    m_loadedSettings.m_BomFmtSettings = GetCurrentBomFmtSettings();
+}
+
+
 bool DIALOG_FIELDS_TABLE::savePresets( bool aSaveCurrentSettings )
 {
     bool modified = false;
 
+    // Compare with the presets as loaded, so a stored preset the load merely normalized stays untouched
     std::vector<BOM_PRESET> presets = GetUserBomPresets();
 
-    if( m_cfgBomSettings.m_BomPresets != presets )
+    if( m_loadedSettings.m_BomPresets != presets )
     {
         modified = true;
         m_cfgBomSettings.m_BomPresets = presets;
@@ -447,7 +539,7 @@ bool DIALOG_FIELDS_TABLE::savePresets( bool aSaveCurrentSettings )
 
     BOM_PRESET bomSettings = getDataModel()->GetBomSettings();
 
-    if( aSaveCurrentSettings && m_cfgBomSettings.m_BomSettings != bomSettings )
+    if( aSaveCurrentSettings && m_loadedSettings.m_BomSettings != bomSettings )
     {
         modified = true;
         m_cfgBomSettings.m_BomSettings = bomSettings;
@@ -455,7 +547,7 @@ bool DIALOG_FIELDS_TABLE::savePresets( bool aSaveCurrentSettings )
 
     std::vector<BOM_FMT_PRESET> fmts = GetUserBomFmtPresets();
 
-    if( m_cfgBomSettings.m_BomFmtPresets != fmts )
+    if( m_loadedSettings.m_BomFmtPresets != fmts )
     {
         modified = true;
         m_cfgBomSettings.m_BomFmtPresets = fmts;
@@ -463,7 +555,7 @@ bool DIALOG_FIELDS_TABLE::savePresets( bool aSaveCurrentSettings )
 
     BOM_FMT_PRESET fmtSettings = GetCurrentBomFmtSettings();
 
-    if( aSaveCurrentSettings && m_cfgBomSettings.m_BomFmtSettings != fmtSettings )
+    if( aSaveCurrentSettings && m_loadedSettings.m_BomFmtSettings != fmtSettings )
     {
         modified = true;
         m_cfgBomSettings.m_BomFmtSettings = fmtSettings;
@@ -607,14 +699,30 @@ void DIALOG_FIELDS_TABLE::SavePanelLayout()
 }
 
 
+int DIALOG_FIELDS_TABLE::getStoredColumnWidth( const std::string& aFieldName ) const
+{
+    auto it = m_cfgDialogSettings.field_widths.find( aFieldName );
+
+    if( it == m_cfgDialogSettings.field_widths.end() || !isValidColumnWidth( it->second ) )
+        return 0;
+
+    return m_grid->FromDIP( it->second );
+}
+
+
 void DIALOG_FIELDS_TABLE::SaveColumnWidths()
 {
     for( int i = 0; i < m_grid->GetNumberCols(); i++ )
     {
         if( m_grid->IsColShown( i ) )
         {
+            int width = m_grid->ToDIP( m_grid->GetColSize( i ) );
+
+            if( !isValidColumnWidth( width ) )
+                continue;
+
             std::string fieldName( getDataModel()->GetColFieldName( i ).ToUTF8() );
-            m_cfgDialogSettings.field_widths[fieldName] = m_grid->GetColSize( i );
+            m_cfgDialogSettings.field_widths[fieldName] = width;
         }
     }
 }
@@ -750,9 +858,9 @@ void DIALOG_FIELDS_TABLE::SetupAllColumnProperties()
 
             std::string key( getDataModel()->GetColFieldName( col ).ToUTF8() );
 
-            if( m_cfgDialogSettings.field_widths.count( key ) && ( m_cfgDialogSettings.field_widths.at( key ) > 0 ) )
+            if( int storedWidth = getStoredColumnWidth( key ); storedWidth > 0 )
             {
-                m_grid->SetColSize( col, m_cfgDialogSettings.field_widths.at( key ) );
+                m_grid->SetColSize( col, storedWidth );
             }
             else
             {
@@ -1069,6 +1177,13 @@ void DIALOG_FIELDS_TABLE::OnRemoveField( wxCommandEvent& aEvent )
 
                 m_viewControlsDataModel->DeleteRow( row );
 
+                for( auto& [name, preset] : m_bomPresets )
+                    std::erase_if( preset.fieldsOrdered,
+                                   [&]( BOM_FIELD const& f )
+                                   {
+                                       return f.name == fieldName;
+                                   } );
+
                 syncBomPresetSelection();
                 OnModify();
             } );
@@ -1329,8 +1444,7 @@ void DIALOG_FIELDS_TABLE::OnPreviewRefresh( wxCommandEvent& aEvent )
 void DIALOG_FIELDS_TABLE::OnOutputFileBrowseClicked( wxCommandEvent& aEvent )
 {
     // Build the absolute path of current output directory to preselect it in the file browser.
-    wxString path = ExpandEnvVarSubstitutions( m_outputFileName->GetValue(), &Prj() );
-    path = Prj().AbsolutePath( path );
+    wxString path = ResolveProjectPath( m_outputFileName->GetValue(), &Prj() );
 
     // Calculate the export filename
     wxFileName fn( Prj().AbsolutePath( m_parentFrame->GetCurrentFileName() ) );
@@ -1599,8 +1713,8 @@ void DIALOG_FIELDS_TABLE::doApplyBomPreset( const BOM_PRESET& aPreset )
         m_viewControlsDataModel->SetValue( i, LABEL_COLUMN, label );
         m_grid->SetColLabelValue( col, label );
 
-        if( m_cfgDialogSettings.field_widths.count( fieldNameStr ) )
-            m_grid->SetColSize( col, m_cfgDialogSettings.field_widths.at( fieldNameStr ) );
+        if( int storedWidth = getStoredColumnWidth( fieldNameStr ); storedWidth > 0 )
+            m_grid->SetColSize( col, storedWidth );
 
         // Set shown columns
         bool show = getDataModel()->GetShowColumn( col );

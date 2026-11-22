@@ -37,6 +37,7 @@
 #include <trace_helpers.h>
 #include <tool/tool_manager.h>
 #include <tools/sch_navigate_tool.h>
+#include <font/glyph_types.h>
 #include <font/outline_font.h>
 #include "sim/sim_lib_mgr.h"
 #include <properties/property.h>
@@ -156,6 +157,8 @@ SCH_FIELD::SCH_FIELD( SCH_ITEM* aParent, FIELD_T aFieldId, const wxString& aName
 
     if( aFieldId == FIELD_T::USER && aParent )
     {
+        wxASSERT_MSG( aParent->Type() != SCH_SHEET_T, wxT( "Sheets use FIELD_T::SHEET_USER, not FIELD_T::USER!" ) );
+
         if( aParent->Type() == SCH_SYMBOL_T )
             m_ordinal = static_cast<SCH_SYMBOL*>( aParent )->GetNextFieldOrdinal();
         else if( aParent->Type() == LIB_SYMBOL_T )
@@ -220,7 +223,9 @@ void SCH_FIELD::Serialize( google::protobuf::Any& aContainer ) const
 {
     kiapi::schematic::types::SchematicField field;
     Serialize( field, schIUScale );
-    aContainer.PackFrom( field );
+
+    if( !aContainer.PackFrom( field ) )
+        wxFAIL_MSG( wxT( "Failed to pack SCH_FIELD" ) );
 }
 
 
@@ -237,6 +242,7 @@ bool SCH_FIELD::Deserialize( const kiapi::schematic::types::SchematicField& fiel
     if( m_parent && m_parent->Type() == SCH_SYMBOL_T )
         SetPosition( kiapi::common::UnpackVector2( field.text().position(), aScale ) );
 
+    kiapi::common::UnpackCustomProperties( field.custom_properties(), *this );
     return result;
 }
 
@@ -284,10 +290,30 @@ void SCH_FIELD::Copy( SCH_FIELD* aTarget ) const
 }
 
 
+/// A sheet field takes its type from its name, so every path that creates or renames one agrees
+static FIELD_T sheetFieldId( FIELD_T aId, const wxString& aName )
+{
+    if( aId != FIELD_T::SHEET_USER && aId != FIELD_T::SHEET_REF_SUFFIX )
+        return aId;
+
+    if( aName == GetDefaultFieldName( FIELD_T::SHEET_REF_SUFFIX, UNTRANSLATED ) )
+        return FIELD_T::SHEET_REF_SUFFIX;
+
+    return FIELD_T::SHEET_USER;
+}
+
+
 void SCH_FIELD::setId( FIELD_T aId )
 {
-    m_id = aId;
+    m_id = sheetFieldId( aId, m_name );
     SetLayer( GetDefaultLayer() );
+}
+
+
+void SCH_FIELD::SetOrdinal( int aOrdinal, FIELD_T aType )
+{
+    m_id = sheetFieldId( aType, m_name );
+    m_ordinal = aOrdinal;
 }
 
 
@@ -314,9 +340,6 @@ wxString SCH_FIELD::GetShownText( const SCH_SHEET_PATH* aPath, RESOLUTION_CONTEX
         text = ResolveText( text, aPath, aDepth, aVariantName );
         FinalizeTextVarExpansion( text, aContext );
     }
-
-    if( m_id == FIELD_T::SHEET_FILENAME && aContext == FOR_CANVAS && !IsNameShown() )
-        text = _( "File:" ) + wxS( " " ) + text;
 
     return text;
 }
@@ -505,7 +528,8 @@ SCH_LAYER_ID SCH_FIELD::GetDefaultLayer() const
     case FIELD_T::VALUE:           return LAYER_VALUEPART;
     case FIELD_T::SHEET_NAME:      return LAYER_SHEETNAME;
     case FIELD_T::SHEET_FILENAME:  return LAYER_SHEETFILENAME;
-    case FIELD_T::SHEET_USER:      return LAYER_SHEETFIELDS;
+    case FIELD_T::SHEET_USER:
+    case FIELD_T::SHEET_REF_SUFFIX: return LAYER_SHEETFIELDS;
     case FIELD_T::INTERSHEET_REFS: return LAYER_INTERSHEET_REFS;
     default:                       return LAYER_FIELDS;
     }
@@ -704,7 +728,7 @@ bool SCH_FIELD::Matches( const EDA_SEARCH_DATA& aSearchData, void* aAuxData ) co
                 return true;
 
             if( parentSymbol->GetUnitCount() > 1 )
-                text << parentSymbol->SubReference( parentSymbol->GetUnitSelection( sheet ) );
+                text = parentSymbol->GetRef( sheet, true );
         }
     }
 
@@ -769,11 +793,11 @@ void SCH_FIELD::OnScintillaCharAdded( SCINTILLA_TRICKS* aScintillaTricks, wxStyl
                     std::vector<EMBEDDED_FILES*> embeddedFilesStack;
                     embeddedFilesStack.push_back( schematic->GetEmbeddedFiles() );
 
-                    if( EMBEDDED_FILES* symbolEmbeddedFiles = symbol->GetEmbeddedFiles() )
-                    {
-                        embeddedFilesStack.push_back( symbolEmbeddedFiles );
+                    if( symbol->GetLibSymbolRef() )
                         symbol->GetLibSymbolRef()->AppendParentEmbeddedFiles( embeddedFilesStack );
-                    }
+
+                    if( EMBEDDED_FILES* symbolEmbeddedFiles = symbol->GetEmbeddedFiles() )
+                        embeddedFilesStack.push_back( symbolEmbeddedFiles );
 
                     mgr.SetFilesStack( std::move( embeddedFilesStack ) );
 
@@ -796,7 +820,7 @@ void SCH_FIELD::OnScintillaCharAdded( SCINTILLA_TRICKS* aScintillaTricks, wxStyl
                 SCH_REFERENCE_LIST refs;
                 SCH_SYMBOL*        refSymbol = nullptr;
 
-                schematic->Hierarchy().GetSymbols( refs, SYMBOL_FILTER_ALL );
+                schematic->Hierarchy().GetSymbols( refs, SYMBOL_FILTER_NON_POWER );
 
                 for( size_t jj = 0; jj < refs.GetCount(); jj++ )
                 {
@@ -867,12 +891,21 @@ bool SCH_FIELD::IsLocked() const
             return true;
     }
 
+    if( const SCH_LABEL_BASE* parentLabel = dynamic_cast<const SCH_LABEL_BASE*>( m_parent ) )
+    {
+        if( parentLabel->IsLocked() )
+            return true;
+    }
+
     return SCH_ITEM::IsLocked();
 }
 
 
 bool SCH_FIELD::Replace( const EDA_SEARCH_DATA& aSearchData, void* aAuxData )
 {
+    if( m_isGeneratedField )
+        return false;
+
     bool replaceReferences = false;
 
     try
@@ -896,11 +929,18 @@ bool SCH_FIELD::Replace( const EDA_SEARCH_DATA& aSearchData, void* aAuxData )
 
         wxCHECK_MSG( aAuxData, false, wxT( "Need sheetpath to replace in refdes." ) );
 
-        text = parentSymbol->GetRef( (SCH_SHEET_PATH*) aAuxData );
-        isReplaced = EDA_ITEM::Replace( aSearchData, text );
+        const SCH_SHEET_PATH* sheet = static_cast<const SCH_SHEET_PATH*>( aAuxData );
+
+        text = parentSymbol->GetRef( sheet );
+
+        // Only the base is stored, and the sheet suffix must survive the replacement
+        const wxString suffix = text.Mid( parentSymbol->GetBaseRef( sheet ).length() );
+
+        isReplaced = EDA_ITEM::Replace( aSearchData, text )
+                     && ( suffix.IsEmpty() || ( text.EndsWith( suffix ) && text.length() > suffix.length() ) );
 
         if( isReplaced )
-            parentSymbol->SetRef( (SCH_SHEET_PATH*) aAuxData, text );
+            parentSymbol->SetUserRef( *sheet, text.Left( text.length() - suffix.length() ) );
     }
     else
     {
@@ -1130,6 +1170,9 @@ void SCH_FIELD::SetName( const wxString& aName )
     if( m_isGeneratedField )
         EDA_TEXT::SetText( aName );
 
+    if( sheetFieldId( m_id, m_name ) != m_id )
+        setId( m_id );
+
     if( changed )
         invalidateConnectivity();
 }
@@ -1160,67 +1203,77 @@ void SCH_FIELD::SetText( const wxString& aText, const SCH_SHEET_PATH* aPath, con
 
     const wxString text = IsMandatory() ? aText.Strip( wxString::both ) : aText;
 
-    // Going through the parent symbol or sheet can handle setting values on variants, but it can't
-    // handle setting values on fields which haven't yet been added to the parent.
-    if( !aVariantName.IsEmpty() )
+    switch( m_parent->Type() )
     {
-        switch( m_parent->Type() )
-        {
-        case SCH_SYMBOL_T:
-        {
-            SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( m_parent );
-            wxCHECK( symbol, /* void */ );
-            symbol->SetFieldText( GetName( false ), text, aPath, aVariantName );
-            return;
-        }
+    case SCH_SYMBOL_T:
+    {
+        SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( m_parent );
+        wxCHECK( symbol, /* void */ );
 
-        case SCH_SHEET_T:
-        {
-            SCH_SHEET* sheet = static_cast<SCH_SHEET*>( m_parent );
-            wxCHECK( sheet, /* void */ );
-            sheet->SetFieldText( GetName( false ), text, aPath, aVariantName );
-            return;
-        }
+        // Just because we _have_ a parent, doesn't mean we've been added to it yet.  Make sure to
+        // use the version of SetFieldText() which gives our parent a pointer to us.
+        symbol->SetFieldText( this, GetName( false ), text, aPath, aVariantName );
 
-        default:
-            break;
-        }
+        break;
     }
 
-    SCH_FIELD::SetText( text );
+    case SCH_SHEET_T:
+    {
+        SCH_SHEET* sheet = static_cast<SCH_SHEET*>( m_parent );
+        wxCHECK( sheet, /* void */ );
+
+        // Just because we _have_ a parent, doesn't mean we've been added to it yet.  Make sure to
+        // use the version of SetFieldText() which gives our parent a pointer to us.
+        sheet->SetFieldText( this, GetName( false ), text, aPath, aVariantName );
+
+        break;
+    }
+
+    default:
+        SCH_FIELD::SetText( text );
+        break;
+    }
 }
 
 
 wxString SCH_FIELD::GetText( const SCH_SHEET_PATH* aPath, const wxString& aVariantName ) const
 {
-    wxCHECK( aPath && m_parent, wxEmptyString );
+    wxString retv;
 
-    // Going through the parent symbol or sheet can handle setting values on variants, but it can't
-    // handle setting values on fields which haven't yet been added to the parent.
-    if( !aVariantName.IsEmpty() )
+    wxCHECK( aPath && m_parent, retv );
+
+    switch( m_parent->Type() )
     {
-        switch( m_parent->Type() )
-        {
-        case SCH_SYMBOL_T:
-        {
-            SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( m_parent );
-            wxCHECK( symbol, wxEmptyString );
-            return symbol->GetFieldText( GetName(), aPath, aVariantName );
-        }
+    case SCH_SYMBOL_T:
+    {
+        SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( m_parent );
+        wxCHECK( symbol, retv );
 
-        case SCH_SHEET_T:
-        {
-            SCH_SHEET* sheet = static_cast<SCH_SHEET*>( m_parent );
-            wxCHECK( sheet, wxEmptyString );
-            return sheet->GetFieldText( GetName(), aPath, aVariantName );
-        }
+        // Just because we _have_ a parent, doesn't mean we've been added to it yet.  Make sure to
+        // use the version of SetFieldText() which gives our parent a pointer to us.
+        retv = symbol->GetFieldText( this, GetName( false ), aPath, aVariantName );
 
-        default:
-            break;
-        }
+        break;
     }
 
-    return SCH_FIELD::GetText();
+    case SCH_SHEET_T:
+    {
+        SCH_SHEET* sheet = static_cast<SCH_SHEET*>( m_parent );
+        wxCHECK( sheet, retv );
+
+        // Just because we _have_ a parent, doesn't mean we've been added to it yet.  Make sure to
+        // use the version of SetFieldText() which gives our parent a pointer to us.
+        retv = sheet->GetFieldText( this, GetName( false ), aPath, aVariantName );
+
+        break;
+    }
+
+    default:
+        retv = GetText();
+        break;
+    }
+
+    return retv;
 }
 
 
@@ -1786,6 +1839,21 @@ wxString SCH_FIELD::getUnescapedText( const SCH_SHEET_PATH* aPath, const wxStrin
             break;
 
         case SCH_SHEET_T:
+            if( const SCH_SHEET* sheet = static_cast<const SCH_SHEET*>( m_parent ) )
+            {
+                if( !aVariantName.IsEmpty() && m_id != FIELD_T::SHEET_REF_SUFFIX )
+                {
+                    const SCH_SHEET_INSTANCE* instance = sheet->GetInstance( aPath->Path() );
+
+                    if( instance
+                            && instance->m_Variants.contains( aVariantName )
+                            && instance->m_Variants.at( aVariantName ).m_Fields.contains( GetName() ) )
+                    {
+                        return instance->m_Variants.at( aVariantName ).m_Fields.at( GetName() );
+                    }
+                }
+            }
+
             break;
 
         default:

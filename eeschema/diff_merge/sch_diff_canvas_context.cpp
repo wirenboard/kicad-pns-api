@@ -20,6 +20,7 @@
 #include <sch_screen.h>
 #include <sch_sheet_path.h>
 #include <sch_symbol.h>
+#include <sch_view.h>
 #include <schematic.h>
 #include <set>
 #include <widgets/widget_diff_canvas.h>
@@ -91,9 +92,7 @@ void ConfigureSchDiffContextRenderSettings( SCH_RENDER_SETTINGS& aSettings,
 {
     const KIGFX::COLOR4D gray( 0.5, 0.5, 0.5, 1.0 );
 
-    for( int layer = 0; layer < LAYER_ID_COUNT; ++layer )
-        aSettings.SetLayerColor( layer, gray );
-
+    aSettings.SetAllLayerColors( gray );
     aSettings.SetLayerColor( LAYER_BRIGHTENED, aColor );
 
     aSettings.SetBackgroundColor( KIGFX::COLOR4D( 0.97, 0.97, 0.97, 1.0 ) );
@@ -123,10 +122,14 @@ void ConfigureSchDiffCanvasContext( WIDGET_DIFF_CANVAS& aCanvas, SCHEMATIC* aRef
                                     const KIGFX::COLOR4D& aColor, const std::map<KIID, KIGFX::COLOR4D>& aOverrides,
                                     const std::vector<KIGFX::VIEW_ITEM*>&       aExtraItems,
                                     const std::map<KIID, KICAD_DIFF::CATEGORY>& aCategories,
-                                    SCH_SCREEN* aReferenceScreen, SCH_SCREEN* aComparisonScreen )
+                                    SCH_SCREEN* aReferenceScreen, SCH_SCREEN* aComparisonScreen,
+                                    std::shared_ptr<const void> aOwner )
 {
-    aCanvas.SetContextPainter(
-            MakeSchDiffContextPainter( aCanvas.GetGAL(), aReference ? aReference : aComparison, aColor, aOverrides ) );
+    // The canvas defaults to board units, which caps a schematic's zoom a hundredfold too low
+    aCanvas.SetWorldUnitLength( SCH_WORLD_UNIT );
+    aCanvas.SetContextPainter( MakeSchDiffContextPainter( aCanvas.GetGAL(),
+                                                          aReference ? aReference : aComparison,
+                                                          aColor, aOverrides ) );
 
     std::vector<KIGFX::VIEW_ITEM*> items;
 
@@ -162,7 +165,7 @@ void ConfigureSchDiffCanvasContext( WIDGET_DIFF_CANVAS& aCanvas, SCHEMATIC* aRef
         // child item's IsBrightened individually.
         if( SCH_SYMBOL* sym = dynamic_cast<SCH_SYMBOL*>( schItem ) )
         {
-            for( SCH_PIN* pin : sym->GetPins() )
+            for( SCH_PIN* pin : sym->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES ) )
             {
                 if( !pin )
                     continue;
@@ -183,7 +186,7 @@ void ConfigureSchDiffCanvasContext( WIDGET_DIFF_CANVAS& aCanvas, SCHEMATIC* aRef
         }
     }
 
-    aCanvas.SetContextItems( items );
+    aCanvas.SetContextItems( items, std::move( aOwner ) );
 
     aCanvas.SetItemDimmer(
             [overrides = aOverrides]( KIGFX::VIEW_ITEM* aItem, bool aDim )
@@ -208,7 +211,7 @@ void ConfigureSchDiffCanvasContext( WIDGET_DIFF_CANVAS& aCanvas, SCHEMATIC* aRef
 
                 if( SCH_SYMBOL* sym = dynamic_cast<SCH_SYMBOL*>( sch ) )
                 {
-                    for( SCH_PIN* pin : sym->GetPins() )
+                    for( SCH_PIN* pin : sym->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES ) )
                     {
                         if( pin )
                             apply( pin );

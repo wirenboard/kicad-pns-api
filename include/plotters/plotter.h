@@ -21,6 +21,7 @@
 #ifndef PLOT_COMMON_H_
 #define PLOT_COMMON_H_
 
+#include <set>
 #include <vector>
 #include <eda_fill.h>
 #include <geometry/eda_angle.h>
@@ -40,6 +41,7 @@ class SHAPE_POLY_SET;
 class SHAPE_LINE_CHAIN;
 class GBR_NETLIST_METADATA;
 class PROJECT;
+class FOOTPRINT;
 
 using KIGFX::COLOR4D;
 using KIGFX::RENDER_SETTINGS;
@@ -255,6 +257,19 @@ public:
     void SetLayer( PCB_LAYER_ID aLayer ) { m_layer = aLayer; }
 
     /**
+     * Record that \a aFootprint was drawn on the page being plotted, so that hyperlinks
+     * and bookmarks can cover only the footprints the page shows.
+     */
+    void MarkFootprintPlotted( const FOOTPRINT* aFootprint ) { m_plottedFootprints.insert( aFootprint ); }
+
+    bool WasFootprintPlotted( const FOOTPRINT* aFootprint ) const
+    {
+        return m_plottedFootprints.count( aFootprint ) > 0;
+    }
+
+    void ClearPlottedFootprints() { m_plottedFootprints.clear(); }
+
+    /**
      * Open or create the plot file \a aFullFilename.
      *
      * @param aFullFilename is the full file name of the file to create.
@@ -352,16 +367,18 @@ public:
     virtual void PlotPoly( const SHAPE_LINE_CHAIN& aLineChain, FILL_T aFill, int aWidth, void* aData );
 
     /**
-     * Only PostScript plotters can plot bitmaps.
+     * Plot a bitmap.
      *
-     * A rectangle is plotted for plotters that cannot plot a bitmap.
+     * Plotters that cannot embed a bitmap plot a placeholder rectangle instead.
      *
      * @param aImage is the bitmap.
      * @param aPos is position of the center of the bitmap.
      * @param aScaleFactor is the scale factor to apply to the bitmap size
      *                      (this is not the plot scale factor).
+     * @param aAlpha is the opacity to apply to the whole bitmap, on top of the image's own
+     *               alpha (1.0 is fully opaque).
      */
-    virtual void PlotImage( const wxImage& aImage, const VECTOR2I& aPos, double aScaleFactor );
+    virtual void PlotImage( const wxImage& aImage, const VECTOR2I& aPos, double aScaleFactor, double aAlpha );
 
     // Higher level primitives -- can be drawn as line, sketch or 'filled'
     virtual void ThickSegment( const VECTOR2I& start, const VECTOR2I& end, int width, void* aData );
@@ -619,6 +636,11 @@ public:
      */
     VECTOR2I GetPlotOffsetUserUnits() {return m_plotOffset; }
 
+    /**
+     * @return the plot scale set by SetViewport().
+     */
+    double GetPlotScale() const { return m_plotScale; }
+
 
 protected:
     /**
@@ -744,6 +766,8 @@ protected:      // variables used in most of plotters:
     std::vector<std::pair<PCB_LAYER_ID, wxString>> m_layersToExport;
 
     PCB_LAYER_ID m_layer;
+
+    std::set<const FOOTPRINT*> m_plottedFootprints;
 };
 
 

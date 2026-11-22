@@ -60,14 +60,45 @@ struct BACKANNOTATE_UNIT_SWAP_PLAN
 };
 
 /**
- * Compute a pure unit-swap plan from schematic-side unit definitions and the final PCB pin map.
+ * Append this unit's PCB nets to a map keyed by logical pin number, resolving pin-to-pad mappings.
  *
+ * Return false if a pin's pads disagree or units assign different nets to a shared logical pin.
+ * The output may be partially populated on failure and must not be used for swap planning.
+ */
+bool CollectBackannotatePcbNets( const SCH_SYMBOL& aSymbol, const SCH_SHEET_PATH& aSheetPath,
+                                 const wxString& aVariantName, const std::map<wxString, wxString>& aPcbNetsByPad,
+                                 std::map<wxString, wxString>& aPcbNetsByLogicalPin );
+
+/**
+ * Compute a pure unit-swap plan from schematic-side unit definitions and PCB nets keyed by logical pin number.
+ *
+ * The caller must resolve pin-to-pad mappings before constructing the PCB net map.
  * This is shared by backannotation and unit tests so swap inference can be exercised without
  * constructing a full schematic editor test harness.
  */
 BACKANNOTATE_UNIT_SWAP_PLAN PlanBackannotateUnitSwaps(
         const std::vector<BACKANNOTATE_UNIT_SWAP_CANDIDATE>& aCandidates,
         const std::map<wxString, wxString>& aPcbPinMap );
+
+struct BACKANNOTATE_REF
+{
+    wxString m_base;      ///< Base reference the instance takes, when m_error is empty
+    wxString m_error;
+};
+
+/**
+ * Turn the references footprints carry into the base references of their schematic instances.
+ *
+ * A board reference must end with its instance's sheet suffix, which is dropped.  When
+ * \a aShareBases is set, as in suffix annotation mode, all instances of a symbol share one base,
+ * so a symbol whose instances ask for different bases is refused as a whole.
+ *
+ * @param aRequests pairs each instance with the reference of its footprint.
+ * @return one result per request, in order.
+ */
+std::vector<BACKANNOTATE_REF>
+ResolveBackannotatedRefs( const std::vector<std::pair<const SCH_REFERENCE*, wxString>>& aRequests,
+                          bool aShareBases );
 
 /**
  * Back annotation algorithm class used to receive, check, and apply a \ref NETLIST from

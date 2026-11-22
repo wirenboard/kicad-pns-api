@@ -35,6 +35,8 @@
 #include <set>
 #include <vector>
 
+class EDA_ITEM;
+
 
 namespace KIGFX
 {
@@ -82,6 +84,10 @@ public:
     /// Replace the displayed scene. Pass an empty scene to clear the canvas.
     void SetScene( KICAD_DIFF::DIFF_SCENE aScene );
 
+    /// Draw the scene's change outlines or keep them for picking only. A library compare draws its items one at a
+    /// time at the origin, where the outlines of every item would pile up.
+    void SetChangeOutlinesShown( bool aShown );
+
     void SetWorldUnitLength( double aWorldUnitLength );
 
     /// Install the native painter used for drawing source document context.
@@ -89,14 +95,19 @@ public:
     /// forced neutral color. The diff overlay remains owned by this widget.
     void SetContextPainter( std::unique_ptr<KIGFX::PAINTER> aPainter );
 
-    /// Replace source document context items. Items are not owned by the
-    /// widget; callers must keep the source documents alive while the dialog
-    /// is open.
-    void SetContextItems( const std::vector<KIGFX::VIEW_ITEM*>& aItems );
+    /// Replace source document context items. The widget holds aOwner until the items are
+    /// replaced or the widget is destroyed, so items made only for display can live there.
+    /// Without an owner the caller keeps the source documents alive while they are shown.
+    void SetContextItems( const std::vector<KIGFX::VIEW_ITEM*>& aItems,
+                          std::shared_ptr<const void>           aOwner = nullptr );
 
     /// Tag context items by change category so SetCategoryVisible can hide /
     /// show them in lockstep with the diff-category checkboxes.
     void SetItemCategories( std::map<KIGFX::VIEW_ITEM*, KICAD_DIFF::CATEGORY> aMap );
+
+    /// Override context item identity when a differ uses IDs other than the item UUID.
+    using ITEM_ID_GETTER = std::function<KIID( const EDA_ITEM& )>;
+    void SetItemIdGetter( const ITEM_ID_GETTER& aGetter ) { m_itemIdGetter = aGetter; }
 
     /// Kiface-supplied callback that dims/undims a context item.
     using DIMMER = std::function<void( KIGFX::VIEW_ITEM*, bool aDim )>;
@@ -140,8 +151,8 @@ public:
     /// Zoom and center on a specific document-space bbox with a small margin.
     void ZoomToBBox( const BOX2I& aBBox );
 
-    /// Pan so the currently highlighted change is at
-    /// the center of the canvas. No-op when nothing is highlighted.
+    /// Pan so the currently highlighted change is at the center of the canvas, zooming in first
+    /// when it would be too small to read. No-op when nothing is highlighted.
     void CenterOnHighlight();
 
     /// Register a callback to fire when the user left-clicks the canvas.
@@ -153,6 +164,13 @@ public:
 
     using ITEM_HANDLER = std::function<void( KIGFX::VIEW_ITEM* )>;
     void SetDoubleClickHandler( ITEM_HANDLER aHandler ) { m_dclickHandler = std::move( aHandler ); }
+
+    /// Let a left drag pan the view, for a canvas with nothing to select by dragging.
+    void SetLeftDragPans( bool aPan ) { m_leftDragPans = aPan; }
+
+    /// Make ZoomToFit frame this box instead of the whole document, or everything again when
+    /// cleared. Set it before SetScene, which fits as soon as the canvas has a size.
+    void SetFocusBox( std::optional<BOX2I> aBox ) { m_focusBox = std::move( aBox ); }
 
 private:
     /// Rebuild the overlay from the render scene + current highlight state.
@@ -168,6 +186,8 @@ private:
     /// Dim context items that are hidden, or unfocused while a highlight is active.
     void refreshItemDimming();
 
+    KIID getItemId( const EDA_ITEM& aItem ) const;
+
     /// Hit test in screen coordinates → topmost SCENE_SHAPE under the cursor.
     const KICAD_DIFF::SCENE_SHAPE* shapeAt( const wxPoint& aScreenPoint ) const;
 
@@ -176,6 +196,7 @@ private:
     std::optional<BOX2I> highlightedBBox() const;
 
     void onLeftDown( wxMouseEvent& aEvent );
+    void onLeftUp( wxMouseEvent& aEvent );
     void onDoubleClick( wxMouseEvent& aEvent );
     void onMotion( wxMouseEvent& aEvent );
     void onLeave( wxMouseEvent& aEvent );
@@ -191,6 +212,7 @@ private:
     PICK_HANDLER             m_pickHandler;
     ITEM_HANDLER                        m_dclickHandler;
     DIMMER                              m_itemDimmer;
+    ITEM_ID_GETTER                      m_itemIdGetter;
     std::unique_ptr<HIGHLIGHT_BOX_ITEM> m_highlightBox;
     std::unique_ptr<HIGHLIGHT_BOX_ITEM> m_hoverBox;
 
@@ -201,11 +223,14 @@ private:
     /// While true, rebuildOverlay()/ZoomToFit() are held so a batch renders once.
     bool m_holdRebuild = false;
 
+    bool m_changeOutlinesShown = true;
+
     LSET m_layerVisible;
 
     bool m_hasNativeContext = false;
     std::unique_ptr<KIGFX::VIEW_GROUP> m_contextGroup;
     std::vector<KIGFX::VIEW_ITEM*>                    m_contextGroupItems;
+    std::shared_ptr<const void>                       m_contextOwner;
     std::map<KIGFX::VIEW_ITEM*, KICAD_DIFF::CATEGORY> m_itemCategories;
     std::shared_ptr<KIGFX::VIEW_OVERLAY> m_overlay;
 
@@ -216,6 +241,12 @@ private:
     /// True when a ZoomToFit was requested before the canvas had a real
     /// size — the next onSize will retry the fit and clear this.
     bool m_zoomToFitPending = false;
+
+    bool     m_leftDragPans = false;
+    bool     m_leftPanning = false;
+    VECTOR2D m_leftPanLast;
+
+    std::optional<BOX2I> m_focusBox;
 };
 
 #endif // KICAD_WIDGET_DIFF_CANVAS_H

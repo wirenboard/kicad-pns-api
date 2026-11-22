@@ -64,7 +64,8 @@ private:
 
 void DRC_TEST_PROVIDER_SCHEMATIC_PARITY::testNetlist( NETLIST& aNetlist )
 {
-    BOARD* board = m_drcEngine->GetBoard();
+    BOARD*          board = m_drcEngine->GetBoard();
+    const wxString& variant = board->GetCurrentVariant();
 
     auto compare = []( const FOOTPRINT* x, const FOOTPRINT* y )
                    {
@@ -94,16 +95,34 @@ void DRC_TEST_PROVIDER_SCHEMATIC_PARITY::testNetlist( NETLIST& aNetlist )
     for( unsigned ii = 0; ii < aNetlist.GetCount(); ii++ )
     {
         COMPONENT* component = aNetlist.GetComponent( ii );
-        FOOTPRINT* footprint = board->FindFootprintByReference( component->GetReference() );
+        FOOTPRINT*   footprint = nullptr;
+        const LIB_ID componentFpid = component->GetFPID( variant );
+
+        // A footprint-swapping variant leaves one board footprint per FPID under the same reference
+        for( FOOTPRINT* candidate : board->Footprints() )
+        {
+            if( candidate->GetReference() != component->GetReference() )
+                continue;
+
+            if( !footprint )
+                footprint = candidate;
+
+            if( candidate->GetFPID() == componentFpid )
+            {
+                footprint = candidate;
+                break;
+            }
+        }
+
+        const wxString valueField = GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED );
+        const wxString componentValue = component->GetValue( variant );
 
         if( footprint == nullptr )
         {
             if( !m_drcEngine->IsErrorLimitExceeded( DRCE_MISSING_FOOTPRINT ) )
             {
                 wxString msg;
-                msg.Printf( _( "Missing footprint %s (%s)" ),
-                            component->GetReference(),
-                            component->GetValue() );
+                msg.Printf( _( "Missing footprint %s (%s)" ), component->GetReference(), componentValue );
 
                 std::shared_ptr<DRC_ITEM> drcItem = DRC_ITEM::Create( DRCE_MISSING_FOOTPRINT );
 
@@ -113,13 +132,12 @@ void DRC_TEST_PROVIDER_SCHEMATIC_PARITY::testNetlist( NETLIST& aNetlist )
         }
         else
         {
-            if( component->GetValue() != footprint->GetValue()
+            if( componentValue != footprint->GetFieldValueForVariant( variant, valueField )
                 && !m_drcEngine->IsErrorLimitExceeded( DRCE_SCHEMATIC_PARITY ) )
             {
                 wxString msg;
                 msg.Printf( _( "Value (%s) doesn't match symbol value (%s)" ),
-                            footprint->GetReference(), footprint->GetValue(),
-                            component->GetValue() );
+                            footprint->GetFieldValueForVariant( variant, valueField ), componentValue );
 
                 std::shared_ptr<DRC_ITEM> drcItem = DRC_ITEM::Create( DRCE_SCHEMATIC_PARITY );
                 drcItem->SetErrorMessage( msg );
@@ -127,13 +145,13 @@ void DRC_TEST_PROVIDER_SCHEMATIC_PARITY::testNetlist( NETLIST& aNetlist )
                 reportViolation( drcItem, footprint->GetPosition(), UNDEFINED_LAYER );
             }
 
-            if( component->GetFPID().GetUniStringLibId() != footprint->GetFPID().GetUniStringLibId()
+            if( componentFpid.GetUniStringLibId() != footprint->GetFPID().GetUniStringLibId()
                 && !m_drcEngine->IsErrorLimitExceeded( DRCE_SCHEMATIC_PARITY ) )
             {
                 wxString msg;
                 msg.Printf( _( "%s doesn't match footprint given by symbol (%s)" ),
                             footprint->GetFPID().GetUniStringLibId(),
-                            component->GetFPID().GetUniStringLibId() );
+                            componentFpid.GetUniStringLibId() );
 
                 std::shared_ptr<DRC_ITEM> drcItem = DRC_ITEM::Create( DRCE_SCHEMATIC_PARITY );
                 drcItem->SetErrorMessage( msg );
@@ -172,8 +190,9 @@ void DRC_TEST_PROVIDER_SCHEMATIC_PARITY::testNetlist( NETLIST& aNetlist )
                 }
             }
 
-            if( ( component->GetProperties().count( "dnp" ) > 0 )
-                != ( ( footprint->GetAttributes() & FP_DNP ) > 0 )
+            const std::map<wxString, wxString> componentProperties = component->GetProperties( variant );
+
+            if( ( componentProperties.count( "dnp" ) > 0 ) != footprint->GetDNPForVariant( variant )
                 && !m_drcEngine->IsErrorLimitExceeded( DRCE_SCHEMATIC_PARITY ) )
             {
                 wxString msg;
@@ -185,8 +204,8 @@ void DRC_TEST_PROVIDER_SCHEMATIC_PARITY::testNetlist( NETLIST& aNetlist )
                 reportViolation( drcItem, footprint->GetPosition(), UNDEFINED_LAYER );
             }
 
-            if( ( component->GetProperties().count( "exclude_from_bom" ) > 0 )
-                != ( (footprint->GetAttributes() & FP_EXCLUDE_FROM_BOM ) > 0 )
+            if( ( componentProperties.count( "exclude_from_bom" ) > 0 )
+                        != footprint->GetExcludedFromBOMForVariant( variant )
                 && !m_drcEngine->IsErrorLimitExceeded( DRCE_SCHEMATIC_PARITY ) )
             {
                 wxString msg;
@@ -198,8 +217,8 @@ void DRC_TEST_PROVIDER_SCHEMATIC_PARITY::testNetlist( NETLIST& aNetlist )
                 reportViolation( drcItem, footprint->GetPosition(), UNDEFINED_LAYER );
             }
 
-            if( ( component->GetProperties().count( "exclude_from_sim" ) > 0 )
-                != ( ( footprint->GetAttributes() & FP_EXCLUDE_FROM_SIM ) > 0 )
+            if( ( componentProperties.count( "exclude_from_sim" ) > 0 )
+                        != footprint->GetExcludedFromSimForVariant( variant )
                 && !m_drcEngine->IsErrorLimitExceeded( DRCE_SCHEMATIC_PARITY ) )
             {
                 wxString msg;
@@ -226,12 +245,27 @@ void DRC_TEST_PROVIDER_SCHEMATIC_PARITY::testNetlist( NETLIST& aNetlist )
                     fpFieldsAsMap[field->GetName()] = field->GetText();
                 }
 
+                if( const FOOTPRINT_VARIANT* fpVariant = footprint->GetVariant( variant ) )
+                {
+                    for( const auto& [name, value] : fpVariant->GetFields() )
+                        fpFieldsAsMap[name] = value;
+                }
+
                 // Remove the extra component fields we don't want to evaluate here
-                nlohmann::ordered_map<wxString, wxString> compFields = component->GetFields();
+                nlohmann::ordered_map<wxString, wxString> compFields = component->GetFields( variant );
                 compFields.erase( GetDefaultFieldName( FIELD_T::REFERENCE, UNTRANSLATED ) );
                 compFields.erase( GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED ) );
                 compFields.erase( GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED ) );
                 compFields.erase( wxT( "Component Class" ) );
+
+                const wxString datasheetName = GetDefaultFieldName( FIELD_T::DATASHEET, UNTRANSLATED );
+
+                // Boards from 9.0.3+ store a "~" datasheet that the 10.0 schematic loader reads as empty
+                auto isBlank =
+                        []( const wxString& aText )
+                        {
+                            return aText.IsEmpty() || aText == wxS( "~" );
+                        };
 
                 bool fieldsMatch = true;
                 wxString mismatchDetail;
@@ -246,6 +280,9 @@ void DRC_TEST_PROVIDER_SCHEMATIC_PARITY::testNetlist( NETLIST& aNetlist )
                         mismatchDetail = wxString::Format( _( "Missing symbol field '%s' in footprint" ), name );
                         break;
                     }
+
+                    if( name == datasheetName && isBlank( it->second ) && isBlank( value ) )
+                        continue;
 
                     if( it->second != value )
                     {

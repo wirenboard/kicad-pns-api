@@ -316,7 +316,7 @@ void PCB_VIA_STITCH::EditStart( GENERATOR_TOOL* aTool, BOARD* aBoard, BOARD_COMM
 }
 
 
-int PCB_VIA_STITCH::defaultPitch( BOARD* aBoard ) const
+int PCB_VIA_STITCH::defaultPitch( const BOARD* aBoard ) const
 {
     int mm2 = pcbIUScale.mmToIU( 2.0 );
     int viaSize = m_viaTemplate->GetWidth( PADSTACK::TEMP_ALL_LAYERS ) > 0 ? m_viaTemplate->GetWidth( PADSTACK::TEMP_ALL_LAYERS )
@@ -326,27 +326,29 @@ int PCB_VIA_STITCH::defaultPitch( BOARD* aBoard ) const
 }
 
 
-int PCB_VIA_STITCH::defaultViaSize( BOARD* aBoard ) const
+int PCB_VIA_STITCH::defaultViaSize( const BOARD* aBoard ) const
 {
     if( !aBoard )
         return pcbIUScale.mmToIU( 0.6 );
 
-    BOARD_DESIGN_SETTINGS& ds = aBoard->GetDesignSettings();
-    int val = ds.GetCurrentViaSize();
+    int val = aBoard->GetDesignSettings().GetCurrentViaSize();
+
     if( val <= 0 )
         val = pcbIUScale.mmToIU( 0.6 );
+
     return val;
 }
 
-int PCB_VIA_STITCH::defaultViaDrill( BOARD* aBoard ) const
+int PCB_VIA_STITCH::defaultViaDrill( const BOARD* aBoard ) const
 {
     if( !aBoard )
         return pcbIUScale.mmToIU( 0.3 );
 
-    BOARD_DESIGN_SETTINGS& ds = aBoard->GetDesignSettings();
-    int val = ds.GetCurrentViaDrill();
+    int val = aBoard->GetDesignSettings().GetCurrentViaDrill();
+
     if( val <= 0 )
         val = pcbIUScale.mmToIU( 0.3 );
+
     return val;
 }
 
@@ -749,7 +751,9 @@ void PCB_VIA_STITCH::Serialize( google::protobuf::Any& aContainer ) const
         stitch.add_members()->set_value( member->m_Uuid.AsStdString() );
 
     kiapi::common::PackCustomProperties( stitch.mutable_custom_properties(), *this );
-    aContainer.PackFrom( stitch );
+
+    if( !aContainer.PackFrom( stitch ) )
+        wxFAIL_MSG( wxT( "Failed to pack PCB_VIA_STITCH" ) );
 }
 
 
@@ -1079,7 +1083,7 @@ std::set<VECTOR2I> PCB_VIA_STITCH::buildPlacementCells( BOARD* aBoard ) const
     // Probe used for clearance evaluation; it must carry the stitch net because clearance
     // rules can key off the net class.
     std::unique_ptr<PCB_VIA> probe( static_cast<PCB_VIA*>( m_viaTemplate->Clone() ) );
-    probe->SetParent( const_cast<BOARD*>( aBoard ) );
+    probe->SetParent( aBoard );
 
     if( m_netCode )
         probe->SetNetCode( m_netCode );

@@ -63,13 +63,15 @@ class SHOVE;
 class DRAGGER;
 class DRAG_ALGO;
 class LOGGER;
+class DIFF_PAIR;
 
 enum ROUTER_MODE {
     PNS_MODE_ROUTE_SINGLE = 1,
     PNS_MODE_ROUTE_DIFF_PAIR,
     PNS_MODE_TUNE_SINGLE,
     PNS_MODE_TUNE_DIFF_PAIR,
-    PNS_MODE_TUNE_DIFF_PAIR_SKEW
+    PNS_MODE_TUNE_DIFF_PAIR_SKEW,
+    PNS_MODE_SPREAD_TRACKS
 };
 
 enum DRAG_MODE
@@ -80,7 +82,8 @@ enum DRAG_MODE
     DM_FREE_ANGLE = 0x8,
     DM_ARC = 0x10,
     DM_ANY = 0x17,
-    DM_COMPONENT = 0x20
+    DM_COMPONENT = 0x20,
+    DM_BLOCK = 0x40
 };
 /**
  * ROUTER
@@ -143,6 +146,9 @@ enum DRAG_MODE
      */
     virtual void RemoveBoardConnected( const std::vector<const ITEM*>& aJoined, std::set<ITEM*>& aItems ) const {}
 
+    /** Copper zones are absent from NODE joints, so tail pruning must keep items that touch one. */
+    virtual bool TouchesCopperZone( const ITEM* aItem ) const { return true; }
+
     /**
      * Return the layer span a via placed with @a aSizes occupies.  A through via always spans
      * the whole board; the layer pair only selects the span of blind, buried and micro vias.
@@ -186,7 +192,7 @@ public:
     void SyncWorld();
 
     bool RoutingInProgress() const;
-    bool StartRouting( const VECTOR2I& aP, ITEM* aItem, int aLayer );
+    bool StartRouting( const VECTOR2I& aP, ITEM* aItem, int aLayer, const ITEM_SET& aAuxItems = ITEM_SET() );
     bool Move( const VECTOR2I& aP, ITEM* aItem );
     bool Finish();
     bool ContinueFromEnd( ITEM** aNewStartItem );
@@ -266,7 +272,18 @@ public:
 
     bool GetNearestRatnestAnchor( VECTOR2I& aOtherEnd, PNS_LAYER_RANGE& aOtherEndLayers,
                                   ITEM*& aOtherEndItem );
+
+
 private:
+
+    DEBUG_DECORATOR* dbg() const
+    {
+        return GetInterface()->GetDebugDecorator();
+    }
+
+    bool areWeLengthTuning() const;
+    bool hasDiffPairMembers( const ITEM_SET& aItems ) const;
+    
     bool movePlacing( const VECTOR2I& aP, ITEM* aItem );
     bool moveDragging( const VECTOR2I& aP, ITEM* aItem );
 

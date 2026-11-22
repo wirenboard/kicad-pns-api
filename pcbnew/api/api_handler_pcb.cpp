@@ -20,6 +20,7 @@
 
 #include <magic_enum.hpp>
 #include <memory>
+#include <pgm_base.h>
 #include <properties/property.h>
 #include <ranges>
 
@@ -28,6 +29,7 @@
 #include <api/api_handler_pcb.h>
 #include <api/api_pcb_utils.h>
 #include <api/api_enums.h>
+#include <api/api_server.h>
 #include <api/api_utils.h>
 #include <api/common/commands/library_commands.pb.h>
 #include <api/cross_probe_client.h>
@@ -56,6 +58,7 @@
 #include <cleanup_item.h>
 #include <pcbnew_id.h>
 #include <pcb_marker.h>
+#include <pcb_3d_body.h>
 #include <pcb_point.h>
 #include <kiway.h>
 #include <drc/drc_item.h>
@@ -63,6 +66,7 @@
 #include <jobs/job_export_pcb_dxf.h>
 #include <jobs/job_export_pcb_drill.h>
 #include <jobs/job_export_pcb_gencad.h>
+#include <jobs/job_export_pcb_specctra_dsn.h>
 #include <jobs/job_export_pcb_gerber.h>
 #include <jobs/job_export_pcb_gerbers.h>
 #include <jobs/job_export_pcb_idf.h>
@@ -84,6 +88,7 @@
 #include <netlist_reader/board_netlist_updater.h>
 #include <netlist_reader/pcb_netlist.h>
 #include <project.h>
+#include <project/project_file.h>
 #include <tool/actions.h>
 #include <string_utils.h>
 #include <tool/tool_manager.h>
@@ -97,6 +102,9 @@
 #include <zone_filler.h>
 
 #include <api/common/types/base_types.pb.h>
+
+#include <specctra_import_export/specctra.h>
+#include <reporter.h>
 #include <api/board/board_rules.pb.h>
 #include <connectivity/connectivity_data.h>
 #include <google/protobuf/util/json_util.h>
@@ -127,6 +135,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<GetOpenDocuments, GetOpenDocumentsResponse>(
             &API_HANDLER_PCB::handleGetOpenDocuments );
     registerHandler<SaveDocument, Empty>( &API_HANDLER_PCB::handleSaveDocument );
+    registerHandler<SaveDocumentAs, Empty>( &API_HANDLER_PCB::handleSaveDocumentAs );
     registerHandler<SaveCopyOfDocument, Empty>( &API_HANDLER_PCB::handleSaveCopyOfDocument );
     registerHandler<RevertDocument, Empty>( &API_HANDLER_PCB::handleRevertDocument );
 
@@ -153,6 +162,15 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
             &API_HANDLER_PCB::handleGetNetClassForNets );
     registerHandler<RefillZones, Empty>( &API_HANDLER_PCB::handleRefillZones );
     registerHandler<ImportNetlist, ImportNetlistResponse>( &API_HANDLER_PCB::handleImportNetlist );
+    registerHandler<ImportSpecctraSession, ImportSpecctraSessionResponse>(
+            &API_HANDLER_PCB::handleImportSpecctraSession );
+    registerHandler<kiapi::board::tasks::StartRefillZonesTask, kiapi::common::tasks::StartTaskResponse>(
+            &API_HANDLER_PCB::handleStartRefillZonesTask );
+    registerHandler<kiapi::board::tasks::StartDrcTask,
+                    kiapi::common::tasks::StartTaskResponse>(
+            &API_HANDLER_PCB::handleStartDrcTask );
+    registerHandler<kiapi::board::tasks::GetDrcTaskResult, kiapi::board::tasks::DrcTaskResult>(
+            &API_HANDLER_PCB::handleGetDrcTaskResult, true );
 
     registerHandler<GetBoardEditorAppearanceSettings, BoardEditorAppearanceSettings>(
             &API_HANDLER_PCB::handleGetBoardEditorAppearanceSettings );
@@ -197,6 +215,8 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
             &API_HANDLER_PCB::handleRunBoardJobExportDrill );
     registerHandler<RunBoardJobExportPosition, types::RunJobResponse>(
             &API_HANDLER_PCB::handleRunBoardJobExportPosition );
+    registerHandler<RunBoardJobExportSpecctraDsn, types::RunJobResponse>(
+            &API_HANDLER_PCB::handleRunBoardJobExportSpecctraDsn );
     registerHandler<RunBoardJobExportGencad, types::RunJobResponse>(
             &API_HANDLER_PCB::handleRunBoardJobExportGencad );
     registerHandler<RunBoardJobExportIpc2581, types::RunJobResponse>(
@@ -258,13 +278,19 @@ HANDLER_RESULT<GetOpenDocumentsResponse> API_HANDLER_PCB::handleGetOpenDocuments
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSaveDocument(
         const HANDLER_CONTEXT<SaveDocument>& aCtx )
 {
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
 
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
+    if( board()->GetFileName().IsEmpty() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "the board is untitled; use SaveDocumentAs to save it to a new file" );
+        return tl::unexpected( e );
+    }
 
     if( !pcbContext()->SaveBoard() )
     {
@@ -278,16 +304,62 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSaveDocument(
 }
 
 
-HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSaveCopyOfDocument(
-        const HANDLER_CONTEXT<SaveCopyOfDocument>& aCtx )
+HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSaveDocumentAs( const HANDLER_CONTEXT<SaveDocumentAs>& aCtx )
 {
+    if( Pgm().IsGUI() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_UNIMPLEMENTED );
+        e.set_error_message( "SaveDocumentAs is not available in GUI mode" );
+        return tl::unexpected( e );
+    }
+
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
 
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
+    wxString pathStr = wxString::FromUTF8( aCtx.Request.path() );
 
-    if( !documentValidation )
+    if( pathStr.IsEmpty() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( "path is required" );
+        return tl::unexpected( e );
+    }
+
+    wxFileName oldBoardFile( pcbContext()->GetCurrentFileName() );
+
+    if( !pcbContext()->SaveBoardAs( pathStr ) )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( fmt::format( "failed to save board to '{}'", pathStr.ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    if( KICAD_API_SERVER* server = apiServer() )
+    {
+        wxFileName newBoardFile( pathStr );
+        newBoardFile.SetExt( FILEEXT::KiCadPcbFileExtension );
+
+        server->NotifyDocumentRenamed( thisDocumentType(), oldBoardFile.GetFullPath(), newBoardFile.GetFullPath() );
+    }
+
+    return Empty();
+}
+
+
+HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSaveCopyOfDocument(
+        const HANDLER_CONTEXT<SaveCopyOfDocument>& aCtx )
+{
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     wxFileName boardPath( project().AbsolutePath( wxString::FromUTF8( aCtx.Request.path() ) ) );
 
@@ -356,9 +428,7 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleRevertDocument(
         const HANDLER_CONTEXT<RevertDocument>& aCtx )
 {
     // Validate first so a request meant for another editor's document is not captured here
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
-
-    if( !documentValidation )
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
     // Reloading frees every item, so refuse while any client transaction is open; the staged
@@ -419,6 +489,9 @@ static const std::vector<KICAD_T> s_allowedBoardTypes = {
     PCB_TEXT_T,
     PCB_TEXTBOX_T,
     PCB_TABLE_T,
+    PCB_DRILL_CHART_T,
+    PCB_STACKUP_TABLE_T,
+    PCB_DRILL_MAP_T,
     PCB_TRACE_T,
     PCB_ARC_T,
     PCB_VIA_T,
@@ -429,15 +502,13 @@ static const std::vector<KICAD_T> s_allowedBoardTypes = {
     PCB_BARCODE_T,
     PCB_CONSTRAINT_T,
     PCB_GRID_ITEM_T,
-    PCB_POINT_T
+    PCB_POINT_T,
+    PCB_3D_BODY_T
 };
 
 
 HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_CONTEXT<GetItems>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
@@ -446,12 +517,14 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_
         return tl::unexpected( e );
     }
 
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
     GetItemsResponse response;
 
     BOARD* board = this->board();
     std::vector<BOARD_ITEM*> items;
-    std::set<KICAD_T> typesRequested, typesInserted;
-    bool handledAnything = false;
+    std::set<KICAD_T> typesRequested, typesHandled;
 
     std::vector<KICAD_T> requestedTypes = parseRequestedItemTypes( aCtx.Request.types() );
 
@@ -462,7 +535,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_
     {
         typesRequested.emplace( type );
 
-        if( typesInserted.count( type ) )
+        if( typesHandled.count( type ) )
             continue;
 
         switch( type )
@@ -470,147 +543,77 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_
         case PCB_TRACE_T:
         case PCB_ARC_T:
         case PCB_VIA_T:
-            handledAnything = true;
-            std::copy( board->Tracks().begin(), board->Tracks().end(),
-                       std::back_inserter( items ) );
-            typesInserted.insert( { PCB_TRACE_T, PCB_ARC_T, PCB_VIA_T } );
+            std::ranges::copy( board->Tracks(), std::back_inserter( items ) );
+            typesHandled.insert( { PCB_TRACE_T, PCB_ARC_T, PCB_VIA_T } );
             break;
 
         case PCB_PAD_T:
-        {
-            handledAnything = true;
-
             for( FOOTPRINT* fp : board->Footprints() )
-            {
-                std::copy( fp->Pads().begin(), fp->Pads().end(),
-                           std::back_inserter( items ) );
-            }
+                std::ranges::copy( fp->Pads(), std::back_inserter( items ) );
 
-            typesInserted.insert( PCB_PAD_T );
+            typesHandled.insert( PCB_PAD_T );
             break;
-        }
 
         case PCB_FOOTPRINT_T:
-        {
-            handledAnything = true;
-
-            std::copy( board->Footprints().begin(), board->Footprints().end(),
-                       std::back_inserter( items ) );
-
-            typesInserted.insert( PCB_FOOTPRINT_T );
+            std::ranges::copy( board->Footprints(), std::back_inserter( items ) );
+            typesHandled.insert( PCB_FOOTPRINT_T );
             break;
-        }
 
         case PCB_SHAPE_T:
         case PCB_TABLE_T:
+        case PCB_DRILL_CHART_T:
+        case PCB_STACKUP_TABLE_T:
+        case PCB_DRILL_MAP_T:
         case PCB_TEXT_T:
         case PCB_TEXTBOX_T:
         case PCB_BARCODE_T:
         case PCB_REFERENCE_IMAGE_T:
         case PCB_GRID_ITEM_T:
-        {
-            handledAnything = true;
-            bool inserted = false;
-
-            for( BOARD_ITEM* item : board->Drawings() )
-            {
-                if( item->Type() == type )
-                {
-                    items.emplace_back( item );
-                    inserted = true;
-                }
-            }
-
-            if( inserted )
-                typesInserted.insert( type );
-
-            break;
-        }
-
         case PCB_DIMENSION_T:
-        {
-            handledAnything = true;
-            bool inserted = false;
-
             for( BOARD_ITEM* item : board->Drawings() )
             {
-                switch (item->Type()) {
-                    case PCB_DIM_ALIGNED_T:
-                    case PCB_DIM_CENTER_T:
-                    case PCB_DIM_RADIAL_T:
-                    case PCB_DIM_ORTHOGONAL_T:
-                    case PCB_DIM_LEADER_T:
-                        items.emplace_back( item );
-                        inserted = true;
-                        break;
-                    default:
-                        break;
-                }
+                if( item->Type() == type || BaseType( item->Type() ) == type )
+                    items.emplace_back( item );
             }
-            // we have to add the dimension subtypes to the requested to get them out
-            typesRequested.insert( {PCB_DIM_ALIGNED_T, PCB_DIM_CENTER_T, PCB_DIM_RADIAL_T, PCB_DIM_ORTHOGONAL_T, PCB_DIM_LEADER_T } );
 
-            if( inserted )
-                typesInserted.insert( {PCB_DIM_ALIGNED_T, PCB_DIM_CENTER_T, PCB_DIM_RADIAL_T, PCB_DIM_ORTHOGONAL_T, PCB_DIM_LEADER_T } );
-
+            typesHandled.insert( type );
             break;
-        }
 
         case PCB_ZONE_T:
-        {
-            handledAnything = true;
-
-            std::copy( board->Zones().begin(), board->Zones().end(),
-                       std::back_inserter( items ) );
-
-            typesInserted.insert( PCB_ZONE_T );
+            std::ranges::copy( board->Zones(), std::back_inserter( items ) );
+            typesHandled.insert( PCB_ZONE_T );
             break;
-        }
 
         case PCB_GROUP_T:
-        {
-            handledAnything = true;
-
-            std::copy( board->Groups().begin(), board->Groups().end(),
-                       std::back_inserter( items ) );
-
-            typesInserted.insert( PCB_GROUP_T );
+            std::ranges::copy( board->Groups(), std::back_inserter( items ) );
+            typesHandled.insert( PCB_GROUP_T );
             break;
-        }
 
         case PCB_POINT_T:
-        {
-            handledAnything = true;
-            std::copy( board->Points().begin(), board->Points().end(), std::back_inserter( items ) );
-            typesInserted.insert( PCB_POINT_T );
+            std::ranges::copy( board->Points(), std::back_inserter( items ) );
+            typesHandled.insert( PCB_POINT_T );
             break;
-        }
+
+        case PCB_3D_BODY_T:
+            // Not supported on a board context yet
+            break;
 
         case PCB_GENERATOR_T:
-        {
-            handledAnything = true;
             std::ranges::copy( board->Generators(), std::back_inserter( items ) );
-            typesInserted.insert( PCB_GENERATOR_T );
+            typesHandled.insert( PCB_GENERATOR_T );
             break;
-        }
 
         case PCB_CONSTRAINT_T:
-        {
-            handledAnything = true;
-
-            std::copy( board->Constraints().begin(), board->Constraints().end(),
-                       std::back_inserter( items ) );
-
-            typesInserted.insert( PCB_CONSTRAINT_T );
+            std::ranges::copy( board->Constraints(), std::back_inserter( items ) );
+            typesHandled.insert( PCB_CONSTRAINT_T );
             break;
-        }
 
         default:
             break;
         }
     }
 
-    if( !handledAnything )
+    if( typesHandled.empty() )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_BAD_REQUEST );
@@ -620,7 +623,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_
 
     for( const BOARD_ITEM* item : items )
     {
-        if( !typesRequested.count( item->Type() ) )
+        if( !typesRequested.count( item->Type() ) && !typesRequested.count( BaseType( item->Type() ) ) )
             continue;
 
         google::protobuf::Any itemBuf;
@@ -636,9 +639,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_
 HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnabledLayers(
         const HANDLER_CONTEXT<SetBoardEnabledLayers>& aCtx )
 {
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
-
-    if( !documentValidation )
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
     if( aCtx.Request.copper_layer_count() < 2 || aCtx.Request.copper_layer_count() % 2 != 0 )
@@ -731,11 +732,11 @@ HANDLER_RESULT<Empty> unpackEmbeddedFiles( EMBEDDED_FILES& aOutput, const common
 
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleAddEmbeddedFiles( const HANDLER_CONTEXT<AddEmbeddedFiles>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     EMBEDDED_FILES files;
     HANDLER_RESULT<Empty> result = unpackEmbeddedFiles( files, aCtx.Request.files() );
@@ -758,11 +759,11 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleAddEmbeddedFiles( const HANDLER_CON
 
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetEmbeddedFiles( const HANDLER_CONTEXT<SetEmbeddedFiles>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     HANDLER_RESULT<Empty> result = unpackEmbeddedFiles( *board()->GetEmbeddedFiles(),
                                                         aCtx.Request.files() );
@@ -804,7 +805,7 @@ HANDLER_RESULT<BoardDesignRulesResponse> API_HANDLER_PCB::handleGetBoardDesignRu
     constraints->mutable_silk_clearance()->set_value_nm( bds.m_SilkClearance );
     constraints->set_min_resolved_spokes( bds.m_MinResolvedSpokes );
     constraints->mutable_min_silk_text_height()->set_value_nm( bds.m_MinSilkTextHeight );
-    constraints->mutable_min_silk_text_thickness()->set_value_nm( bds.m_MinSilkTextThickness );
+    constraints->mutable_min_silk_text_thickness()->set_value_nm( bds.m_MinSilkLineWidth );
 
     kiapi::board::PredefinedSizes* sizes = rules->mutable_predefined_sizes();
 
@@ -950,7 +951,7 @@ HANDLER_RESULT<BoardDesignRulesResponse> API_HANDLER_PCB::handleSetBoardDesignRu
         newSettings.m_SilkClearance = constraints.silk_clearance().value_nm();
         newSettings.m_MinResolvedSpokes = constraints.min_resolved_spokes();
         newSettings.m_MinSilkTextHeight = constraints.min_silk_text_height().value_nm();
-        newSettings.m_MinSilkTextThickness = constraints.min_silk_text_thickness().value_nm();
+        newSettings.m_MinSilkLineWidth = constraints.min_silk_text_thickness().value_nm();
     }
 
     if( rules.has_predefined_sizes() )
@@ -1049,37 +1050,31 @@ HANDLER_RESULT<BoardDesignRulesResponse> API_HANDLER_PCB::handleSetBoardDesignRu
         newSettings.m_FillVias = viaProtection.fill();
     }
 
-    if( rules.severities_size() > 0 )
-    {
-        newSettings.m_DRCSeverities.clear();
+    newSettings.m_DRCSeverities.clear();
 
-        for( const kiapi::board::DrcSeveritySetting& severitySetting : rules.severities() )
+    for( const kiapi::board::DrcSeveritySetting& severitySetting : rules.severities() )
+    {
+        PCB_DRC_CODE ruleType =
+                FromProtoEnum<PCB_DRC_CODE, kiapi::board::DrcErrorType>( severitySetting.rule_type() );
+
+        const std::unordered_set<SEVERITY> permitted( { RPT_SEVERITY_ERROR, RPT_SEVERITY_WARNING, RPT_SEVERITY_IGNORE } );
+        SEVERITY setting = FromProtoEnum<SEVERITY, kiapi::common::types::RuleSeverity>( severitySetting.severity() );
+
+        if( !permitted.contains( setting ) )
         {
-            PCB_DRC_CODE ruleType =
-                    FromProtoEnum<PCB_DRC_CODE, kiapi::board::DrcErrorType>( severitySetting.rule_type() );
-
-            const std::unordered_set<SEVERITY> permitted( { RPT_SEVERITY_ERROR, RPT_SEVERITY_WARNING, RPT_SEVERITY_IGNORE } );
-            SEVERITY setting = FromProtoEnum<SEVERITY, kiapi::common::types::RuleSeverity>( severitySetting.severity() );
-
-            if( !permitted.contains( setting ) )
-            {
-                ApiResponseStatus e;
-                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-                e.set_error_message( fmt::format( "DRC severity must be error, warning, or ignore" ) );
-                return tl::unexpected( e );
-            }
-
-            newSettings.m_DRCSeverities[ruleType] = setting;
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( fmt::format( "DRC severity must be error, warning, or ignore" ) );
+            return tl::unexpected( e );
         }
+
+        newSettings.m_DRCSeverities[ruleType] = setting;
     }
 
-    if( rules.exclusions_size() > 0 )
-    {
-        newSettings.m_DrcExclusions.clear();
+    newSettings.m_DrcExclusions.clear();
 
-        for( const kiapi::board::DrcExclusion& exclusion : rules.exclusions() )
-            newSettings.m_DrcExclusions.insert( DRC_EXCLUSION::FromProto( exclusion ) );
-    }
+    for( const kiapi::board::DrcExclusion& exclusion : rules.exclusions() )
+        newSettings.m_DrcExclusions.insert( DRC_EXCLUSION::FromProto( exclusion ) );
 
     std::vector<BOARD_DESIGN_SETTINGS::VALIDATION_ERROR> errors = newSettings.ValidateDesignRules();
 
@@ -1333,14 +1328,11 @@ HANDLER_RESULT<types::Vector2> API_HANDLER_PCB::handleGetBoardOrigin(
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetBoardOrigin(
         const HANDLER_CONTEXT<SetBoardOrigin>& aCtx )
 {
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
-        !documentValidation )
-    {
-        return tl::unexpected( documentValidation.error() );
-    }
 
     VECTOR2I origin = UnpackVector2( aCtx.Request.origin() );
 
@@ -1475,7 +1467,10 @@ void API_HANDLER_PCB::setDrawingSheetFileName( const wxString& aFileName )
     BASE_SCREEN::m_DrawingSheetFileName = aFileName;
 
     if( frame() )
+    {
+        frame()->Prj().GetProjectFile().m_BoardDrawingSheetFile = aFileName;
         frame()->LoadDrawingSheet();
+    }
 }
 
 
@@ -1524,9 +1519,7 @@ API_HANDLER_PCB::handleGetDocumentModifiedState( const HANDLER_CONTEXT<GetDocume
 
 HANDLER_RESULT<NetsResponse> API_HANDLER_PCB::handleGetNets( const HANDLER_CONTEXT<GetNets>& aCtx )
 {
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
-
-    if( !documentValidation )
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
     NetsResponse response;
@@ -1570,15 +1563,15 @@ HANDLER_RESULT<NetsResponse> API_HANDLER_PCB::handleGetNets( const HANDLER_CONTE
 HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetConnectedItems(
         const HANDLER_CONTEXT<GetConnectedItems>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_UNHANDLED );
         return tl::unexpected( e );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     std::vector<KICAD_T> types = parseRequestedItemTypes( aCtx.Request.types() );
     const bool filterByType = aCtx.Request.types_size() > 0;
@@ -1637,15 +1630,15 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetConnectedItems(
 HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItemsByNet(
         const HANDLER_CONTEXT<GetItemsByNet>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_UNHANDLED );
         return tl::unexpected( e );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     std::vector<KICAD_T> types = parseRequestedItemTypes( aCtx.Request.types() );
     const bool filterByType = aCtx.Request.types_size() > 0;
@@ -1692,15 +1685,15 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItemsByNet(
 HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItemsByNetClass(
         const HANDLER_CONTEXT<GetItemsByNetClass>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_UNHANDLED );
         return tl::unexpected( e );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     std::vector<KICAD_T> types = parseRequestedItemTypes( aCtx.Request.types() );
     const bool filterByType = aCtx.Request.types_size() > 0;
@@ -1774,6 +1767,7 @@ HANDLER_RESULT<NetClassForNetsResponse> API_HANDLER_PCB::handleGetNetClassForNet
 
     BOARD* board = this->board();
     const NETINFO_LIST& nets = board->GetNetInfo();
+
     for( const board::types::Net& net : aCtx.Request.net() )
     {
         NETINFO_ITEM* netInfo = nets.GetNetItem( wxString::FromUTF8( net.name() ) );
@@ -1789,15 +1783,51 @@ HANDLER_RESULT<NetClassForNetsResponse> API_HANDLER_PCB::handleGetNetClassForNet
 }
 
 
+HANDLER_RESULT<std::vector<ZONE*>> API_HANDLER_PCB::resolveZonesToFill(
+        const google::protobuf::RepeatedPtrField<kiapi::common::types::KIID>& aZoneIds ) const
+{
+    std::vector<ZONE*> toFill;
+
+    for( const types::KIID& id : aZoneIds )
+    {
+        std::optional<BOARD_ITEM*> item = getItemById( KIID( id.value() ) );
+
+        if( !item || ( *item )->Type() != PCB_ZONE_T )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( fmt::format( "zone with ID {} not found on the board", id.value() ) );
+            return tl::unexpected( e );
+        }
+
+        ZONE* zone = static_cast<ZONE*>( *item );
+
+        // The filler silently skips rule areas, which would turn this into a false success
+        if( zone->GetIsRuleArea() )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( fmt::format( "zone with ID {} is a rule area and cannot be filled",
+                                              id.value() ) );
+            return tl::unexpected( e );
+        }
+
+        // A repeated id would enqueue concurrent fill tasks for the same zone
+        if( !alg::contains( toFill, zone ) )
+            toFill.push_back( zone );
+    }
+
+    return toFill;
+}
+
+
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleRefillZones( const HANDLER_CONTEXT<RefillZones>& aCtx )
 {
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     TOOL_MANAGER* mgr = toolManager();
 
@@ -1824,41 +1854,15 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleRefillZones( const HANDLER_CONTEXT<
     }
     else
     {
-        std::vector<ZONE*> toFill;
+        HANDLER_RESULT<std::vector<ZONE*>> toFill = resolveZonesToFill( aCtx.Request.zones() );
 
-        for( const types::KIID& id : aCtx.Request.zones() )
-        {
-            std::optional<BOARD_ITEM*> item = getItemById( KIID( id.value() ) );
-
-            if( !item || ( *item )->Type() != PCB_ZONE_T )
-            {
-                ApiResponseStatus e;
-                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-                e.set_error_message( fmt::format( "zone with ID {} not found on the board", id.value() ) );
-                return tl::unexpected( e );
-            }
-
-            ZONE* zone = static_cast<ZONE*>( *item );
-
-            // The filler silently skips rule areas, which would turn this into a false success
-            if( zone->GetIsRuleArea() )
-            {
-                ApiResponseStatus e;
-                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-                e.set_error_message( fmt::format( "zone with ID {} is a rule area and cannot be filled",
-                                                  id.value() ) );
-                return tl::unexpected( e );
-            }
-
-            // A repeated id would enqueue concurrent fill tasks for the same zone
-            if( !alg::contains( toFill, zone ) )
-                toFill.push_back( zone );
-        }
+        if( !toFill )
+            return tl::unexpected( toFill.error() );
 
         std::unique_ptr<COMMIT> commit = createCommit();
         ZONE_FILLER             filler( board(), commit.get() );
 
-        if( !filler.Fill( toFill ) )
+        if( !filler.Fill( *toFill ) )
         {
             commit->Revert();
 
@@ -1874,19 +1878,20 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleRefillZones( const HANDLER_CONTEXT<
         mgr->GetTool<ZONE_FILLER_TOOL>()->PostFillRefresh( frame() == nullptr );
     }
 
+    onModified();
     return Empty();
 }
 
 
 HANDLER_RESULT<ImportNetlistResponse> API_HANDLER_PCB::handleImportNetlist( const HANDLER_CONTEXT<ImportNetlist>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
 
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     wxFileName netlistPath( project().AbsolutePath( wxString::FromUTF8( aCtx.Request.netlist_path() ) ) );
 
@@ -1922,6 +1927,7 @@ HANDLER_RESULT<ImportNetlistResponse> API_HANDLER_PCB::handleImportNetlist( cons
 
     updater->SetReporter( &reporter );
     updater->SetIsDryRun( aCtx.Request.dry_run() );
+    updater->SetWillDrag( false );
     updater->SetLookupByTimestamp( lookupByTimestamp );
     updater->SetDeleteUnusedFootprints( aCtx.Request.delete_extra_footprints() );
     updater->SetReplaceFootprints( aCtx.Request.update_footprints() );
@@ -1939,6 +1945,55 @@ HANDLER_RESULT<ImportNetlistResponse> API_HANDLER_PCB::handleImportNetlist( cons
     response.set_error_count( updater->GetErrorCount() );
     response.set_warning_count( updater->GetWarningCount() );
     response.set_new_footprint_count( updater->GetNewFootprintCount() );
+    return response;
+}
+
+
+HANDLER_RESULT<ImportSpecctraSessionResponse>
+API_HANDLER_PCB::handleImportSpecctraSession( const HANDLER_CONTEXT<ImportSpecctraSession>& aCtx )
+{
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    wxFileName sesPath( project().AbsolutePath( wxString::FromUTF8( aCtx.Request.session_path() ) ) );
+
+    if( !sesPath.IsOk() || !sesPath.FileExists() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message(
+                fmt::format( "session file '{}' could not be opened", sesPath.GetFullPath().ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    int                skippedCount = 0;
+    BOARD_COMMIT*      commit = static_cast<BOARD_COMMIT*>( getCurrentCommit( aCtx.ClientName ) );
+    WX_STRING_REPORTER reporter;
+
+    try
+    {
+        DSN::ImportSpecctraSession( board(), sesPath.GetFullPath(), *commit, &reporter, &skippedCount );
+    }
+    catch( const IO_ERROR& ioe )
+    {
+        commit->Revert();
+
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        e.set_error_message( fmt::format( "failed to import session '{}': {}", sesPath.GetFullPath().ToStdString(),
+                                          ioe.What().ToStdString() ) );
+        return tl::unexpected( e );
+    }
+
+    if( !m_activeClients.count( aCtx.ClientName ) )
+        pushCurrentCommit( aCtx.ClientName, _( "Imported Specctra session via API" ) );
+
+    ImportSpecctraSessionResponse response;
+    response.set_report( reporter.GetMessages().ToUTF8() );
+    response.set_skipped_count( skippedCount );
     return response;
 }
 
@@ -2006,9 +2061,7 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetBoardEditorAppearanceSettings(
 HANDLER_RESULT<BoardPlotSettingsResponse>
 API_HANDLER_PCB::handleGetBoardPlotSettings( const HANDLER_CONTEXT<GetBoardPlotSettings>& aCtx )
 {
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
-
-    if( !documentValidation )
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
     const PCB_PLOT_PARAMS& plotOpts = board()->GetPlotOptions();
@@ -2046,13 +2099,11 @@ API_HANDLER_PCB::handleGetBoardPlotSettings( const HANDLER_CONTEXT<GetBoardPlotS
 
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetBoardPlotSettings( const HANDLER_CONTEXT<SetBoardPlotSettings>& aCtx )
 {
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     const BoardPlotSettings& settings = aCtx.Request.plot_settings();
     PCB_PLOT_PARAMS          plotOpts = board()->GetPlotOptions();
@@ -2101,8 +2152,7 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetBoardPlotSettings( const HANDLER
 
     board()->SetPlotOptions( plotOpts );
 
-    if( frame() )
-        frame()->OnModify();
+    onModified();
 
     return Empty();
 }
@@ -2111,13 +2161,11 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetBoardPlotSettings( const HANDLER
 HANDLER_RESULT<InjectDrcErrorResponse> API_HANDLER_PCB::handleInjectDrcError(
         const HANDLER_CONTEXT<InjectDrcError>& aCtx )
 {
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     SEVERITY severity = FromProtoEnum<SEVERITY>( aCtx.Request.severity() );
     int      layer = severity == RPT_SEVERITY_WARNING ? LAYER_DRC_WARNING : LAYER_DRC_ERROR;
@@ -2127,7 +2175,7 @@ HANDLER_RESULT<InjectDrcErrorResponse> API_HANDLER_PCB::handleInjectDrcError(
 
     drcItem->SetErrorMessage( wxString::FromUTF8( aCtx.Request.message() ) );
 
-    RC_ITEM::KIIDS ids;
+    std::vector<KIID> ids;
 
     for( const auto& id : aCtx.Request.items() )
         ids.emplace_back( KIID( id.value() ) );
@@ -2287,13 +2335,11 @@ HANDLER_RESULT<types::RunJobResponse> ExecuteBoardJob( PCB_CONTEXT* aContext, JO
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExport3D(
         const HANDLER_CONTEXT<RunBoardJobExport3D>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_3D job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2346,13 +2392,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExport3D
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportRender(
         const HANDLER_CONTEXT<RunBoardJobExportRender>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_PCB_RENDER job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2394,13 +2438,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportRe
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportSvg(
         const HANDLER_CONTEXT<RunBoardJobExportSvg>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_SVG job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2428,13 +2470,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportSv
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportDxf(
         const HANDLER_CONTEXT<RunBoardJobExportDxf>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_DXF job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2470,13 +2510,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportDx
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportPdf(
         const HANDLER_CONTEXT<RunBoardJobExportPdf>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_PDF job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2500,13 +2538,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportPd
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportPs(
         const HANDLER_CONTEXT<RunBoardJobExportPs>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_PS job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2537,11 +2573,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportPs
 HANDLER_RESULT<types::RunJobResponse>
 API_HANDLER_PCB::handleRunBoardJobExportPng( const HANDLER_CONTEXT<RunBoardJobExportPng>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
         return tl::unexpected( validation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     JOB_EXPORT_PCB_PNG job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2584,13 +2620,11 @@ API_HANDLER_PCB::handleRunBoardJobExportPng( const HANDLER_CONTEXT<RunBoardJobEx
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportGerbers(
         const HANDLER_CONTEXT<RunBoardJobExportGerbers>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_GERBERS job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2624,13 +2658,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportGe
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportDrill(
         const HANDLER_CONTEXT<RunBoardJobExportDrill>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_DRILL job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2691,13 +2723,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportDr
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportPosition(
         const HANDLER_CONTEXT<RunBoardJobExportPosition>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_POS job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2736,13 +2766,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportPo
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportGencad(
         const HANDLER_CONTEXT<RunBoardJobExportGencad>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_GENCAD job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2758,23 +2786,42 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportGe
 }
 
 
-HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportIpc2581(
-        const HANDLER_CONTEXT<RunBoardJobExportIpc2581>& aCtx )
+HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportSpecctraDsn(
+        const HANDLER_CONTEXT<RunBoardJobExportSpecctraDsn>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
 
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
+    JOB_EXPORT_PCB_SPECCTRA_DSN job;
+    job.m_filename = pcbContext()->GetCurrentFileName();
+    job.SetConfiguredOutputPath( wxString::FromUTF8( aCtx.Request.job_settings().output_path() ) );
 
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
+    return ExecuteBoardJob( pcbContext(), job );
+}
+
+
+HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportIpc2581(
+        const HANDLER_CONTEXT<RunBoardJobExportIpc2581>& aCtx )
+{
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     JOB_EXPORT_PCB_IPC2581 job;
     job.m_filename = pcbContext()->GetCurrentFileName();
     job.SetConfiguredOutputPath( wxString::FromUTF8( aCtx.Request.job_settings().output_path() ) );
 
     job.m_drawingSheet = wxString::FromUTF8( aCtx.Request.drawing_sheet() );
-    job.m_variant = wxString::FromUTF8( aCtx.Request.variant() );
+    if( !aCtx.Request.variant().empty() )
+    {
+        job.m_variantNames.push_back( wxString::FromUTF8( aCtx.Request.variant() ) );
+    }
+
     if( aCtx.Request.has_precision() )
         job.m_precision = aCtx.Request.precision();
 
@@ -2792,8 +2839,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportIp
         return tl::unexpected( *unitError );
     }
 
-    job.m_units = FromProtoEnum<JOB_EXPORT_PCB_IPC2581::IPC2581_UNITS>( aCtx.Request.units() );
+    job.m_units = FromProtoEnum<JOB_EXPORT_PCB_FAB::UNITS>( aCtx.Request.units() );
+    job.m_checkZonesBeforeExport = aCtx.Request.check_zones();
     job.m_version = FromProtoEnum<JOB_EXPORT_PCB_IPC2581::IPC2581_VERSION>( aCtx.Request.version() );
+    job.m_refDes = FromProtoEnum<JOB_EXPORT_PCB_IPC2581::REF_DES>( aCtx.Request.ref_des() );
+    ApplyFabExportContent( aCtx.Request.content(), job );
 
     return ExecuteBoardJob( pcbContext(), job );
 }
@@ -2802,13 +2852,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportIp
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportIpcD356(
         const HANDLER_CONTEXT<RunBoardJobExportIpcD356>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_IPCD356 job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -2818,25 +2866,58 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportIp
 }
 
 
+void ApplyFabExportContent( const FabExportContent& aContent, JOB_EXPORT_PCB_FAB& aJob )
+{
+    aJob.m_dataSet = FromProtoEnum<JOB_EXPORT_PCB_FAB::DATA_SET>( aContent.data_set() );
+    aJob.m_sections = aContent.sections().empty()
+                              ? std::nullopt
+                              : std::optional<wxString>( wxString::FromUTF8( aContent.sections() ) );
+    aJob.m_netNames = FromProtoEnum<JOB_EXPORT_PCB_FAB::NET_NAMES>( aContent.net_names() );
+}
+
+
+void ApplyOdbJobRequest( const RunBoardJobExportODB& aRequest, JOB_EXPORT_PCB_ODB& aJob )
+{
+    aJob.m_drawingSheet = wxString::FromUTF8( aRequest.drawing_sheet() );
+
+    if( aRequest.variant_names_size() > 0 )
+    {
+        for( const std::string& name : aRequest.variant_names() )
+            aJob.m_variantNames.push_back( wxString::FromUTF8( name ) );
+    }
+    else if( !aRequest.variant().empty() )
+    {
+        aJob.m_variantNames.push_back( wxString::FromUTF8( aRequest.variant() ) );
+    }
+
+    aJob.m_variantPackaging = FromProtoEnum<JOB_EXPORT_PCB_ODB::VARIANT_PACKAGING>(
+            aRequest.variant_packaging() );
+
+    if( aRequest.has_precision() )
+        aJob.m_precision = aRequest.precision();
+
+    aJob.m_units = FromProtoEnum<JOB_EXPORT_PCB_FAB::UNITS>( aRequest.units() );
+    aJob.m_checkZonesBeforeExport = aRequest.check_zones();
+    aJob.m_compressionMode = FromProtoEnum<JOB_EXPORT_PCB_ODB::ODB_COMPRESSION>( aRequest.compression() );
+    aJob.m_colMfgPn = wxString::FromUTF8( aRequest.manufacturer_part_number_column() );
+    aJob.m_origin = FromProtoEnum<JOB_EXPORT_PCB_ODB::ORIGIN>( aRequest.origin() );
+    aJob.m_productName = wxString::FromUTF8( aRequest.product_name() );
+    ApplyFabExportContent( aRequest.content(), aJob );
+}
+
+
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportODB(
         const HANDLER_CONTEXT<RunBoardJobExportODB>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_ODB job;
     job.m_filename = pcbContext()->GetCurrentFileName();
     job.SetConfiguredOutputPath( wxString::FromUTF8( aCtx.Request.job_settings().output_path() ) );
-
-    job.m_drawingSheet = wxString::FromUTF8( aCtx.Request.drawing_sheet() );
-    job.m_variant = wxString::FromUTF8( aCtx.Request.variant() );
-    if( aCtx.Request.has_precision() )
-        job.m_precision = aCtx.Request.precision();
 
     if( std::optional<ApiResponseStatus> unitError =
             ValidateUnitsInchMm( aCtx.Request.units(), "RunBoardJobExportODB" ) )
@@ -2844,8 +2925,7 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportOD
         return tl::unexpected( *unitError );
     }
 
-    job.m_units = FromProtoEnum<JOB_EXPORT_PCB_ODB::ODB_UNITS>( aCtx.Request.units() );
-    job.m_compressionMode = FromProtoEnum<JOB_EXPORT_PCB_ODB::ODB_COMPRESSION>( aCtx.Request.compression() );
+    ApplyOdbJobRequest( aCtx.Request, job );
 
     return ExecuteBoardJob( pcbContext(), job );
 }
@@ -2854,13 +2934,11 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportOD
 HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportStats(
         const HANDLER_CONTEXT<RunBoardJobExportStats>& aCtx )
 {
+    if( HANDLER_RESULT<bool> validation = validateDocument( aCtx.Request.job_settings().document() ); !validation )
+        return tl::unexpected( validation.error() );
+
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.job_settings().document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     JOB_EXPORT_PCB_STATS job;
     job.m_filename = pcbContext()->GetCurrentFileName();
@@ -3040,14 +3118,11 @@ HANDLER_RESULT<HighlightNetsResponse> API_HANDLER_PCB::handleHighlightNets(
 
 HANDLER_RESULT<VariantsResponse> API_HANDLER_PCB::handleGetVariants( const HANDLER_CONTEXT<GetVariants>& aCtx )
 {
-    if( aCtx.Request.document().type() != DocumentType::DOCTYPE_PCB )
-        return tl::unexpected( MakeResponseStatus( AS_UNHANDLED ) );
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     BOARD* board = pcbContext()->GetBoard();
     VariantsResponse response;
@@ -3067,14 +3142,11 @@ HANDLER_RESULT<VariantsResponse> API_HANDLER_PCB::handleGetVariants( const HANDL
 
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleAddVariant( const HANDLER_CONTEXT<AddVariant>& aCtx )
 {
-    if( aCtx.Request.document().type() != DocumentType::DOCTYPE_PCB )
-        return tl::unexpected( MakeResponseStatus( AS_UNHANDLED ) );
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     BOARD* board = pcbContext()->GetBoard();
 
@@ -3112,14 +3184,11 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleAddVariant( const HANDLER_CONTEXT<A
 
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleDeleteVariant( const HANDLER_CONTEXT<DeleteVariant>& aCtx )
 {
-    if( aCtx.Request.document().type() != DocumentType::DOCTYPE_PCB )
-        return tl::unexpected( MakeResponseStatus( AS_UNHANDLED ) );
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     BOARD* board = pcbContext()->GetBoard();
 
@@ -3154,14 +3223,11 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleDeleteVariant( const HANDLER_CONTEX
 
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleRenameVariant( const HANDLER_CONTEXT<RenameVariant>& aCtx )
 {
-    if( aCtx.Request.document().type() != DocumentType::DOCTYPE_PCB )
-        return tl::unexpected( MakeResponseStatus( AS_UNHANDLED ) );
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     BOARD* board = pcbContext()->GetBoard();
 
@@ -3213,14 +3279,11 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleRenameVariant( const HANDLER_CONTEX
 
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleCopyVariant( const HANDLER_CONTEXT<CopyVariant>& aCtx )
 {
-    if( aCtx.Request.document().type() != DocumentType::DOCTYPE_PCB )
-        return tl::unexpected( MakeResponseStatus( AS_UNHANDLED ) );
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     BOARD* board = pcbContext()->GetBoard();
 
@@ -3274,14 +3337,11 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleCopyVariant( const HANDLER_CONTEXT<
 
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetVariantDescription( const HANDLER_CONTEXT<SetVariantDescription>& aCtx )
 {
-    if( aCtx.Request.document().type() != DocumentType::DOCTYPE_PCB )
-        return tl::unexpected( MakeResponseStatus( AS_UNHANDLED ) );
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     BOARD* board = pcbContext()->GetBoard();
 
@@ -3305,14 +3365,11 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetVariantDescription( const HANDLE
 
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetCurrentVariant( const HANDLER_CONTEXT<SetCurrentVariant>& aCtx )
 {
-    if( aCtx.Request.document().type() != DocumentType::DOCTYPE_PCB )
-        return tl::unexpected( MakeResponseStatus( AS_UNHANDLED ) );
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     BOARD* board = pcbContext()->GetBoard();
 
@@ -3341,9 +3398,6 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetCurrentVariant( const HANDLER_CO
 HANDLER_RESULT<CurrentVariantResponse>
 API_HANDLER_PCB::handleGetCurrentVariant( const HANDLER_CONTEXT<GetCurrentVariant>& aCtx )
 {
-    if( aCtx.Request.document().type() != DocumentType::DOCTYPE_PCB )
-        return tl::unexpected( MakeResponseStatus( AS_UNHANDLED ) );
-
     if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
@@ -3359,15 +3413,15 @@ API_HANDLER_PCB::handleGetCurrentVariant( const HANDLER_CONTEXT<GetCurrentVarian
 HANDLER_RESULT<PlaceFromLibraryResponse>
 API_HANDLER_PCB::handlePlaceFootprintFromLibrary( const HANDLER_CONTEXT<PlaceFootprintFromLibrary>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_UNHANDLED );
         return tl::unexpected( e );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     LIB_ID libId = UnpackLibId( aCtx.Request.lib_id() );
 
@@ -3380,6 +3434,9 @@ API_HANDLER_PCB::handlePlaceFootprintFromLibrary( const HANDLER_CONTEXT<PlaceFoo
     }
 
     PCB_LAYER_ID layer = FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( aCtx.Request.layer() );
+
+    if( layer == UNDEFINED_LAYER )
+        layer = F_Cu;
 
     // TODO update if we support inner layer footprints in the future
     if( !IsExternalCopperLayer( layer ) )

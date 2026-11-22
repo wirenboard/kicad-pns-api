@@ -309,10 +309,20 @@ protected:
     void setSymWatcher( const LIB_ID* aSymbol );
 
     /**
+     * Return true if reloading library @a aLibNickname from disk would discard unsaved edits.
+     */
+    virtual bool hasUnsavedLibraryEdits( const wxString& aLibNickname ) const
+    {
+        return GetScreen() && GetScreen()->IsContentModified();
+    }
+
+    /**
      * Selection filter panel doesn't have a dedicated visibility control, so show it if any
      * other AUI panel is shown and docked
      */
     virtual void updateSelectionFilterVisbility() {}
+
+    const TOOL_ACTION* drawArcAction( ARC_DRAW_MODE aMode ) const override;
 
 protected:
     PANEL_SCH_SELECTION_FILTER* m_selectionFilterPanel;
@@ -326,6 +336,7 @@ private:
     /// These are file watchers for the symbol library tables.
     std::unique_ptr<wxFileSystemWatcher>    m_watcher;
     wxFileName                              m_watcherFileName;
+    wxString                                m_watcherLibName;
     long long                               m_watcherTimestamp;
     bool                                    m_watcherIsDir;
     wxTimer                                 m_watcherDebounceTimer;

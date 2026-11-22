@@ -386,6 +386,7 @@ public:
                                   ///< false if it must be not drawn
     COLOR4D  m_PositiveDrawColor; ///< The color used to draw positive items
     wxString m_FileName;          ///< Full File Name for this layer
+    wxString m_ArchiveFileName;   ///< Archive containing this layer, if loaded from a ZIP file
     wxString m_ImageName;         ///< Image name, from IN \<name\>* command
 
     bool                       m_IsX2_file;    ///< True if a X2 gerber attribute was found in file
@@ -412,7 +413,7 @@ public:
                             ///< @note This value is stored in 0.1 degrees
 
     VECTOR2I m_Offset;       ///< Coord Offset, from OF command
-    VECTOR2I m_Scale;        ///< scale (X and Y) of layer.
+    VECTOR2D m_Scale;        ///< scale (X and Y) of layer.
     bool     m_SwapAxis;     ///< false if A = X and B = Y (default); true if
                              ///<   A = Y, B = X
     bool m_MirrorA;          ///< true: mirror / axis A (X)

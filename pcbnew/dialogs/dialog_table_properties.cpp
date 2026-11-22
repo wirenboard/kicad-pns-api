@@ -21,6 +21,7 @@
 
 #include <wx/hyperlink.h>
 
+#include <bitmaps.h>
 #include <kiplatform/ui.h>
 #include <widgets/font_choice.h>
 #include <widgets/color_swatch.h>
@@ -270,8 +271,7 @@ bool DIALOG_TABLE_PROPERTIES::TransferDataToWindow()
 void DIALOG_TABLE_PROPERTIES::onHeaderChecked( wxCommandEvent& aEvent )
 {
     BOARD_DESIGN_SETTINGS& bds = m_frame->GetDesignSettings();
-    PCB_LAYER_ID           currentLayer = ToLAYER_ID( m_LayerSelectionCtrl->GetLayerSelection() );
-    int                    defaultLineThickness = bds.GetLineThickness( currentLayer );
+    int                    defaultLineThickness = bds.GetLineThickness( m_LayerSelectionCtrl->GetLayerIDSelection() );
 
     bool border = m_borderCheckbox->GetValue();
     bool header = m_headerBorder->GetValue();
@@ -297,8 +297,7 @@ void DIALOG_TABLE_PROPERTIES::onHeaderChecked( wxCommandEvent& aEvent )
 void DIALOG_TABLE_PROPERTIES::onBorderChecked( wxCommandEvent& aEvent )
 {
     BOARD_DESIGN_SETTINGS& bds = m_frame->GetDesignSettings();
-    PCB_LAYER_ID           currentLayer = ToLAYER_ID( m_LayerSelectionCtrl->GetLayerSelection() );
-    int                    defaultLineThickness = bds.GetLineThickness( currentLayer );
+    int                    defaultLineThickness = bds.GetLineThickness( m_LayerSelectionCtrl->GetLayerIDSelection() );
 
     bool border = m_borderCheckbox->GetValue();
     bool header = m_headerBorder->GetValue();
@@ -374,11 +373,11 @@ bool DIALOG_TABLE_PROPERTIES::TransferDataFromWindow()
 #endif
 
             tableCell->SetText( txt );
-            tableCell->SetLayer( ToLAYER_ID( m_LayerSelectionCtrl->GetLayerSelection() ) );
+            tableCell->SetLayer( m_LayerSelectionCtrl->GetLayerIDSelection() );
         }
     }
 
-    m_table->SetLayer( ToLAYER_ID( m_LayerSelectionCtrl->GetLayerSelection() ) );
+    m_table->SetLayer( m_LayerSelectionCtrl->GetLayerIDSelection() );
     m_table->SetLocked( m_cbLocked->GetValue() );
 
     m_table->SetStrokeExternal( m_borderCheckbox->GetValue() );

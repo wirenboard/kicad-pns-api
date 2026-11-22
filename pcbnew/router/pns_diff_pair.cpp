@@ -222,14 +222,16 @@ bool DIFF_PAIR::BuildInitial( const DP_GATEWAY& aEntry, const DP_GATEWAY& aTarge
 
     int              mask = aEntry.AllowedAngles() | DIRECTION_45::ANG_STRAIGHT | DIRECTION_45::ANG_OBTUSE;
     auto             dbg = ROUTER::GetInstance()->GetInterface()->GetDebugDecorator();
-    wxString         failReason;
+    [[maybe_unused]] wxString failReason; // read only under DIFF_PLACER_EXTRA_VERBOSE
     bool             fail = false;
 
+#ifdef DIFF_PLACER_EXTRA_VERBOSE
     PNS_DBG( dbg, AddShape, &p, RED, 20000,
              wxString::Format( "init+ prefDiag %d (dims %s) %s/%s cl %d %d %d", aPrefDiagonal ? 1 : 0, m_dims.Format(),
                                aEntry.GetName(), aTarget.GetName(), m_dims.MinClearance(),
                                aEntry.Dimensions().MinClearance(), aTarget.Dimensions().MinClearance() ) );
     PNS_DBG( dbg, AddShape, &n, BLUE, 20000, wxT( "init-" ) );
+#endif
 
     SHAPE_LINE_CHAIN sum_n, sum_p;
     m_p = p;
@@ -367,7 +369,7 @@ bool DIFF_PAIR::BuildInitial( const DP_GATEWAY& aEntry, const DP_GATEWAY& aTarge
     if( entryIsStraight && targetIsStraight )
         aAspectRatio = 1.0;
 
-
+#ifdef DIFF_PLACER_EXTRA_VERBOSE
     PNS_DBG( dbg, BeginGroup,
              wxString::Format( "fit-%s-%s-%s fail=%d gap=[%s] prioE=%d prioT=%d d=%d eis=%d tis=%d cpr=%.2f ar =%.2f v "
                                "%d %d %d fv %d",
@@ -380,7 +382,7 @@ bool DIFF_PAIR::BuildInitial( const DP_GATEWAY& aEntry, const DP_GATEWAY& aTarge
     PNS_DBG( dbg, AddShape, &m_n, BLUE, 100000, wxT( "-" ) );
 
     PNS_DBGN( dbg, EndGroup );
-
+#endif
 
     return !fail;
 }
@@ -1015,10 +1017,10 @@ void DP_GATEWAYS::BuildGeneric( const VECTOR2I& p0_p, const VECTOR2I& p0_n, int 
                 m_gateways.emplace_back( m - dir, m + dir, diagColl, DIRECTION_45::ANG_OBTUSE, prio, DIRECTION_45::AllDirectionsMask(), wxString::Format( "gen-mp-gap %d", gap ).ToStdString() );
 
                 dir = makeGapVector( p0_n - p0_p, 2 * gap );
-                m_gateways.emplace_back( p0_p - dir, p0_p - dir + dir.Perpendicular(), diagColl, DIRECTION_45::ANG_OBTUSE, 0, DIRECTION_45::AllDirectionsMask(), "gen-d1" );
-                m_gateways.emplace_back( p0_p - dir, p0_p - dir - dir.Perpendicular(), diagColl, DIRECTION_45::ANG_OBTUSE, 0, DIRECTION_45::AllDirectionsMask(), "gen-d2" );
-                m_gateways.emplace_back( p0_n + dir + dir.Perpendicular(), p0_n + dir, diagColl, DIRECTION_45::ANG_OBTUSE, 0, DIRECTION_45::AllDirectionsMask(), "gen-d3" );
-                m_gateways.emplace_back( p0_n + dir - dir.Perpendicular(), p0_n + dir, diagColl, DIRECTION_45::ANG_OBTUSE, 0, DIRECTION_45::AllDirectionsMask(), "gen-d4" );
+                m_gateways.emplace_back( p0_p - dir, p0_p - dir + dir.Perpendicular(), diagColl, DIRECTION_45::ANG_OBTUSE, 2, DIRECTION_45::AllDirectionsMask(), "gen-d1" );
+                m_gateways.emplace_back( p0_p - dir, p0_p - dir - dir.Perpendicular(), diagColl, DIRECTION_45::ANG_OBTUSE, 2, DIRECTION_45::AllDirectionsMask(), "gen-d2" );
+                m_gateways.emplace_back( p0_n + dir + dir.Perpendicular(), p0_n + dir, diagColl, DIRECTION_45::ANG_OBTUSE, 2, DIRECTION_45::AllDirectionsMask(), "gen-d3" );
+                m_gateways.emplace_back( p0_n + dir - dir.Perpendicular(), p0_n + dir, diagColl, DIRECTION_45::ANG_OBTUSE, 2, DIRECTION_45::AllDirectionsMask(), "gen-d4" );
             }
         }
     }
@@ -1130,14 +1132,12 @@ static int minDimensionForPrimitive( const ITEM* aPrim )
         const BOX2I& bbox = shape->BBox();
         return std::min( bbox.GetWidth(), bbox.GetHeight() );
     }
-
-    return 0;
 }
 
 
 int DP_PRIMITIVE_PAIR::GetMinDimension() const
 {
-    if( !m_primN || !m_primN )
+    if( !m_primP || !m_primN )
         return 0;
 
     return std::min( minDimensionForPrimitive( m_primN ), minDimensionForPrimitive( m_primP ) );

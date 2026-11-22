@@ -111,7 +111,7 @@ int BOARD_CONNECTED_ITEM::GetOwnClearance( PCB_LAYER_ID aLayer, wxString* aSourc
 {
     if( GetBoard() && GetBoard()->GetDesignSettings().m_DRCEngine )
     {
-        BOARD_DESIGN_SETTINGS& bds = GetBoard()->GetDesignSettings();
+        const BOARD_DESIGN_SETTINGS& bds = GetBoard()->GetDesignSettings();
         return bds.m_DRCEngine->GetCachedOwnClearance( this, aLayer, aSource );
     }
 
@@ -222,7 +222,8 @@ static struct BOARD_CONNECTED_ITEM_DESC
         propMgr.ReplaceProperty( TYPE_HASH( BOARD_ITEM ), _HKI( "Layer" ),
                     new PROPERTY_ENUM<BOARD_CONNECTED_ITEM, PCB_LAYER_ID>( _HKI( "Layer" ),
                                 &BOARD_CONNECTED_ITEM::SetLayer, &BOARD_CONNECTED_ITEM::GetLayer ) )
-                            .SetIsCopyable().SetChoices( layerEnum.Choices() );
+                            .SetIsCopyable()
+                            .SetChoices( layerEnum.Choices() );
 
         propMgr.AddProperty( new PROPERTY_ENUM<BOARD_CONNECTED_ITEM, int>( _HKI( "Net" ),
                     &BOARD_CONNECTED_ITEM::SetNetCode, &BOARD_CONNECTED_ITEM::GetNetCode, PT_NET ) )

@@ -36,34 +36,55 @@ namespace TEXT_EVAL_VCS
 // loaded project directory). When empty, repo discovery falls back to the process cwd.
 namespace
 {
-    thread_local wxString tl_contextPath;
-    thread_local bool tl_contextIsFile = false;
+    // Static destructors such as ~SETTINGS_MANAGER run after the main thread's thread_local objects are
+    // destroyed. A bool has no destructor, so it stays readable and tells them the context is gone.
+    thread_local bool tl_contextGone = false;
+
+    struct CONTEXT
+    {
+        ~CONTEXT() { tl_contextGone = true; }
+
+        wxString path;
+        bool     isFile = false;
+    };
+
+    thread_local CONTEXT tl_context;
+
+    void setContext( const wxString& aPath, bool aIsFile )
+    {
+        if( tl_contextGone )
+            return;
+
+        tl_context.path = aPath;
+        tl_context.isFile = aIsFile;
+    }
 }
 
 
 void SetContextPath( const wxString& aPath )
 {
-    const bool isFile = !aPath.IsEmpty() && wxFileName( aPath ).FileExists();
-    tl_contextPath = aPath;
-    tl_contextIsFile = isFile;
+    setContext( aPath, !aPath.IsEmpty() && wxFileName( aPath ).FileExists() );
 }
 
 
 wxString GetContextPath()
 {
-    return tl_contextPath.IsEmpty() ? wxString( wxT( "." ) ) : tl_contextPath;
+    if( tl_contextGone || tl_context.path.IsEmpty() )
+        return wxString( wxT( "." ) );
+
+    return tl_context.path;
 }
 
 
 bool GetContextIsFile()
 {
-    return tl_contextIsFile;
+    return !tl_contextGone && tl_context.isFile;
 }
 
 
 CONTEXT_PATH_SCOPE::CONTEXT_PATH_SCOPE( const wxString& aPath ) :
-        m_previous( tl_contextPath ),
-        m_previousIsFile( tl_contextIsFile )
+        m_previous( tl_contextGone ? wxString() : tl_context.path ),
+        m_previousIsFile( GetContextIsFile() )
 {
     SetContextPath( aPath );
 }
@@ -71,8 +92,7 @@ CONTEXT_PATH_SCOPE::CONTEXT_PATH_SCOPE( const wxString& aPath ) :
 
 CONTEXT_PATH_SCOPE::~CONTEXT_PATH_SCOPE()
 {
-    tl_contextPath = m_previous;
-    tl_contextIsFile = m_previousIsFile;
+    setContext( m_previous, m_previousIsFile );
 }
 
 
@@ -90,7 +110,7 @@ namespace
         {
             wxFileName context( GetContextPath() );
             context.MakeAbsolute();
-            path.MakeAbsolute( tl_contextIsFile ? context.GetPath() : context.GetFullPath() );
+            path.MakeAbsolute( GetContextIsFile() ? context.GetPath() : context.GetFullPath() );
         }
 
         return path.GetFullPath();
@@ -103,13 +123,17 @@ namespace
     VCS_VALUE Capture( VCS_QUERY aQuery, const std::string& aPath, const std::string& aArgument,
                        int aOptions, const std::function<VCS_VALUE()>& aRead )
     {
-        if( auto* environment = TEXT_EVAL::ENVIRONMENT::Current() )
+        if( TEXT_EVAL::ENVIRONMENT* environment = TEXT_EVAL::ENVIRONMENT::Current() )
         {
             wxFileName path = wxFileName::DirName( ResolveEffectivePath( aPath ) );
             path.MakeAbsolute();
-            const bool contextFile = tl_contextIsFile && ( aPath.empty() || aPath == "." );
-            return environment->VcsValue( { aQuery, path.GetPath( wxPATH_GET_VOLUME ), aArgument, aOptions,
-                                            contextFile }, aRead );
+            const bool contextFile = GetContextIsFile() && ( aPath.empty() || aPath == "." );
+            return environment->VcsValue( { aQuery,
+                                            path.GetPath( (int) wxPATH_GET_VOLUME ),
+                                            aArgument,
+                                            aOptions,
+                                            contextFile },
+                                          aRead );
         }
 
         return aRead();
@@ -123,7 +147,7 @@ namespace
 
         wxFileName effective( ResolveEffectivePath( aPath ) );
 
-        if( ( !aPath.empty() && aPath != "." ) || tl_contextIsFile )
+        if( ( !aPath.empty() && aPath != "." ) || GetContextIsFile() )
         {
             effective.MakeAbsolute();
             return KIGIT::PROJECT_GIT_UTILS::GetRepositoryForFile( TO_UTF8( effective.GetPath() ) );
@@ -258,13 +282,13 @@ namespace
         return result;
     }
 
-    struct DescribeInfo
+    struct DESCRIBE_INFO
     {
         std::string tag;
         int         distance;
     };
 
-    DescribeInfo ReadDescribeInfo( const std::string& aMatch, bool aAnyTags )
+    DESCRIBE_INFO ReadDescribeInfo( const std::string& aMatch, bool aAnyTags )
     {
         git_repository* repo = OpenRepo( "." );
 
@@ -340,9 +364,9 @@ namespace
             return { std::string(), 0 };
         }
 
-        DescribeInfo result{ std::string(), 0 };
-        int          distance = 0;
-        git_oid      commit_oid;
+        DESCRIBE_INFO result{ std::string(), 0 };
+        int           distance = 0;
+        git_oid       commit_oid;
 
         while( git_revwalk_next( &commit_oid, walker ) == 0 )
         {
@@ -363,14 +387,14 @@ namespace
         return result;
     }
 
-    DescribeInfo GetDescribeInfo( const std::string& aMatch, bool aAnyTags )
+    DESCRIBE_INFO GetDescribeInfo( const std::string& aMatch, bool aAnyTags )
     {
-        const auto value = Capture( VCS_QUERY::DESCRIPTION, ".", aMatch, aAnyTags,
-                [&]() -> VCS_VALUE
-                {
-                    const auto description = ReadDescribeInfo( aMatch, aAnyTags );
-                    return { description.tag, description.distance };
-                } );
+        const VCS_VALUE value = Capture( VCS_QUERY::DESCRIPTION, ".", aMatch, aAnyTags,
+                                         [&]() -> VCS_VALUE
+                                         {
+                                             const DESCRIBE_INFO description = ReadDescribeInfo( aMatch, aAnyTags );
+                                             return { description.tag, description.distance };
+                                         } );
         return { value.text, static_cast<int>( value.number ) };
     }
 
@@ -414,7 +438,10 @@ namespace
     std::string GetCommitSignatureField( const std::string& aPath, bool aUseCommitter, bool aGetEmail )
     {
         return Capture( VCS_QUERY::SIGNATURE, aPath, aPath, ( aUseCommitter ? 2 : 0 ) | ( aGetEmail ? 1 : 0 ),
-                [&]() -> VCS_VALUE { return { ReadCommitSignatureField( aPath, aUseCommitter, aGetEmail ) }; } ).text;
+                        [&]() -> VCS_VALUE
+                        {
+                            return { ReadCommitSignatureField( aPath, aUseCommitter, aGetEmail ) };
+                        } ).text;
     }
 
 } // anonymous namespace
@@ -445,8 +472,11 @@ static std::string ReadCommitHash( const std::string& aPath )
 
 std::string GetCommitHash( const std::string& aPath, int aLength )
 {
-    const auto value = Capture( VCS_QUERY::HASH, aPath, aPath, 0,
-            [&]() -> VCS_VALUE { return { ReadCommitHash( aPath ) }; } );
+    const VCS_VALUE value = Capture( VCS_QUERY::HASH, aPath, aPath, 0,
+                                     [&]() -> VCS_VALUE
+                                     {
+                                         return { ReadCommitHash( aPath ) };
+                                     } );
     return value.text.substr( 0, std::clamp( aLength, 4, GIT_OID_HEXSZ ) );
 }
 
@@ -493,7 +523,10 @@ static bool ReadIsDirty( bool aIncludeUntracked )
 bool IsDirty( bool aIncludeUntracked )
 {
     return Capture( VCS_QUERY::DIRTY, ".", "", aIncludeUntracked,
-            [&]() -> VCS_VALUE { return { {}, ReadIsDirty( aIncludeUntracked ) }; } ).number != 0;
+                    [&]() -> VCS_VALUE
+                    {
+                        return { {}, ReadIsDirty( aIncludeUntracked ) };
+                    } ).number != 0;
 }
 
 
@@ -539,7 +572,10 @@ static std::string ReadBranch()
 std::string GetBranch()
 {
     return Capture( VCS_QUERY::BRANCH, ".", "", 0,
-            []() -> VCS_VALUE { return { ReadBranch() }; } ).text;
+                    []() -> VCS_VALUE
+                    {
+                        return { ReadBranch() };
+                    } ).text;
 }
 
 
@@ -575,7 +611,10 @@ static int64_t ReadCommitTimestamp( const std::string& aPath )
 int64_t GetCommitTimestamp( const std::string& aPath )
 {
     return Capture( VCS_QUERY::TIMESTAMP, aPath, aPath, 0,
-            [&]() -> VCS_VALUE { return { {}, ReadCommitTimestamp( aPath ) }; } ).number;
+                    [&]() -> VCS_VALUE
+                    {
+                        return { {}, ReadCommitTimestamp( aPath ) };
+                    } ).number;
 }
 
 
@@ -588,69 +627,72 @@ std::string GetCommitDate( const std::string& aPath )
 
 TEXT_EVAL::ENVIRONMENT::VCS_VALUE ReadSource( const TEXT_EVAL::ENVIRONMENT::VCS_KEY& aKey )
 {
-    const auto read = [&]() -> VCS_VALUE
-    {
-        const auto& [query, path, argument, options, contextFile] = aKey;
+    const auto read =
+            [&]() -> VCS_VALUE
+            {
+                const auto& [query, path, argument, options, contextFile] = aKey;
 
-        if( query == VCS_QUERY::HEAD )
-        {
-            if( !GetGitBackend() )
+                if( query == VCS_QUERY::HEAD )
+                {
+                    if( !GetGitBackend() )
+                        return {};
+
+                    git_repository* raw = nullptr;
+
+                    // Discovery could select the main repository instead of this linked worktree's HEAD.
+                    if( git_repository_open( &raw, path.ToUTF8().data() ) != 0 )
+                        return {};
+
+                    KIGIT::GitRepositoryPtr repo( raw );
+                    git_oid oid{};
+
+                    if( git_reference_name_to_id( &oid, repo.get(), "HEAD" ) != 0 )
+                        return {};
+
+                    char hash[GIT_OID_HEXSZ + 1];
+                    git_oid_tostr( hash, sizeof( hash ), &oid );
+                    return { hash };
+                }
+
+                const bool fileQuery = ( query == VCS_QUERY::HASH
+                                         || query == VCS_QUERY::SIGNATURE
+                                         || query == VCS_QUERY::TIMESTAMP )
+                                       && !argument.empty()
+                                       && argument != ".";
+                const CONTEXT_PATH_SCOPE context( fileQuery || contextFile ? wxFileName( path ).GetPath() : path );
+                const std::string file = fileQuery ? path.ToStdString( wxConvUTF8 ) : std::string();
+
+                switch( query )
+                {
+                case VCS_QUERY::HASH:
+                    return { ReadCommitHash( file ) };
+
+                case VCS_QUERY::DESCRIPTION:
+                {
+                    const DESCRIBE_INFO description = ReadDescribeInfo( argument, options != 0 );
+                    return { description.tag, description.distance };
+                }
+
+                case VCS_QUERY::SIGNATURE:
+                    return { ReadCommitSignatureField( file, ( options & 2 ) != 0, ( options & 1 ) != 0 ) };
+
+                case VCS_QUERY::BRANCH:
+                    return { ReadBranch() };
+
+                case VCS_QUERY::DIRTY:
+                    return { {}, ReadIsDirty( options != 0 ) };
+
+                case VCS_QUERY::TIMESTAMP:
+                    return { {}, ReadCommitTimestamp( file ) };
+
+                case VCS_QUERY::HEAD:
+                    break;
+                }
+
                 return {};
+            };
 
-            git_repository* raw = nullptr;
-
-            // Discovery could select the main repository instead of this linked worktree's HEAD.
-            if( git_repository_open( &raw, path.ToUTF8().data() ) != 0 )
-                return {};
-
-            KIGIT::GitRepositoryPtr repo( raw );
-            git_oid oid{};
-
-            if( git_reference_name_to_id( &oid, repo.get(), "HEAD" ) != 0 )
-                return {};
-
-            char hash[GIT_OID_HEXSZ + 1];
-            git_oid_tostr( hash, sizeof( hash ), &oid );
-            return { hash };
-        }
-
-        const bool fileQuery = ( query == VCS_QUERY::HASH || query == VCS_QUERY::SIGNATURE
-                                 || query == VCS_QUERY::TIMESTAMP )
-                               && !argument.empty() && argument != ".";
-        const CONTEXT_PATH_SCOPE context( fileQuery || contextFile ? wxFileName( path ).GetPath() : path );
-        const std::string file = fileQuery ? path.ToStdString( wxConvUTF8 ) : std::string();
-
-        switch( query )
-        {
-        case VCS_QUERY::HASH:
-            return { ReadCommitHash( file ) };
-
-        case VCS_QUERY::DESCRIPTION:
-        {
-            const auto description = ReadDescribeInfo( argument, options != 0 );
-            return { description.tag, description.distance };
-        }
-
-        case VCS_QUERY::SIGNATURE:
-            return { ReadCommitSignatureField( file, ( options & 2 ) != 0, ( options & 1 ) != 0 ) };
-
-        case VCS_QUERY::BRANCH:
-            return { ReadBranch() };
-
-        case VCS_QUERY::DIRTY:
-            return { {}, ReadIsDirty( options != 0 ) };
-
-        case VCS_QUERY::TIMESTAMP:
-            return { {}, ReadCommitTimestamp( file ) };
-
-        case VCS_QUERY::HEAD:
-            break;
-        }
-
-        return {};
-    };
-
-    if( auto* environment = TEXT_EVAL::ENVIRONMENT::Current() )
+    if(TEXT_EVAL::ENVIRONMENT* environment = TEXT_EVAL::ENVIRONMENT::Current() )
         return environment->VcsValue( aKey, read );
 
     return read();

@@ -101,7 +101,7 @@ public:
     LIB_SYMBOL* GetSymbol( const wxString& aAlias ) const;
 
     /// Create a new buffer to store a symbol. #LIB_BUFFER takes ownership of \a aCopy.
-    bool CreateBuffer( std::unique_ptr<LIB_SYMBOL> aCopy, std::unique_ptr<SCH_SCREEN> aScreen );
+    bool CreateBuffer( std::unique_ptr<LIB_SYMBOL> aCopy, std::unique_ptr<SCH_SCREEN> aScreen, bool aNew = false );
 
     /// Update the buffered symbol with the contents of \a aCopy.
     bool UpdateBuffer( SYMBOL_BUFFER& aSymbolBuf, const LIB_SYMBOL& aCopy );
@@ -116,10 +116,33 @@ public:
      */
     void RevertDeletedBuffers();
 
+    void RevertAddedBuffers();
+
+    /**
+     * Restore \a aSymbolBuf to its last saved state and clear its modified flag.
+     *
+     * @param aDropNeverSaved removes a symbol that was never written to the library file instead,
+     *                        unless other symbols derive from it.  The caller must hold its own
+     *                        reference to \a aSymbolBuf.
+     * @return the restored symbol name, or empty if the symbol was removed.
+     */
+    wxString RevertBuffer( SYMBOL_BUFFER& aSymbolBuf, bool aDropNeverSaved );
+
     /// Return the deleted symbol buffers that need to be removed from the library file.
     const std::deque<std::shared_ptr<SYMBOL_BUFFER>>& GetDeletedBuffers() const { return m_deleted; }
 
-    void ClearDeletedBuffer() { m_deleted.clear(); }
+    void ClearAddedAndDeletedBufferLists()
+    {
+        m_added.clear();
+        m_deleted.clear();
+    }
+
+    /**
+     * Save the modified symbols back to the library's own file aFileName. The others are left as the
+     * file has them, which may be newer than the buffer when something else, such as a git pull,
+     * changed the file.
+     */
+    bool SaveModifiedBuffers( const wxString& aFileName, SCH_IO* aPlugin );
 
     /// Save stored modifications using a plugin. aBuffer decides whether the changes
     /// should be cached or stored directly to the disk (for #SCH_IO_KICAD_LEGACY).
@@ -172,8 +195,8 @@ private:
 
 private:
     std::deque<std::shared_ptr<SYMBOL_BUFFER>> m_symbols;
-    std::deque<std::shared_ptr<SYMBOL_BUFFER>> m_deleted;   ///< Buffer for deleted symbols until
-                                                            ///<   library is saved.
+    std::deque<std::shared_ptr<SYMBOL_BUFFER>> m_added;     ///< Buffer for added synbols until lib is saved
+    std::deque<std::shared_ptr<SYMBOL_BUFFER>> m_deleted;   ///< Buffer for deleted symbols until lib is saved
     const wxString                             m_libName;   ///< Buffered library name
     int                                        m_hash;
 };
@@ -251,6 +274,10 @@ public:
      */
     bool UpdateLibraryBuffer( const wxString& aLibrary );
 
+    /// Forget the buffers of libraries with no unsaved changes, except those in aKeep, so they are
+    /// read again from their files, and return those libraries' names
+    std::vector<wxString> DropUnmodifiedBuffers( const std::set<wxString>& aKeep = {} );
+
     /**
      * Remove the symbol from the symbol buffer.
      *
@@ -326,11 +353,6 @@ public:
     bool ClearLibraryModified( const wxString& aLibrary ) const;
 
     /**
-     * Clear the modified flag for a symbol.
-     */
-    bool ClearSymbolModified( const wxString& aSymbolName, const wxString& aLibrary ) const;
-
-    /**
      * Return true if the library is stored in a read-only file.
      *
      * @return True on success, false otherwise.
@@ -350,12 +372,14 @@ public:
                       SCH_IO_MGR::SCH_FILE_T aFileType = SCH_IO_MGR::SCH_FILE_T::SCH_LEGACY );
 
     /**
-     * Revert unsaved changes for a symbol.
+     * Revert unsaved changes for a symbol and clear its modified flag.
      *
+     * @param aDropNeverSaved removes a symbol that was never saved to the library file, which has
+     *                        no saved version to return to.
      * @return The LIB_ID of the reverted symbol (which may be different in the case
-     * of a rename)
+     * of a rename), with an empty item name if the symbol was removed
      */
-    LIB_ID RevertSymbol( const LIB_ID& aIdToRevert );
+    LIB_ID RevertSymbol( const LIB_ID& aIdToRevert, bool aDropNeverSaved = false );
 
     /**
      * Revert unsaved changes for a symbol library.

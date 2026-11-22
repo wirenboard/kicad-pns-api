@@ -30,7 +30,7 @@
 #include <api/api_utils.h>
 #include <eda_text.h>    // for EDA_TEXT, TEXT_EFFECTS, GR_TEXT_VJUSTIF...
 #include <gal/color4d.h> // for COLOR4D, COLOR4D::BLACK
-#include <font/glyph.h>
+#include <font/glyph_types.h>
 #include <gr_text.h>
 #include <string_utils.h> // for UnescapeString
 #include <text_eval/text_eval_wrapper.h>
@@ -115,6 +115,8 @@ EDA_TEXT::EDA_TEXT( const EDA_TEXT& aText ) :
     m_shown_text_has_text_var_refs = aText.m_shown_text_has_text_var_refs;
     m_text_var_refs = aText.m_text_var_refs;
 
+    m_hyperlink = aText.m_hyperlink;
+
     m_attributes = aText.m_attributes;
     m_pos = aText.m_pos;
     m_visible = aText.m_visible;
@@ -144,6 +146,9 @@ EDA_TEXT& EDA_TEXT::operator=( const EDA_TEXT& aText )
     m_shown_text = aText.m_shown_text;
     m_shown_text_has_text_var_refs = aText.m_shown_text_has_text_var_refs;
     m_text_var_refs = aText.m_text_var_refs;
+
+    m_hyperlink = aText.m_hyperlink;
+    m_activeUrl = wxEmptyString;
 
     m_attributes = aText.m_attributes;
     m_pos = aText.m_pos;
@@ -180,7 +185,6 @@ void EDA_TEXT::Serialize( kiapi::common::types::Text& text, const EDA_IU_SCALE& 
 
     PackTextAttributes( *attrs, GetAttributes(), aScale );
     attrs->set_visible( true );
-
 }
 
 
@@ -188,7 +192,9 @@ void EDA_TEXT::Serialize( google::protobuf::Any& aContainer, const EDA_IU_SCALE&
 {
     kiapi::common::types::Text text;
     Serialize( text, aScale );
-    aContainer.PackFrom( text );
+
+    if( !aContainer.PackFrom( text ) )
+        wxFAIL_MSG( wxT( "Failed to pack EDA_TEXT" ) );
 }
 
 
@@ -455,6 +461,14 @@ bool EDA_TEXT::Replace( const EDA_SEARCH_DATA& aSearchData )
 }
 
 
+void EDA_TEXT::SetAttributes( const TEXT_ATTRIBUTES& aTextAttrs )
+{
+    m_attributes = aTextAttrs;
+    ClearRenderCache();
+    ClearBoundingBoxCache();
+}
+
+
 void EDA_TEXT::SetFont( KIFONT::FONT* aFont )
 {
     m_attributes.m_Font = aFont;
@@ -469,6 +483,10 @@ bool EDA_TEXT::ResolveFont( const std::vector<wxString>* aEmbeddedFonts )
     {
         m_attributes.m_Font = KIFONT::FONT::GetFont( m_unresolvedFontName, IsBold(), IsItalic(), aEmbeddedFonts );
 
+        // The resolved font may not be the same as the original font, so we want to continue to
+        // use the existing glyph cache to preserve the existing geometry (important on the board,
+        // even if not so much on the schematic).  We need to update the font so that KiCad will
+        // decide the cache is still valid.  (It will get regenerated if the user edits the text.)
         if( m_render_cache && !m_render_cache->glyphs.empty() )
             m_render_cache->font = m_attributes.m_Font;
 
@@ -1225,6 +1243,11 @@ int EDA_TEXT::Compare( const EDA_TEXT* aOther ) const
     if( val != 0 )
         return val;
 
+    val = m_hyperlink.Cmp( aOther->m_hyperlink );
+
+    if( val != 0 )
+        return val;
+
     return m_text.Cmp( aOther->m_text );
 }
 
@@ -1289,6 +1312,9 @@ double EDA_TEXT::Similarity( const EDA_TEXT& aOther ) const
     double retval = 1.0;
 
     if( !( m_attributes == aOther.m_attributes ) )
+        retval *= 0.9;
+
+    if( !m_hyperlink.IsSameAs( aOther.m_hyperlink, false ) )
         retval *= 0.9;
 
     if( m_pos != aOther.m_pos )
@@ -1380,20 +1406,24 @@ static struct EDA_TEXT_DESC
                                 fonts.Add( wxString( fontName ) );
 
                             return fonts;
-                        } ).SetIsCopyable();
+                        } )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<EDA_TEXT, bool>( _HKI( "Auto Thickness" ),
                     &EDA_TEXT::SetAutoThickness, &EDA_TEXT::GetAutoThickness ),
                     textProps );
         propMgr.AddProperty( new PROPERTY<EDA_TEXT, int>( _HKI( "Thickness" ),
                     &EDA_TEXT::SetTextThickness, &EDA_TEXT::GetTextThicknessProperty, PROPERTY_DISPLAY::PT_SIZE ),
-                    textProps ).SetIsCopyable();
+                    textProps )
+                .SetIsCopyable();
         propMgr.AddProperty( new PROPERTY<EDA_TEXT, bool>( _HKI( "Italic" ),
                     &EDA_TEXT::SetItalic, &EDA_TEXT::IsItalic ),
-                    textProps ).SetIsCopyable();
+                    textProps )
+                .SetIsCopyable();
         propMgr.AddProperty( new PROPERTY<EDA_TEXT, bool>( _HKI( "Bold" ),
                     &EDA_TEXT::SetBold, &EDA_TEXT::IsBold ),
-                    textProps ).SetIsCopyable();
+                    textProps )
+                .SetIsCopyable();
         propMgr.AddProperty( new PROPERTY<EDA_TEXT, bool>( _HKI( "Mirrored" ),
                     &EDA_TEXT::SetMirrored, &EDA_TEXT::IsMirrored ),
                     textProps );
@@ -1410,22 +1440,27 @@ static struct EDA_TEXT_DESC
         propMgr.AddProperty( new PROPERTY<EDA_TEXT, bool>( _HKI( "Visible" ),
                     &EDA_TEXT::SetVisible, &EDA_TEXT::IsVisible ),
                     textProps )
-                .SetAvailableFunc( isField ).SetIsCopyable();
+                .SetAvailableFunc( isField )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<EDA_TEXT, int>( _HKI( "Width" ),
                     &EDA_TEXT::SetTextWidth, &EDA_TEXT::GetTextWidth, PROPERTY_DISPLAY::PT_SIZE ),
-                    textProps ).SetIsCopyable();
+                    textProps )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<EDA_TEXT, int>( _HKI( "Height" ),
                     &EDA_TEXT::SetTextHeight, &EDA_TEXT::GetTextHeight, PROPERTY_DISPLAY::PT_SIZE ),
-                    textProps ).SetIsCopyable();
+                    textProps )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY_ENUM<EDA_TEXT, GR_TEXT_H_ALIGN_T>( _HKI( "Horizontal Justification" ),
                     &EDA_TEXT::SetHorizJustify, &EDA_TEXT::GetHorizJustify ),
-                    textProps ).SetIsCopyable();
+                    textProps )
+                .SetIsCopyable();
         propMgr.AddProperty( new PROPERTY_ENUM<EDA_TEXT, GR_TEXT_V_ALIGN_T>( _HKI( "Vertical Justification" ),
                     &EDA_TEXT::SetVertJustify, &EDA_TEXT::GetVertJustify ),
-                    textProps ).SetIsCopyable();
+                    textProps )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<EDA_TEXT, COLOR4D>( _HKI( "Color" ),
                     &EDA_TEXT::SetTextColor, &EDA_TEXT::GetTextColor ),

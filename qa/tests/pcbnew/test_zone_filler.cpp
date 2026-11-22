@@ -240,11 +240,10 @@ BOOST_DATA_TEST_CASE_F( ZONE_FILL_TEST_FIXTURE, RegressionZoneFillTests,
     {
         UNITS_PROVIDER unitsProvider( pcbIUScale, EDA_UNITS::INCH );
 
-        std::map<KIID, EDA_ITEM*> itemMap;
-        m_board->FillItemMap( itemMap );
+        BOARD_RC_ITEM_RESOLVER resolver( *m_board );
 
         for( const DRC_ITEM& item : violations )
-            BOOST_TEST_MESSAGE( item.ShowReport( &unitsProvider, RPT_SEVERITY_ERROR, itemMap ) );
+            BOOST_TEST_MESSAGE( item.ShowReport( &unitsProvider, RPT_SEVERITY_ERROR, resolver ) );
 
         BOOST_ERROR( wxString::Format( "Zone fill regression: %s failed", relPath ) );
     }
@@ -281,11 +280,10 @@ BOOST_FIXTURE_TEST_CASE( ZoneFillClearsLineEndings, ZONE_FILL_TEST_FIXTURE )
     }
 
     UNITS_PROVIDER            unitsProvider( pcbIUScale, EDA_UNITS::INCH );
-    std::map<KIID, EDA_ITEM*> itemMap;
-    m_board->FillItemMap( itemMap );
+    BOARD_RC_ITEM_RESOLVER    resolver( *m_board );
 
     for( const DRC_ITEM& item : violations )
-        BOOST_TEST_MESSAGE( item.ShowReport( &unitsProvider, RPT_SEVERITY_ERROR, itemMap ) );
+        BOOST_TEST_MESSAGE( item.ShowReport( &unitsProvider, RPT_SEVERITY_ERROR, resolver ) );
 
     BOOST_ERROR( wxString::Format( "Zone fill line-ending regression failed with %d clearance/shorting violations",
                                    (int) violations.size() ) );
@@ -327,8 +325,7 @@ BOOST_FIXTURE_TEST_CASE( RegressionZoneClearanceWithIterativeRefill, ZONE_FILL_T
 
                 std::vector<DRC_ITEM> violations;
 
-                std::map<KIID, EDA_ITEM*> itemMap;
-                m_board->FillItemMap( itemMap );
+                BOARD_RC_ITEM_RESOLVER resolver( *m_board );
                 UNITS_PROVIDER unitsProvider( pcbIUScale, EDA_UNITS::MM );
 
                 bds.m_DRCEngine->SetViolationHandler(
@@ -345,7 +342,7 @@ BOOST_FIXTURE_TEST_CASE( RegressionZoneClearanceWithIterativeRefill, ZONE_FILL_T
                                     violations.push_back( *aItem );
 
                                     BOOST_TEST_MESSAGE( aItem->ShowReport( &unitsProvider, RPT_SEVERITY_ERROR,
-                                                                           itemMap ) );
+                                                                           resolver ) );
                                 }
                             }
                         } );
@@ -404,11 +401,10 @@ BOOST_DATA_TEST_CASE_F( ZONE_FILL_TEST_FIXTURE, RegressionSliverZoneFillTests,
     {
         UNITS_PROVIDER unitsProvider( pcbIUScale, EDA_UNITS::INCH );
 
-        std::map<KIID, EDA_ITEM*> itemMap;
-        m_board->FillItemMap( itemMap );
+        BOARD_RC_ITEM_RESOLVER resolver( *m_board );
 
         for( const DRC_ITEM& item : violations )
-            BOOST_TEST_MESSAGE( item.ShowReport( &unitsProvider, RPT_SEVERITY_ERROR, itemMap ) );
+            BOOST_TEST_MESSAGE( item.ShowReport( &unitsProvider, RPT_SEVERITY_ERROR, resolver ) );
 
         BOOST_ERROR( wxString::Format( "Zone fill copper sliver regression: %s failed", relPath ) );
     }
@@ -1059,14 +1055,13 @@ BOOST_FIXTURE_TEST_CASE( RegressionThermalReliefAnnularRing45, ZONE_FILL_TEST_FI
 
                 if( !pad->FlashLayer( layer ) )
                 {
-                    BOOST_TEST_MESSAGE(
-                            wxString::Format( "Pad %s (drill %.2f mm, spoke angle %.0f deg) on net %s is inside the "
-                                              "zone but not flashing on %s",
-                                              pad->GetNumber(),
-                                              pcbIUScale.IUTomm( pad->GetDrillSizeX() ),
-                                              pad->GetThermalSpokeAngle().AsDegrees(),
-                                              pad->GetNetname(),
-                                              m_board->GetLayerName( layer ) ) );
+                    BOOST_TEST_MESSAGE( wxString::Format( "Pad %s (drill %.2f mm, spoke angle %.0f deg) on net %s "
+                                                          "is inside the zone but not flashing on %s",
+                                                          pad->GetNumber(),
+                                                          pcbIUScale.IUTomm( pad->GetDrillSize().x ),
+                                                          pad->GetThermalSpokeAngle().AsDegrees(),
+                                                          pad->GetNetname(),
+                                                          m_board->GetLayerName( layer ) ) );
                     padsWithMissingFlashing++;
                 }
             }
@@ -2186,6 +2181,115 @@ BOOST_FIXTURE_TEST_CASE( OffCenterTeardropSymmetry, ZONE_FILL_TEST_FIXTURE )
 }
 
 
+// 0.1 mm beside the track axis and inside the 0.15 mm half width, so the track crosses the item.
+static const VECTOR2I crossedPosition( pcbIUScale.mmToIU( 0.1 ), pcbIUScale.mmToIU( 10 ) );
+
+
+static PCB_TRACK* addCrossingTrack( BOARD& aBoard )
+{
+    PCB_TRACK* track = new PCB_TRACK( &aBoard );
+    track->SetLayer( F_Cu );
+    track->SetWidth( pcbIUScale.mmToIU( 0.3 ) );
+    track->SetStart( VECTOR2I( 0, 0 ) );
+    track->SetEnd( VECTOR2I( 0, pcbIUScale.mmToIU( 20 ) ) );
+    aBoard.Add( track );
+    track->SetNetCode( 1 );
+
+    return track;
+}
+
+
+static void checkCrossingTrackTeardropsStayOnCopper( BOARD& aBoard, const PCB_TRACK* aTrack,
+                                                     const BOARD_ITEM* aCrossed )
+{
+    aBoard.BuildConnectivity();
+
+    TOOL_MANAGER toolMgr;
+    toolMgr.SetEnvironment( &aBoard, nullptr, nullptr, nullptr, nullptr );
+
+    KI_TEST::DUMMY_TOOL* dummyTool = new KI_TEST::DUMMY_TOOL();
+    toolMgr.RegisterTool( dummyTool );
+
+    BOARD_COMMIT     commit( dummyTool );
+    TEARDROP_MANAGER teardropMgr( &aBoard, &toolMgr );
+    teardropMgr.UpdateTeardrops( commit, nullptr, nullptr, true );
+
+    if( !commit.Empty() )
+        commit.Push( _( "Add teardrops" ), SKIP_UNDO | SKIP_SET_DIRTY );
+
+    // A straight edged teardrop has five corners. Two sit on the track, two on the crossed item
+    // and one behind its centre. The pad hit test uses an inscribed polygon, so allow its error.
+    int tolerance = std::max( aBoard.GetDesignSettings().m_MaxError, pcbIUScale.mmToIU( 0.001 ) );
+    int teardrops = 0;
+
+    for( ZONE* zone : aBoard.Zones() )
+    {
+        if( !zone->IsTeardropArea() )
+            continue;
+
+        teardrops++;
+
+        for( const VECTOR2I& pt : zone->Outline()->COutline( 0 ).CPoints() )
+        {
+            BOOST_CHECK_MESSAGE( aTrack->HitTest( pt, tolerance ) || aCrossed->HitTest( pt, tolerance ),
+                                 wxString::Format( "Teardrop corner (%.3f, %.3f) mm lies outside both "
+                                                   "the track and the crossed item",
+                                                   pcbIUScale.IUTomm( pt.x ), pcbIUScale.IUTomm( pt.y ) ) );
+        }
+    }
+
+    BOOST_CHECK_EQUAL( teardrops, 2 );
+}
+
+
+BOOST_AUTO_TEST_CASE( CrossingTrackTeardropOnViaStaysOnTrack )
+{
+    BOARD board;
+    board.Add( new NETINFO_ITEM( &board, wxT( "N1" ), 1 ) );
+
+    PCB_TRACK* track = addCrossingTrack( board );
+
+    PCB_VIA* via = new PCB_VIA( &board );
+    via->SetPadstackMode( PADSTACK::MODE::NORMAL );
+    via->SetPosition( crossedPosition );
+    via->SetLayerPair( F_Cu, B_Cu );
+    via->SetDrill( pcbIUScale.mmToIU( 0.3 ) );
+    via->SetWidth( PADSTACK::ALL_LAYERS, pcbIUScale.mmToIU( 1.0 ) );
+    via->GetTeardropParams().m_Enabled = true;
+    via->GetTeardropParams().m_CurvedEdges = false;
+    board.Add( via );
+    via->SetNetCode( 1 );
+
+    checkCrossingTrackTeardropsStayOnCopper( board, track, via );
+}
+
+
+BOOST_AUTO_TEST_CASE( CrossingTrackTeardropOnPadStaysOnTrack )
+{
+    BOARD board;
+    board.Add( new NETINFO_ITEM( &board, wxT( "N1" ), 1 ) );
+
+    PCB_TRACK* track = addCrossingTrack( board );
+
+    FOOTPRINT* footprint = new FOOTPRINT( &board );
+    PAD*       pad = new PAD( footprint );
+    pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
+    pad->SetAttribute( PAD_ATTRIB::PTH );
+    pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
+    pad->SetLayerSet( LSET::AllCuMask() );
+    pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( pcbIUScale.mmToIU( 1.0 ), pcbIUScale.mmToIU( 1.0 ) ) );
+    pad->SetDrillSize( VECTOR2I( pcbIUScale.mmToIU( 0.3 ), pcbIUScale.mmToIU( 0.3 ) ) );
+    pad->SetPosition( crossedPosition );
+    pad->GetTeardropParams().m_Enabled = true;
+    pad->GetTeardropParams().m_CurvedEdges = false;
+    footprint->Add( pad );
+    board.Add( footprint );
+    pad->SetNetCode( 1 );
+
+    checkCrossingTrackTeardropsStayOnCopper( board, track, pad );
+}
+
+
 /**
  * Teardrop on an elongated rectangular pad should not extend outside the pad boundary.
  *
@@ -3150,6 +3254,60 @@ BOOST_FIXTURE_TEST_CASE( CopperThievingZone_HatchSurvivesTrackBisection, ZONE_FI
 
 
 /**
+ * Equal-priority zones on the same net must keep their shared copper during iterative refill.
+ */
+BOOST_FIXTURE_TEST_CASE( EqualPrioritySameNetRefillKeepsOverlap, ZONE_FILL_TEST_FIXTURE )
+{
+    ADVANCED_CFG& cfg = const_cast<ADVANCED_CFG&>( ADVANCED_CFG::GetCfg() );
+    bool          originalIterativeRefill = cfg.m_ZoneFillIterativeRefill;
+
+    struct ScopeGuard
+    {
+        bool& ref;
+        bool  orig;
+        ~ScopeGuard() { ref = orig; }
+    } guard{ cfg.m_ZoneFillIterativeRefill, originalIterativeRefill };
+
+    for( bool iterative : { false, true } )
+    {
+        cfg.m_ZoneFillIterativeRefill = iterative;
+        KI_TEST::LoadBoard( m_settingsManager, "zone_refill_equal_priority", m_board );
+
+        std::map<wxString, ZONE*> zones;
+
+        for( ZONE* zone : m_board->Zones() )
+            zones[zone->GetZoneName()] = zone;
+
+        BOOST_REQUIRE_EQUAL( zones.size(), 3 );
+        BOOST_REQUIRE( zones.contains( wxS( "Equal A" ) ) );
+        BOOST_REQUIRE( zones.contains( wxS( "Equal B" ) ) );
+        BOOST_REQUIRE( zones.contains( wxS( "Refill trigger" ) ) );
+
+        ZONE* a = zones.at( wxS( "Equal A" ) );
+        ZONE* b = zones.at( wxS( "Equal B" ) );
+        ZONE* trigger = zones.at( wxS( "Refill trigger" ) );
+
+        BOOST_REQUIRE( a->SameNet( b ) );
+        BOOST_REQUIRE( a->SameNet( trigger ) );
+        BOOST_REQUIRE_EQUAL( a->GetAssignedPriority(), b->GetAssignedPriority() );
+        BOOST_REQUIRE_GT( trigger->GetAssignedPriority(), a->GetAssignedPriority() );
+
+        KI_TEST::FillZones( m_board.get() );
+
+        const VECTOR2I sharedPoint( pcbIUScale.mmToIU( 68 ), pcbIUScale.mmToIU( 55 ) );
+
+        for( ZONE* zone : { a, b } )
+        {
+            BOOST_REQUIRE( zone->HasFilledPolysForLayer( F_Cu ) );
+            BOOST_CHECK_MESSAGE( zone->GetFilledPolysList( F_Cu )->Contains( sharedPoint ),
+                                 wxString::Format( "%s lost shared copper with iterative refill %s",
+                                                   zone->GetZoneName(), iterative ? wxS( "on" ) : wxS( "off" ) ) );
+        }
+    }
+}
+
+
+/**
  * Test that iterative zone refill terminates and warns when it cannot converge.
  *
  * The board has overlapping zones arranged so that island removal in one zone
@@ -3929,7 +4087,14 @@ BOOST_FIXTURE_TEST_CASE( RegressionSameNetZoneFillScheduler, ZONE_FILL_TEST_FIXT
 
     const PCB_LAYER_ID layer = F_Cu;
 
-    for( int pass = 0; pass < 64; ++pass )
+    // The race is only reported reliably under a sanitizer, so other builds just smoke test the fill
+#if defined( KICAD_SANITIZE_THREADS ) || defined( KICAD_SANITIZE_ADDRESS )
+    const int passes = 64;
+#else
+    const int passes = 8;
+#endif
+
+    for( int pass = 0; pass < passes; ++pass )
     {
         BOOST_REQUIRE_NO_THROW( KI_TEST::FillZones( m_board.get() ) );
 
@@ -4143,11 +4308,10 @@ BOOST_FIXTURE_TEST_CASE( RegressionZoneFillNarrowBridge, ZONE_FILL_TEST_FIXTURE 
     {
         UNITS_PROVIDER unitsProvider( pcbIUScale, EDA_UNITS::MM );
 
-        std::map<KIID, EDA_ITEM*> itemMap;
-        m_board->FillItemMap( itemMap );
+        BOARD_RC_ITEM_RESOLVER resolver( *m_board );
 
         for( const DRC_ITEM& item : violations )
-            BOOST_TEST_MESSAGE( item.ShowReport( &unitsProvider, RPT_SEVERITY_ERROR, itemMap ) );
+            BOOST_TEST_MESSAGE( item.ShowReport( &unitsProvider, RPT_SEVERITY_ERROR, resolver ) );
     }
 
     BOOST_CHECK_MESSAGE( violations.empty(),

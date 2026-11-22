@@ -42,6 +42,7 @@ set( KICAD_SRCS
     local_history_pane.cpp
     menubar.cpp
     mergetool_frame.cpp
+    project_downgrade.cpp
     project_template.cpp
     project_tree_pane.cpp
     project_tree.cpp
@@ -55,6 +56,7 @@ set( KICAD_SRCS
 
 set( KICAD_CLI_SRCS
     cli/command.cpp
+    project_downgrade.cpp
     cli/command_api_server.cpp
     cli/command_export_bom.cpp
     cli/command_jobset_run.cpp
@@ -73,7 +75,9 @@ set( KICAD_CLI_SRCS
     cli/command_pcb_export_gerber.cpp
     cli/command_pcb_export_gerbers.cpp
     cli/command_pcb_export_gencad.cpp
+    cli/command_pcb_export_specctra.cpp
     cli/command_pcb_export_hpgl.cpp
+    cli/command_pcb_export_hyperlynx.cpp
     cli/command_pcb_export_ipc2581.cpp
     cli/command_pcb_export_ipcd356.cpp
     cli/command_pcb_export_idf.cpp
@@ -86,18 +90,23 @@ set( KICAD_CLI_SRCS
     cli/command_pcb_export_stackup.cpp
     cli/command_pcb_export_svg.cpp
     cli/command_pcb_upgrade.cpp
+    cli/command_pcb_downgrade.cpp
+    cli/command_project_downgrade.cpp
     cli/command_pcb_import.cpp
     cli/command_sch_import.cpp
     cli/command_import.cpp
     cli/command_fp_export_svg.cpp
     cli/command_fp_upgrade.cpp
+    cli/command_fp_downgrade.cpp
     cli/command_sch_upgrade.cpp
+    cli/command_sch_downgrade.cpp
     cli/command_sch_export_pythonbom.cpp
     cli/command_sch_export_netlist.cpp
     cli/command_sch_export_plot.cpp
     cli/command_sch_erc.cpp
     cli/command_sym_export_svg.cpp
     cli/command_sym_upgrade.cpp
+    cli/command_sym_downgrade.cpp
     cli/command_gerber_info.cpp
     cli/command_gerber_convert_png.cpp
     cli/command_gerber_diff.cpp
@@ -290,7 +299,6 @@ if( APPLE )
         endfunction( move_to_main_bundle )
 
         # move all app bundles
-        move_to_main_bundle( \"bitmap2component.app\" \"Image Converter.app\" )
         move_to_main_bundle( \"eeschema.app\" \"Schematic Editor.app\" )
         move_to_main_bundle( \"gerbview.app\" \"GerbView.app\" )
         move_to_main_bundle( \"pcb_calculator.app\" \"PCB Calculator.app\" )

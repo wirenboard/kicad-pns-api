@@ -21,6 +21,8 @@
 #include "git_backend.h"
 #include <git/kicad_git_common.h>
 #include <git/kicad_git_memory.h>
+#include <git/kigit_ignore.h>
+#include <git/project_git_utils.h>
 #include <paths.h>
 #include <trace_helpers.h>
 
@@ -35,70 +37,23 @@
 #include <wx/tokenzr.h>
 
 
-// Seed the project .gitignore with KiCad-generated paths that should never be
-// committed (local history, backups, autosaves, lock files, footprint cache,
-// project-local settings which may hold remote URLs and usernames).
-// Append-only: existing entries are preserved.
+// Seed a new .gitignore with the same generated paths the change list hides.
+// An existing file belongs to the team and is left alone.
 static void ensureProjectGitignore( const wxString& aProjectPath )
 {
-    static const wxString kicadEntries[] = {
-        wxS( ".history/" ),     wxS( "*-backups/" ), wxS( "_autosave-*" ),
-        wxS( "fp-info-cache" ), wxS( "~*.lck" ),     wxS( "*.kicad_prl" ),
-    };
+    const wxFileName ignoreFile = KIGIT::ProjectIgnoreFile( aProjectPath );
 
-    wxFileName         ignoreFile( aProjectPath, wxS( ".gitignore" ) );
-    std::set<wxString> existing;
-    bool               fileExists = ignoreFile.FileExists();
-    bool               hasTrailingNewline = true;
-
-    if( fileExists )
-    {
-        wxFFile  in( ignoreFile.GetFullPath(), wxT( "r" ) );
-        wxString contents;
-
-        if( !in.IsOpened() || !in.ReadAll( &contents ) )
-            return;
-
-        hasTrailingNewline = contents.empty() || contents.EndsWith( wxS( "\n" ) );
-
-        wxStringTokenizer tok( contents, wxS( "\n" ) );
-
-        while( tok.HasMoreTokens() )
-        {
-            wxString line = tok.GetNextToken();
-            line.Trim().Trim( false );
-
-            if( !line.empty() && !line.StartsWith( wxS( "#" ) ) )
-                existing.insert( line );
-        }
-    }
-
-    wxString missing;
-
-    for( const wxString& entry : kicadEntries )
-    {
-        if( existing.find( entry ) == existing.end() )
-            missing += entry + wxS( "\n" );
-    }
-
-    if( missing.empty() )
+    if( ignoreFile.FileExists() )
         return;
 
-    wxFFile out( ignoreFile.GetFullPath(), wxT( "a" ) );
+    wxString error;
 
-    if( !out.IsOpened() )
-        return;
-
-    if( !fileExists )
-        out.Write( wxS( "# KiCad-generated files and directories.\n" ) );
-    else if( !hasTrailingNewline )
-        out.Write( wxS( "\n" ) );
-
-    out.Write( missing );
+    KIGIT::AddIgnoreRules( ignoreFile, KIGIT::PROJECT_GIT_UTILS::TransientGitIgnorePatterns(),
+                           wxS( "KiCad-generated files and directories." ), error );
 }
 
 
-// Add .gitattributes entries that route KiCad design files through our merge
+// Add attributes entries that route KiCad design files through our merge
 // drivers. The drivers themselves are registered with libgit2 at kiface init
 // (KIGIT_PCB_MERGE::Apply etc.); the attribute file tells git which paths to
 // route to which driver.
@@ -106,7 +61,7 @@ static void ensureProjectGitignore( const wxString& aProjectPath )
 // Append-only: existing user entries are preserved. If a path glob is already
 // present with any merge=... value, we leave it alone — never overwrite a
 // user's choice.
-static void ensureProjectGitattributes( const wxString& aProjectPath )
+static void ensureProjectGitattributes( const wxFileName& aAttrFile )
 {
     static const std::pair<wxString, wxString> kicadEntries[] = {
         { wxS( "*.kicad_pcb" ),  wxS( "merge=kicad-pcb" ) },
@@ -115,7 +70,11 @@ static void ensureProjectGitattributes( const wxString& aProjectPath )
         { wxS( "*.kicad_mod" ),  wxS( "merge=kicad-fp" ) },
     };
 
-    wxFileName attrFile( aProjectPath, wxS( ".gitattributes" ) );
+    wxFileName attrFile( aAttrFile );
+
+    // info/ is absent from a repository created without a template
+    if( !attrFile.Mkdir( wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
+        return;
 
     // Map glob -> existing merge driver, if any.
     std::set<wxString> existingPatterns;
@@ -218,7 +177,7 @@ static bool setConfigIfMissing( git_config* aConfig, const char* aKey, const wxS
 // files through us. Append-only at the config level too: any existing
 // merge.kicad-* or mergetool.kicad config entry is preserved. `merge.tool`
 // is only set to "kicad" when the user hasn't already picked a tool.
-static void ensureMergeDriverConfig( const wxString& aProjectPath )
+static void ensureMergeDriverConfig( git_repository* aRepo )
 {
     const wxString cliPath = resolveKicadCliPath();
 
@@ -230,20 +189,9 @@ static void ensureMergeDriverConfig( const wxString& aProjectPath )
         return;
     }
 
-    git_repository* repo = nullptr;
-
-    if( git_repository_open( &repo, aProjectPath.ToUTF8() ) != 0 )
-    {
-        wxLogTrace( traceGit, "git_repository_open failed: %s",
-                    KIGIT_COMMON::GetLastGitError() );
-        return;
-    }
-
-    KIGIT::GitRepositoryPtr repoPtr( repo );
-
     git_config* config = nullptr;
 
-    if( git_repository_config( &config, repo ) != 0 )
+    if( git_repository_config( &config, aRepo ) != 0 )
     {
         wxLogTrace( traceGit, "git_repository_config failed: %s",
                     KIGIT_COMMON::GetLastGitError() );
@@ -324,27 +272,51 @@ InitResult GIT_INIT_HANDLER::InitializeRepository( const wxString& aPath )
     InitResult result = GetGitBackend()->InitializeRepository( this, aPath );
 
     if( result == InitResult::Success )
-        ApplyKicadGitConventions( aPath );
+    {
+        git_repository* repo = nullptr;
+
+        if( git_repository_open( &repo, aPath.ToUTF8() ) == 0 )
+        {
+            KIGIT::GitRepositoryPtr repoPtr( repo );
+            ApplyKicadGitConventions( repo, false );
+        }
+        else
+        {
+            wxLogTrace( traceGit, "git_repository_open failed: %s", KIGIT_COMMON::GetLastGitError() );
+        }
+    }
 
     return result;
 }
 
 
-void ApplyKicadGitConventions( const wxString& aProjectPath )
+void ApplyKicadGitConventions( git_repository* aRepo, bool aClone )
 {
-    ensureProjectGitignore( aProjectPath );
-    ensureProjectGitattributes( aProjectPath );
-    ensureMergeDriverConfig( aProjectPath );
+    const char* workdir = git_repository_workdir( aRepo );
+
+    if( !workdir )
+        return;
+
+    const wxString projectPath = wxString::FromUTF8( workdir );
+
+    // A clone belongs to the team, so nothing may be written into its work tree
+    if( aClone )
+    {
+        wxFileName infoAttributes( wxString::FromUTF8( git_repository_path( aRepo ) ), wxS( "attributes" ) );
+        infoAttributes.AppendDir( wxS( "info" ) );
+        ensureProjectGitattributes( infoAttributes );
+    }
+    else
+    {
+        ensureProjectGitignore( projectPath );
+        ensureProjectGitattributes( wxFileName( projectPath, wxS( ".gitattributes" ) ) );
+    }
+
+    ensureMergeDriverConfig( aRepo );
 }
 
 
 bool GIT_INIT_HANDLER::SetupRemote( const RemoteConfig& aConfig )
 {
     return GetGitBackend()->SetupRemote( this, aConfig );
-}
-
-
-void GIT_INIT_HANDLER::UpdateProgress( int aCurrent, int aTotal, const wxString& aMessage )
-{
-    ReportProgress( aCurrent, aTotal, aMessage );
 }

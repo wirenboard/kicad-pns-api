@@ -27,15 +27,18 @@
 #include <core/kicad_algo.h>
 #include <design_block_library_adapter.h>
 #include <string_utils.h>
-#include <kiface_ids.h>
+#include <kiface_services.h>
 #include <kiway.h>
 #include <libraries/library_manager.h>
 #include <libraries/library_table.h>
 #include <lockfile.h>
 #include <macros.h>
+#include <git/kicad_git_common.h>
+#include <git/kigit_ssh_keys.h>
 #include <git/project_git_utils.h>
 #include <git2.h>
 #include <project.h>
+#include <project/project_local_settings.h>
 
 #include <footprint_library_adapter.h>
 
@@ -74,7 +77,101 @@ void PROJECT::elemsClear()
 
 PROJECT::~PROJECT()
 {
+    ReleaseGitCommon();
     elemsClear();
+}
+
+
+std::shared_ptr<KIGIT_COMMON> PROJECT::GetGitCommon() const
+{
+    if( !m_gitCommon )
+        m_gitCommon = std::make_shared<KIGIT_COMMON>( nullptr, GetProjectPath() );
+
+    return m_gitCommon;
+}
+
+
+bool PROJECT::AttachGitRepository()
+{
+    std::shared_ptr<KIGIT_COMMON> common = GetGitCommon();
+
+    if( common->GetRepo() )
+        return true;
+
+    if( m_localSettings && m_localSettings->m_GitIntegrationDisabled )
+        return false;
+
+    // First attach only, or every panel refresh would undo what the credentials prompt
+    // corrected on the live session.
+    if( m_localSettings )
+        common->SetSSHKey( KIGIT::PrivateKeyPath( m_localSettings->m_GitSSHKey ) );
+
+    wxFileName      fn( GetProjectFullName() );
+    wxString        projectDir = fn.GetPath();
+    wxString        attachError;
+    wxString        trustCommand;
+    git_repository* repo =
+            KIGIT::PROJECT_GIT_UTILS::GetRepositoryForFile( TO_UTF8( projectDir ), &attachError, &trustCommand );
+
+    common->SetAttachError( attachError, trustCommand );
+
+    if( !repo )
+        return false;
+
+    // A bare repository has no files on disk to show or commit, so attaching to one would
+    // report the project as having no changes while every operation on it failed.
+    if( !git_repository_workdir( repo ) )
+    {
+        git_repository_free( repo );
+        common->SetAttachError( _( "The git repository holding this project has no working folder, so "
+                                   "KiCad cannot use it. Clone the repository normally and open the "
+                                   "project from the clone." ) );
+        return false;
+    }
+
+    common->SetRepo( repo );
+    common->SetShuttingDown( false );
+
+    const char* canonicalWorkDir = git_repository_workdir( repo );
+
+    if( canonicalWorkDir )
+    {
+        wxString symlinkWorkDir = KIGIT::PROJECT_GIT_UTILS::ComputeSymlinkPreservingWorkDir(
+                projectDir, wxString::FromUTF8( canonicalWorkDir ) );
+        common->SetProjectDir( symlinkWorkDir );
+    }
+
+    common->UpdateCurrentBranchInfo();
+
+    wxString remote = common->GetRemote();
+
+    // The address names no transport, so the one picked in the credential prompt stands in
+    if( m_localSettings && !remote.IsEmpty()
+        && KIGIT_COMMON::ParseRemoteURL( remote ).connType == KIGIT_COMMON::GIT_CONN_TYPE::GIT_CONN_LOCAL )
+    {
+        if( m_localSettings->m_GitRepoType == wxS( "ssh" ) )
+            common->SetConnType( KIGIT_COMMON::GIT_CONN_TYPE::GIT_CONN_SSH );
+        else if( m_localSettings->m_GitRepoType == wxS( "https" ) )
+            common->SetConnType( KIGIT_COMMON::GIT_CONN_TYPE::GIT_CONN_HTTPS );
+    }
+
+    // Reading the URL clears a username it does not name, and one it does name wins
+    if( m_localSettings && common->GetUsername().IsEmpty() )
+        common->SetUsername( m_localSettings->m_GitRepoUsername );
+
+    return true;
+}
+
+
+void PROJECT::ReleaseGitCommon()
+{
+    if( !m_gitCommon )
+        return;
+
+    std::shared_ptr<KIGIT_COMMON> old = std::move( m_gitCommon );
+
+    std::string label = "release " + GetProjectPath().ToStdString();
+    KIGIT::PROJECT_GIT_UTILS::SafeFreeRepository( std::move( old ), label );
 }
 
 
@@ -154,6 +251,7 @@ void PROJECT::setProjectFullName( const wxString& aFullPathAndName )
     // data using the Clear() function.
     if( m_project_name.GetFullPath() != candidate_path.GetFullPath() )
     {
+        ReleaseGitCommon();
         Clear();            // clear the data when the project changes.
 
         wxLogTrace( tracePathsAndFiles, "%s: old:'%s' new:'%s'", __func__,
@@ -165,11 +263,7 @@ void PROJECT::setProjectFullName( const wxString& aFullPathAndName )
         wxString ext = m_project_name.GetExt();
 
         if( !ext.IsEmpty() && ext != FILEEXT::ProjectFileExtension )
-        {
-            wxLogDebug( wxT( "Project file has unexpected extension '%s', expected '%s'" ), ext,
-                        FILEEXT::ProjectFileExtension );
             m_project_name.SetExt( FILEEXT::ProjectFileExtension );
-        }
     }
 }
 
@@ -426,7 +520,7 @@ const wxString PROJECT::AbsolutePath( const wxString& aFileName ) const
 FOOTPRINT_LIBRARY_ADAPTER* PROJECT::FootprintLibAdapter( KIWAY& aKiway )
 {
     KIFACE* kiface = aKiway.KiFACE( KIWAY::FACE_PCB );
-    return static_cast<FOOTPRINT_LIBRARY_ADAPTER*>( kiface->IfaceOrAddress( KIFACE_FOOTPRINT_LIBRARY_ADAPTER ) );
+    return GetKifaceService<KIFACE_FOOTPRINT_LIBRARY_ADAPTER_SERVICE>( kiface );
 }
 
 
@@ -472,16 +566,17 @@ void PROJECT::SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY_F
         return;
 
     wxFileName projectFn( projectFile );
-    wxFileName requestedFn( aProjectPath );
+    wxFileName requestedDir = wxFileName::DirName( aProjectPath );
     // wxPATH_NORM_ALL is now deprecated.
     // So define a similar option
     int norm_opt = wxPATH_NORM_ENV_VARS|wxPATH_NORM_DOTS|wxPATH_NORM_TILDE|wxPATH_NORM_ABSOLUTE
                    |wxPATH_NORM_LONG|wxPATH_NORM_SHORTCUT;
 
-    if( !projectFn.Normalize( norm_opt ) || !requestedFn.Normalize( norm_opt ) )
+    if( !projectFn.Normalize( norm_opt ) || !requestedDir.Normalize( norm_opt ) )
         return;
 
-    if( projectFn.GetFullPath() != requestedFn.GetFullPath() )
+    // Savers are handed the project directory, not the project file
+    if( projectFn.GetPath() != requestedDir.GetPath() )
         return;
 
     HISTORY_FILE_DATA proEntry;
@@ -496,14 +591,23 @@ void PROJECT::SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY_F
 
     aFileData.push_back( std::move( proEntry ) );
 
-    wxFileName prlFile( projectFn.GetPath(), projectFn.GetName(),
-                        FILEEXT::ProjectLocalSettingsFileExtension );
+    // Board Setup writes the rules file and the table editors write the tables, so the disk copies are current
+    const wxString dir = projectFn.GetPath();
+    const wxString name = projectFn.GetName();
 
-    if( prlFile.FileExists() )
+    for( const wxFileName& file : { wxFileName( dir, name, FILEEXT::ProjectLocalSettingsFileExtension ),
+                                    wxFileName( dir, name, FILEEXT::DesignRulesFileExtension ),
+                                    wxFileName( dir, FILEEXT::FootprintLibraryTableFileName ),
+                                    wxFileName( dir, FILEEXT::SymbolLibraryTableFileName ) } )
     {
-        HISTORY_FILE_DATA prlEntry;
-        prlEntry.relativePath = prlFile.GetFullName();
-        prlEntry.sourcePath = prlFile.GetFullPath();
-        aFileData.push_back( std::move( prlEntry ) );
+        HISTORY_FILE_DATA entry;
+        entry.relativePath = file.GetFullName();
+
+        if( file.FileExists() )
+            entry.sourcePath = file.GetFullPath();
+        else
+            entry.removed = true;
+
+        aFileData.push_back( std::move( entry ) );
     }
 }

@@ -160,8 +160,15 @@ void EDA_ITEM::SetParent( EDA_ITEM* aParent )
 
 void EDA_ITEM::RemoveCustomProperty( const wxString& aKey )
 {
-    m_customProperties.erase( aKey );
-    m_dynamicCustomPropsCache.erase( aKey );
+    for( auto it = m_customProperties.begin(); it != m_customProperties.end(); it++ )
+    {
+        if( it->first.CmpNoCase( aKey ) == 0 )
+        {
+            // Keep the cached property alive, the properties grid may still point at it
+            m_customProperties.erase( it );
+            return;
+        }
+    }
 }
 
 
@@ -187,13 +194,16 @@ std::vector<wxString> EDA_ITEM::RemoveConflictingCustomProperties()
 
 bool EDA_ITEM::GetCustomProperty( const wxString& aKey, wxString& aValue ) const
 {
-    auto it = m_customProperties.find( aKey );
+    for( const auto& [key, value] : m_customProperties )
+    {
+        if( key.CmpNoCase( aKey ) == 0 )
+        {
+            aValue = value;
+            return true;
+        }
+    }
 
-    if( it == m_customProperties.end() )
-        return false;
-
-    aValue = it->second;
-    return true;
+    return false;
 }
 
 
@@ -208,12 +218,12 @@ std::vector<PROPERTY_BASE*> EDA_ITEM::GetCustomPropertiesAsInspectables() const
     {
         (void) value;
 
-        auto it = m_dynamicCustomPropsCache.find( key );
+        auto it = m_customPropsStorageCache.find( key );
 
-        if( it == m_dynamicCustomPropsCache.end() )
+        if( it == m_customPropsStorageCache.end() )
         {
-            it = m_dynamicCustomPropsCache.emplace(
-                    key, std::make_unique<EDA_CUSTOM_PROPERTY>( key, ownerHash ) ).first;
+            auto prop = std::make_unique<EDA_CUSTOM_PROPERTY>( key, ownerHash );
+            it = m_customPropsStorageCache.emplace( key, std::move( prop ) ).first;
         }
 
         props.push_back( it->second.get() );
@@ -589,6 +599,7 @@ static struct EDA_ITEM_DESC
             .Map( PCB_TABLE_T,             _HKI( "Table" ) )
             .Map( PCB_DRILL_CHART_T,       _HKI( "Drill Chart" ) )
             .Map( PCB_DRILL_MAP_T,         _HKI( "Drill Map" ) )
+            .Map( PCB_STACKUP_TABLE_T,     _HKI( "Stackup Table" ) )
             .Map( PCB_TABLECELL_T,         _HKI( "Table Cell" ) )
             .Map( PCB_TRACE_T,             _HKI( "Track" ) )
             .Map( PCB_ARC_T,               _HKI( "Track" ) )
@@ -607,6 +618,7 @@ static struct EDA_ITEM_DESC
             .Map( PCB_GROUP_T,             _HKI( "Group" ) )
             .Map( PCB_BARCODE_T,           _HKI( "Barcode" ) )
             .Map( PCB_GRID_ITEM_T,         _HKI( "Grid" ) )
+            .Map( PCB_3D_BODY_T,           _HKI( "3D Body" ) )
 
             .Map( SCH_MARKER_T,            _HKI( "Marker" ) )
             .Map( SCH_JUNCTION_T,          _HKI( "Junction" ) )

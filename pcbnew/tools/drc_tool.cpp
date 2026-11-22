@@ -37,15 +37,13 @@
 #include <netlist_reader/pcb_netlist.h>
 #include <macros.h>
 #include <dialog_exchange_footprints.h>
-#include <drc/rule_editor/dialog_drc_rule_editor.h>
 
 
 DRC_TOOL::DRC_TOOL() :
-        PCB_TOOL_BASE( "pcbnew.DRCTool" ),
+        PCB_TOOL_BASE( DRC_TOOL_NAME ),
         m_editFrame( nullptr ),
         m_pcb( nullptr ),
         m_drcDialog( nullptr ),
-        m_designRuleEditorDlg( nullptr ),
         m_drcRunning( false )
 {
 }
@@ -155,6 +153,7 @@ void DRC_TOOL::RunTests( PROGRESS_REPORTER* aProgressReporter, bool aRefillZones
         disabler = std::make_unique<wxWindowDisabler>( /* except: */ m_drcDialog );
 
     m_drcRunning = true;
+    m_drcEngine->SetSchematicNetlist( nullptr );
 
     if( m_drcDialog )
     {
@@ -174,12 +173,11 @@ void DRC_TOOL::RunTests( PROGRESS_REPORTER* aProgressReporter, bool aRefillZones
                                                            "fully annotated schematic." ) ) )
             {
                 netlistFetched = true;
+                m_drcEngine->SetSchematicNetlist( &netlist );
             }
 
             if( m_drcDialog )
                 m_drcDialog->Raise();
-
-            m_drcEngine->SetSchematicNetlist( &netlist );
         }
     }
 
@@ -197,6 +195,7 @@ void DRC_TOOL::RunTests( PROGRESS_REPORTER* aProgressReporter, bool aRefillZones
     m_drcEngine->RunTests( m_editFrame->GetUserUnits(), aReportAllTrackErrors, aTestFootprints,
                            &commit );
 
+    m_drcEngine->SetSchematicNetlist( nullptr );
     m_drcEngine->SetProgressReporter( nullptr );
     m_drcEngine->ClearViolationHandler();
 
@@ -331,7 +330,7 @@ wxString DRC_TOOL::FixDRCErrorMenuText( const std::shared_ptr<RC_ITEM>& aDRCItem
         return _( "Edit Pad Properties..." );
     }
     else if( aDRCItem->GetErrorCode() == DRCE_TEXT_HEIGHT
-                || aDRCItem->GetErrorCode() == DRCE_TEXT_THICKNESS
+                || aDRCItem->GetErrorCode() == DRCE_LINE_WIDTH
                 || aDRCItem->GetErrorCode() == DRCE_MIRRORED_TEXT_ON_FRONT_LAYER
                 || aDRCItem->GetErrorCode() == DRCE_UNMIRRORED_TEXT_ON_BACK_LAYER )
     {
@@ -341,6 +340,8 @@ wxString DRC_TOOL::FixDRCErrorMenuText( const std::shared_ptr<RC_ITEM>& aDRCItem
             return _( "Edit Dimension Properties..." );
         else if( item && item->Type() == PCB_FIELD_T )
             return _( "Edit Field Properties..." );
+        else if( item && item->Type() == PCB_SHAPE_T )
+            return _( "Edit Graphic Properties..." );
         else
             return _( "Edit Text Properties..." );
     }
@@ -385,7 +386,7 @@ void DRC_TOOL::FixDRCError( const std::shared_ptr<RC_ITEM>& aDRCItem )
                 || aDRCItem->GetErrorCode() == DRCE_PADSTACK
                 || aDRCItem->GetErrorCode() == DRCE_PADSTACK_INVALID
                 || aDRCItem->GetErrorCode() == DRCE_TEXT_HEIGHT
-                || aDRCItem->GetErrorCode() == DRCE_TEXT_THICKNESS
+                || aDRCItem->GetErrorCode() == DRCE_LINE_WIDTH
                 || aDRCItem->GetErrorCode() == DRCE_MIRRORED_TEXT_ON_FRONT_LAYER
                 || aDRCItem->GetErrorCode() == DRCE_UNMIRRORED_TEXT_ON_BACK_LAYER)
 
@@ -398,58 +399,6 @@ void DRC_TOOL::FixDRCError( const std::shared_ptr<RC_ITEM>& aDRCItem )
                 || aDRCItem->GetErrorCode() == DRCE_DANGLING_VIA )
     {
         m_toolMgr->RunAction( PCB_ACTIONS::cleanupTracksAndVias );
-    }
-}
-
-
-void DRC_TOOL::ShowDesignRuleEditorDialog( wxWindow* aParent )
-{
-    bool show_dlg_modal = true;
-
-    // the dialog needs a parent frame. if it is not specified, this is the PCB editor frame
-    // specified in DRC_TOOL class.
-    if( !aParent )
-    {
-        // if any parent is specified, the dialog is modal.
-        // if this is the default PCB editor frame, it is not modal
-        show_dlg_modal = false;
-        aParent = m_editFrame;
-    }
-
-    Activate();
-    m_toolMgr->RunAction( PCB_ACTIONS::selectionClear );
-
-    if( !m_designRuleEditorDlg )
-    {
-        m_designRuleEditorDlg = new DIALOG_DRC_RULE_EDITOR( m_editFrame, aParent );
-        updatePointers( false );
-
-        if( show_dlg_modal )
-            m_designRuleEditorDlg->ShowModal();
-        else
-            m_designRuleEditorDlg->Show( true );
-    }
-    else // The dialog is just not visible (because the user has double clicked on an error item)
-    {
-        updatePointers( false );
-        m_designRuleEditorDlg->Show( true );
-    }
-}
-
-
-int DRC_TOOL::ShowDesignRuleEditorDialog( const TOOL_EVENT& aEvent )
-{
-    ShowDesignRuleEditorDialog( nullptr );
-    return 0;
-}
-
-
-void DRC_TOOL::DestroyDesignRuleEditorDialog()
-{
-    if( m_designRuleEditorDlg )
-    {
-        m_designRuleEditorDlg->Destroy();
-        m_designRuleEditorDlg = nullptr;
     }
 }
 

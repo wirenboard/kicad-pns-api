@@ -28,6 +28,7 @@
 class BOARD;
 class REPORTER;
 class NETLIST;
+struct NETLIST_GROUP;
 class COMPONENT;
 class FOOTPRINT;
 class LIB_ID;
@@ -101,6 +102,8 @@ public:
 
     /// Enable dry run mode (just report, no changes to PCB).
     void SetIsDryRun( bool aEnabled ) { m_isDryRun = aEnabled; }
+
+    void SetWillDrag( bool aWillDrag ) { m_willDrag = aWillDrag; }
 
     void SetReplaceFootprints( bool aEnabled ) { m_replaceFootprints = aEnabled; }
 
@@ -181,6 +184,10 @@ private:
 
     bool updateCopperZoneNets( NETLIST& aNetlist );
 
+    PCB_GROUP* findBoardGroup( const KIID& aUuid ) const;
+
+    PCB_GROUP* addBoardGroup( const NETLIST_GROUP& aNetlistGroup );
+
     bool updateGroups( NETLIST& aNetlist );
 
     bool testConnectivity( NETLIST& aNetlist, std::map<COMPONENT*, FOOTPRINT*>& aFootprintMap );
@@ -202,6 +209,7 @@ private:
 
     bool m_deleteUnusedFootprints = false;
     bool m_isDryRun = false;
+    bool m_willDrag = false;
     bool m_replaceFootprints = true;
     bool m_transferGroups = false; // copy component group associations from schematic to PCB
     bool m_applyDesignBlockLayouts = false;

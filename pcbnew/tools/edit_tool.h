@@ -95,6 +95,11 @@ public:
      */
     int Mirror( const TOOL_EVENT& aEvent );
 
+    /**
+     * Mirror the current selection interactively (around some user-defined axis)
+     */
+    int MirrorInteractive( const TOOL_EVENT& aEvent );
+
     static const std::vector<KICAD_T> MirrorableItems;
 
     /**
@@ -168,6 +173,11 @@ public:
      * Duplicate the current selection and starts a move action.
      */
     int Duplicate( const TOOL_EVENT& aItem );
+
+    /**
+     * @return false when every item in \a aSelection is a generator that cannot be duplicated.
+     */
+    static bool CanDuplicateSelection( const SELECTION& aSelection );
 
     /**
      * Invoke a dialog box to allow moving of the item by an exact amount.

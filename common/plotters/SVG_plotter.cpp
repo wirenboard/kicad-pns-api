@@ -89,6 +89,7 @@
 #include <font/font.h>
 #include <macros.h>
 #include <trigo.h>
+#include <geometry/shape_rect.h>
 #include <fmt/format.h>
 
 #include <cstdint>
@@ -427,6 +428,14 @@ void SVG_PLOTTER::Rect( const VECTOR2I& p1, const VECTOR2I& p2, FILL_T fill, int
                     rect_dev.GetEnd().x, m_precision,
                     rect_dev.GetEnd().y, m_precision );
     }
+    else if( aCornerRadius > 0 )
+    {
+        BOX2I box( p1, VECTOR2I( p2.x - p1.x, p2.y - p1.y ) );
+        box.Normalize();
+        SHAPE_RECT roundedRect( box );
+        roundedRect.SetRadius( aCornerRadius );
+        PLOTTER::PlotPoly( roundedRect.Outline(), fill, width, nullptr );
+    }
     else
     {
         fmt::print( m_outputFile,
@@ -670,7 +679,7 @@ void SVG_PLOTTER::PlotPoly( const std::vector<VECTOR2I>& aCornerList, FILL_T aFi
 }
 
 
-void SVG_PLOTTER::PlotImage( const wxImage& aImage, const VECTOR2I& aPos, double aScaleFactor )
+void SVG_PLOTTER::PlotImage( const wxImage& aImage, const VECTOR2I& aPos, double aScaleFactor, double aAlpha )
 {
     VECTOR2I pix_size( aImage.GetWidth(), aImage.GetHeight() );
 
@@ -684,7 +693,7 @@ void SVG_PLOTTER::PlotImage( const wxImage& aImage, const VECTOR2I& aPos, double
     // so use a line when happens.
     if( drawsize.x == 0.0 || drawsize.y == 0.0 )    // Draw a line
     {
-        PLOTTER::PlotImage( aImage, aPos, aScaleFactor );
+        PLOTTER::PlotImage( aImage, aPos, aScaleFactor, aAlpha );
     }
     else
     {
@@ -720,9 +729,14 @@ void SVG_PLOTTER::PlotImage( const wxImage& aImage, const VECTOR2I& aPos, double
         }
 
         fmt::print( m_outputFile,
-                    "\"\npreserveAspectRatio=\"none\" width=\"{:.{}f}\" height=\"{:.{}f}\" />",
+                    "\"\npreserveAspectRatio=\"none\" width=\"{:.{}f}\" height=\"{:.{}f}\"",
                     userToDeviceSize( drawsize.x ), m_precision,
                     userToDeviceSize( drawsize.y ), m_precision );
+
+        if( aAlpha < 1.0 )
+            fmt::print( m_outputFile, " opacity=\"{:.{}f}\"", aAlpha, m_precision );
+
+        fmt::print( m_outputFile, " />" );
     }
 }
 

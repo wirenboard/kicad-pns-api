@@ -30,6 +30,9 @@ set( QA_PCBNEW_SRCS
     drc/drc_test_utils.cpp
 
     # test compilation units (start test_)
+    test_dimension_zero_suppression.cpp
+    test_bbox_3d.cpp
+    test_creepage_groove_order.cpp
     test_3d_viewer_layer_presets.cpp
     test_array_pad_name_provider.cpp
     test_barcode_load_save.cpp
@@ -38,9 +41,12 @@ set( QA_PCBNEW_SRCS
     test_board_design_settings.cpp
     test_board_item_index.cpp
     test_board_loader.cpp
+    test_project_file_implicit_save.cpp
     test_board_item.cpp
     test_drill_chart.cpp
     test_board_commit.cpp
+    test_board_downgrade.cpp
+    test_downgrade_oracle.cpp
     test_text_var_reactive.cpp
     test_clipboard_group.cpp
     test_board_statistics.cpp
@@ -54,6 +60,11 @@ set( QA_PCBNEW_SRCS
     test_convert_tool.cpp
     test_generator_load_save.cpp
     test_glb_utils.cpp
+    test_block_drag_capability.cpp
+    test_block_drag_dependents.cpp
+    test_block_drag_displacement.cpp
+    test_block_drag_pick.cpp
+    test_block_drag_validation.cpp
     test_graphics_load_save.cpp
     test_graphic_extend.cpp
     test_graphic_trim.cpp
@@ -67,18 +78,27 @@ set( QA_PCBNEW_SRCS
     test_footprint.cpp
     test_footprint_editor_tabs.cpp
     test_footprint_import_reconciler.cpp
+    test_import_design_rules.cpp
     test_footprint_library_adapter.cpp
     test_footprint_load_save.cpp
+    test_footprint_net_tie.cpp
+    test_footprint_pad_fixup.cpp
     test_footprint_realignment.cpp
+    test_exchange_pad_changes.cpp
     test_cross_probe_selection.cpp
     test_footprint_transform_sync.cpp
+    test_ref_suffix_split.cpp
     test_footprint_rescue_layer.cpp
     test_issue24735.cpp
     test_issue24901.cpp
     test_issue24967.cpp
     test_issue25010.cpp
+    test_issue25880.cpp
+    test_issue26111.cpp
     test_issue25110_bezier_line_style.cpp
     test_issue25521.cpp
+    test_issue25621_via_flashing_contact_layer.cpp
+    test_issue25650_collinear_arc.cpp
     test_fp_lib_load_save.cpp
     test_io_mgr.cpp
     test_ellipse_roundtrip.cpp
@@ -94,9 +114,12 @@ set( QA_PCBNEW_SRCS
     test_odb_soldermask_shape_export.cpp
     test_issue25074_odb_knockout_textbox.cpp
     test_pcb_control_rehatch.cpp
+    test_pcb_handle_key.cpp
     test_pns_basics.cpp
+    test_pad_check.cpp
     test_pad_flashing.cpp
     test_pad_numbering.cpp
+    test_pad_roundtrip.cpp
     test_pcb_differ.cpp
     test_diff_canvas_context.cpp
     test_pcb_merge_applier.cpp
@@ -106,10 +129,12 @@ set( QA_PCBNEW_SRCS
     test_lib_table_diff_merge.cpp
     test_applier_helpers.cpp
     test_fp_lib_differ.cpp
-    test_pad_size_setters.cpp
+    test_footprint_item_equality.cpp
+    test_pad_setters.cpp
     test_pad_swap_positions.cpp
     test_pad_tenting.cpp
     test_plot_edge_cuts_drill_marks.cpp
+    test_plot_job_layers.cpp
     test_plot_pad_mask.cpp
     test_plot_footprint_scaled_text.cpp
     test_pcb_textbox.cpp
@@ -118,6 +143,7 @@ set( QA_PCBNEW_SRCS
     test_libeval_compiler.cpp
     test_reference_image_load.cpp
     test_complex_padstack_export.cpp
+    test_padstack_clone.cpp
     test_gencad_export.cpp
     test_idf_export.cpp
     test_d356_export.cpp
@@ -209,9 +235,11 @@ set( QA_PCBNEW_SRCS
     drc/test_drc_tuner_agreement.cpp
     drc/test_drc_length_item_order.cpp
     drc/test_drc_skew_arc.cpp
+    drc/test_drc_linewidth.cpp
     drc/test_drc_unconnected_items_exclusion_loss.cpp
     drc/test_drc_via_dangling.cpp
     drc/test_drc_keepout_disallow.cpp
+    drc/test_drc_netclass_literal.cpp
     drc/test_drc_tuning_profiles.cpp
     drc/test_drc_creepage.cpp
     drc/test_drc_creepage_issue20480.cpp
@@ -231,9 +259,11 @@ set( QA_PCBNEW_SRCS
     drc/test_drc_creepage_issue24875.cpp
     drc/test_drc_creepage_issue24885.cpp
     drc/test_drc_creepage_issue25439.cpp
+    drc/test_drc_creepage_issue25821.cpp
     drc/test_drc_creepage_circle_prune.cpp
     drc/test_creepage_engine_parity.cpp
     drc/test_creepage_engine_incremental.cpp
+    drc/test_drc_copper_outside_board_issue14650.cpp
     drc/test_drc_invalid_outline_issue24078.cpp
     drc/test_drc_invalid_outline_issue24241.cpp
     drc/test_drc_silk_rule_area_issue24177.cpp
@@ -247,6 +277,7 @@ set( QA_PCBNEW_SRCS
     drc/test_drc_issue24211.cpp
     drc/test_drc_physical_clearance.cpp
     drc/test_drc_prepared_candidates.cpp
+    drc/test_drc_rule_document.cpp
     drc/test_drc_rule_editor.cpp
     drc/test_drc_violation_layers_issue24941.cpp
     drc/test_drc_net_chain_tuning_profiles.cpp
@@ -292,6 +323,12 @@ set( QA_PCBNEW_SRCS
     pcb_io/ipc2581/test_ipc2581_export.cpp
 
     pcb_io/odbpp/test_odbpp_netlist.cpp
+    pcb_io/odbpp/test_odbpp_attributes.cpp
+    pcb_io/odbpp/test_odbpp_rout.cpp
+    test_fab_pin.cpp
+    test_fab_stackup.cpp
+    test_fab_pad_geometry.cpp
+    pcb_io/odbpp/odb_test_utils.cpp
 
     group_saveload.cpp
     test_via_stack_saveload.cpp
@@ -415,6 +452,7 @@ endif()
 
 # Keep build-system dependencies from the original single-entry registration
 add_dependencies( qa_all_tests qa_pcbnew )
+kicad_qa_fail_fast( qa_pcbnew )
 
 if( NOT KICAD_BUILD_QA_TESTS )
     set_target_properties( qa_pcbnew PROPERTIES EXCLUDE_FROM_ALL TRUE )
@@ -466,6 +504,8 @@ set( PCBNEW_ZONE_TESTS
 :RegressionDiffNetOverlappingZones\
 :RegressionThermalReliefsToNowhere\
 :OffCenterTeardropSymmetry\
+:CrossingTrackTeardropOnViaStaysOnTrack\
+:CrossingTrackTeardropOnPadStaysOnTrack\
 :RegressionKeepoutBoundaryMissingFill\
 :HatchZoneViaConnectionRespectsSetting\
 :RegressionCascadingIslandRefill\
@@ -546,6 +586,7 @@ set( PCBNEW_EXCLUDED_FROM_OTHER
 :!RegressionShallowArcZoneFill\
 :!RegressionIterativeRefillRespectsKeepouts\
 :!RegressionTHPadInnerLayerFlashing\
+:!RegressionThermalReliefAnnularRing45\
 :!RegressionRoundRectTeardropGeometry\
 :!OvalPadTeardropGeometry\
 :!LargeCircleTeardropGeometry\
@@ -558,6 +599,8 @@ set( PCBNEW_EXCLUDED_FROM_OTHER
 :!RegressionDiffNetOverlappingZones\
 :!RegressionThermalReliefsToNowhere\
 :!OffCenterTeardropSymmetry\
+:!CrossingTrackTeardropOnViaStaysOnTrack\
+:!CrossingTrackTeardropOnPadStaysOnTrack\
 :!RegressionKeepoutBoundaryMissingFill\
 :!HatchZoneViaConnectionRespectsSetting\
 :!RegressionCascadingIslandRefill\

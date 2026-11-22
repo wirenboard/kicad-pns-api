@@ -18,6 +18,7 @@
  */
 
 #include <boost/test/unit_test.hpp>
+#include <qa_utils/file_utils.h>
 
 #include <filesystem>
 #include <memory>
@@ -39,22 +40,16 @@ BOOST_AUTO_TEST_CASE( ExportGencadWithFilename )
 
     BOOST_REQUIRE( std::filesystem::exists( boardPath ) );
 
-    const std::filesystem::path outputRoot =
-            std::filesystem::temp_directory_path() / "kicad_gencad_export_test";
-    const std::filesystem::path outputPath = outputRoot / "test_output.cad";
-
-    if( std::filesystem::exists( outputRoot ) )
-        std::filesystem::remove_all( outputRoot );
+    KI_TEST::SCOPED_TEMP_DIR    outputRoot( wxS( "kicad_gencad_export_test" ) );
+    const std::filesystem::path outputPath = outputRoot.Path() / "test_output.cad";
 
     auto gencadJob = std::make_unique<JOB_EXPORT_PCB_GENCAD>();
-    gencadJob->m_filename = wxString::FromUTF8( boardPath.string().c_str() );
-    gencadJob->SetConfiguredOutputPath( wxString::FromUTF8( outputPath.string().c_str() ) );
+    gencadJob->m_filename = KI_TEST::ToWxPath( boardPath );
+    gencadJob->SetConfiguredOutputPath( KI_TEST::ToWxPath( outputPath ) );
 
     int result = handler.JobExportGencad( gencadJob.get() );
     BOOST_CHECK_EQUAL( result, CLI::EXIT_CODES::OK );
 
     BOOST_CHECK( std::filesystem::exists( outputPath ) );
     BOOST_CHECK( std::filesystem::is_regular_file( outputPath ) );
-
-    std::filesystem::remove_all( outputRoot );
 }

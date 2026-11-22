@@ -125,6 +125,10 @@ BOOST_AUTO_TEST_CASE( CompositeIdentityIsOrderIndependentWithoutXorCancellation 
                  == MakeCompositeSnapId( SNAP_ID_KIND::INTRINSIC_ANCHOR, { second, first }, 3 ) );
     BOOST_CHECK( MakeCompositeSnapId( SNAP_ID_KIND::INTRINSIC_ANCHOR, { first, first }, 3 ).target
                  != SNAP_TARGET_ID{} );
+
+    // The kind and target count are hashed ahead of the targets and must not be lost to them
+    BOOST_CHECK( MakeCompositeSnapId( SNAP_ID_KIND::INTRINSIC_ANCHOR, { first, second }, 3 ).target
+                 != MakeCompositeSnapId( SNAP_ID_KIND::CONSTRUCTED_ANCHOR, { first, second }, 3 ).target );
 }
 
 
@@ -144,7 +148,7 @@ BOOST_AUTO_TEST_CASE( IdentityConstructionHasStableGoldenBytes )
                                                          { KIID( "00000000-0000-0000-0000-000000000002" ).AsBytes(),
                                                            KIID( "00000000-0000-0000-0000-000000000001" ).AsBytes() },
                                                          3 ) ),
-                       "9084556ddbcdd0543f07abd73d7fb746" );
+                       "8f02794a0e8da19751d9debf2e2eeeee" );
 }
 
 
@@ -521,8 +525,8 @@ BOOST_AUTO_TEST_CASE( MandatoryPrefixCompletesAfterDeadline )
                                                   SNAP_CANDIDATE_SUBTYPE::FINITE_MANIFOLD, { 8, 0 }, 3.0 ) );
     resolver.AddCandidate( SNAP_CANDIDATE::AxisX( id( "intrinsic" ), SNAP_PRIORITY_TIER::OBJECT,
                                                   SNAP_CANDIDATE_SUBTYPE::INTRINSIC_ANCHOR, 8, 0.0 ) );
-    resolver.AddCandidate( SNAP_CANDIDATE::AxisY( id( "optional" ), SNAP_PRIORITY_TIER::GRID,
-                                                  SNAP_CANDIDATE_SUBTYPE::GRID_AXIS, 0, 3.0 ) );
+    resolver.AddCandidate( SNAP_CANDIDATE::AxisY( id( "optional" ), SNAP_PRIORITY_TIER::OBJECT,
+                                                  SNAP_CANDIDATE_SUBTYPE::FINITE_MANIFOLD, 0, 3.0 ) );
     resolver.SetFeasibilityCallback(
             [&]( const SNAP_SOURCE_CONTEXT&, const std::vector<SNAP_CANDIDATE>& aTrial )
             {
@@ -709,6 +713,70 @@ BOOST_AUTO_TEST_CASE( RunningTrialFinishesButNoFurtherTrialStartsAfterOverrun )
     BOOST_CHECK_EQUAL( result.status, SNAP_RESULT_STATUS::BUDGET_EXHAUSTED );
     BOOST_CHECK( result.Accepted( std::min( id( "first" ), id( "second" ) ) ) );
     BOOST_CHECK( !result.Accepted( std::max( id( "first" ), id( "second" ) ) ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( GridAxesApplyAfterRejectedObjectExhaustsBudget )
+{
+    using CLOCK = std::chrono::steady_clock;
+
+    SNAP_SOURCE_CONTEXT context;
+    context.sourcePoint = { 13, 27 };
+    CLOCK::time_point now;
+    int               objectTrials = 0;
+
+    SNAP_RESOLVER resolver;
+    resolver.SetClock(
+            [&]
+            {
+                return now;
+            } );
+    resolver.SetDeadline( std::chrono::milliseconds( 8 ) );
+    resolver.AddCandidate( SNAP_CANDIDATE::Point( id( "slow-a" ), SNAP_PRIORITY_TIER::OBJECT,
+                                                  SNAP_CANDIDATE_SUBTYPE::FINITE_MANIFOLD, { 14, 26 }, 0.1 ) );
+    resolver.AddCandidate( SNAP_CANDIDATE::Point( id( "slow-b" ), SNAP_PRIORITY_TIER::OBJECT,
+                                                  SNAP_CANDIDATE_SUBTYPE::FINITE_MANIFOLD, { 12, 28 }, 0.2 ) );
+    resolver.AddCandidate( SNAP_CANDIDATE::AxisX( id( "grid-x" ), SNAP_PRIORITY_TIER::GRID,
+                                                  SNAP_CANDIDATE_SUBTYPE::GRID_AXIS, 10, 3.0 ) );
+    resolver.AddCandidate( SNAP_CANDIDATE::AxisX( id( "grid-x-alt" ), SNAP_PRIORITY_TIER::GRID,
+                                                  SNAP_CANDIDATE_SUBTYPE::GRID_AXIS, 12, 3.5 ) );
+    resolver.AddCandidate( SNAP_CANDIDATE::AxisY( id( "grid-y" ), SNAP_PRIORITY_TIER::GRID,
+                                                  SNAP_CANDIDATE_SUBTYPE::GRID_AXIS, 30, 4.0 ) );
+    resolver.SetFeasibilityCallback(
+            [&]( const SNAP_SOURCE_CONTEXT& aContext, const std::vector<SNAP_CANDIDATE>& aTrial )
+            {
+                SNAP_RESULT result;
+                result.position = aContext.sourcePoint;
+
+                for( const SNAP_CANDIDATE& candidate : aTrial )
+                {
+                    if( candidate.priority != SNAP_PRIORITY_TIER::GRID )
+                    {
+                        ++objectTrials;
+                        now += std::chrono::milliseconds( 9 );
+                        result.status = SNAP_RESULT_STATUS::INCOMPATIBLE;
+                        return result;
+                    }
+
+                    if( candidate.relation == SNAP_RELATION::GRID_X )
+                        result.position.x = static_cast<int>( candidate.origin.x );
+                    else
+                        result.position.y = static_cast<int>( candidate.origin.y );
+
+                    --result.remainingDof;
+                }
+
+                return result;
+            } );
+
+    SNAP_RESULT result = resolver.Resolve( context );
+
+    BOOST_CHECK_EQUAL( objectTrials, 1 );
+    BOOST_CHECK_EQUAL( result.status, SNAP_RESULT_STATUS::BUDGET_EXHAUSTED );
+    BOOST_CHECK_EQUAL( result.position, VECTOR2I( 10, 30 ) );
+    BOOST_CHECK( result.Accepted( id( "grid-x" ) ) );
+    BOOST_CHECK( result.Accepted( id( "grid-y" ) ) );
+    BOOST_CHECK( !result.Accepted( id( "grid-x-alt" ) ) );
 }
 
 

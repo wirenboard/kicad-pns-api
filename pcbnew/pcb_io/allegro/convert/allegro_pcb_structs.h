@@ -133,7 +133,8 @@ enum class FMT_VER
     V_UNKNOWN,
     V_PRE_V16, // Allegro versions before 16.0 (unsupported binary format)
     V_160, // Allegro 16.0, 0x00130000
-    V_162, // Allegro 16.2  0x00130400
+    V_161, // Between 16.0 and 16.2, 0x00130200
+    V_162, // Allegro 16.2  0x00130400, 0x00130500
     V_164, // Allegro 16.4, 0x00130C00
     V_165, // Allegro 16.5, 0x00131000
     V_166, // Allegro 16.6, 0x00131500
@@ -281,7 +282,11 @@ struct FILE_HEADER
      */
     struct LINKED_LIST
     {
+        // Chain terminator: a chain ends when a block's next key equals this value.
+        // It is normally not the key of any block.
         uint32_t m_Tail;
+
+        // Key of the first block in the chain, or 0 if the chain is empty.
         uint32_t m_Head;
     };
 
@@ -313,13 +318,9 @@ struct FILE_HEADER
     COND_GE<FMT_VER::V_180, uint32_t> m_StringCount_V18;
     COND_GE<FMT_VER::V_180, uint32_t> m_Unknown2g_V18;          // 0x00
 
-    // V180 has 6 additional linked lists in the header
-    // 5 of them are at the start
-    COND_GE<FMT_VER::V_180, LINKED_LIST> m_LL_V18_1;
-    COND_GE<FMT_VER::V_180, LINKED_LIST> m_LL_V18_2;
-    COND_GE<FMT_VER::V_180, LINKED_LIST> m_LL_V18_3;
-    COND_GE<FMT_VER::V_180, LINKED_LIST> m_LL_V18_4;
-    COND_GE<FMT_VER::V_180, LINKED_LIST> m_LL_V18_5;
+    // V18 inserts 9 words between the fields above and the linked lists. They are not
+    // list descriptors, and their meaning has not been determined.
+    COND_GE<FMT_VER::V_180, std::array<uint32_t, 9>> m_Unknown2h_V18;
 
     // Linked lists grouping top-level elements by type
     LINKED_LIST m_LL_0x04;              // Net assignments
@@ -340,27 +341,19 @@ struct FILE_HEADER
     LINKED_LIST m_LL_0x2C;              // Tables
     LINKED_LIST m_LL_0x0C_2;            // Secondary pin definitions
     LINKED_LIST m_LL_Unknown3;
+    LINKED_LIST m_LL_0x35;              // 0x35 file records.
+    LINKED_LIST m_LL_0x36;              // Definition tables
+    LINKED_LIST m_LL_Unknown4;
+    LINKED_LIST m_LL_Unknown5;
+    LINKED_LIST m_LL_0x0A_2;            // A second DRC element list
 
-    // For some reason the 0x35 extents are recorded in the header
-    COND_LT<FMT_VER::V_180, uint32_t> m_0x35_Start_preV18;
-    COND_LT<FMT_VER::V_180, uint32_t> m_0x35_End_preV18;
+    // Only V18 onwards has this one. It holds field objects, which earlier versions
+    // keep in m_LL_0x03_0x30 instead.
+    COND_GE<FMT_VER::V_180, LINKED_LIST> m_LL_0x03_2;
 
-    COND_GE<FMT_VER::V_180, LINKED_LIST> m_LL_Unknown5_V18;
-    LINKED_LIST m_LL_0x36;
-    COND_LT<FMT_VER::V_180, LINKED_LIST> m_LL_Unknown5_preV18;
-
-    LINKED_LIST m_LL_Unknown6;
-    LINKED_LIST m_LL_0x0A_2;
-
-    COND_LT<FMT_VER::V_180, uint32_t> m_Unknown3;
-
-    COND_GE<FMT_VER::V_180, LINKED_LIST> m_LL_V18_6;
-
-    COND_GE<FMT_VER::V_180, uint32_t> m_0x35_Start_V18;
+    uint32_t m_Unknown_LlTrailer;
 
     COND_GE<FMT_VER::V_181, std::array<uint32_t, 8>> m_Unknown_V181;
-
-    COND_GE<FMT_VER::V_180, uint32_t> m_0x35_End_V18;
 
     // Fixed length string field
     std::array<char, 60> m_AllegroVersion;
@@ -417,14 +410,6 @@ struct FILE_HEADER
             return m_0x27_End_V18.value();
 
         return m_0x27_End_preV18.value();
-    }
-
-    const LINKED_LIST& GetUnknown5() const
-    {
-        if( m_LL_Unknown5_V18.has_value() )
-            return m_LL_Unknown5_V18.value();
-
-        return m_LL_Unknown5_preV18.value();
     }
 };
 
@@ -650,6 +635,8 @@ enum FIELD_KEYS
     LOGICAL_PATH = 0x37,
     MIN_LINE_WIDTH = 0x55,
     NET_SCHEDULE = 0x77,          ///< Net class/schedule assignment
+    CLIP_N = 0x87,                ///< Next CLIP_n value
+    CLIP_DRAWING = 0x88,          ///< Items pasted from a clipboard, holds CLIP_<n> or FALSE
     MAX_LINE_WIDTH = 0x173,
     MIN_NECK_WIDTH = 0x5c,
     MAX_NECK_LENGTH = 0x1fb,
@@ -805,8 +792,8 @@ struct BLK_0x08_PIN_NUMBER
 
 
 /**
- * Intermediate link between copper fills and their parent shapes. Appears in fill-to-shape
- * resolution chains. Not directly imported.
+ * Found in net-assignment chains for ETCH shapes, pads, and vias on tested boards.
+ * Despite this struct's name, it does not link a calculated fill to its source BOUNDARY.
  */
 struct BLK_0x09_FILL_LINK
 {
@@ -1123,6 +1110,21 @@ struct BLK_0x15_16_17_SEGMENT
 };
 
 /**
+ * Purpose not determined. A fixed block of 22 words in every version seen, with pointers
+ * into the net data, so it only needs to be stepped over.
+ */
+struct BLK_0x1A_UNKNOWN
+{
+    static constexpr uint8_t BLOCK_TYPE_CODE = 0x1A;
+
+    uint8_t  m_Type;
+    uint16_t m_T2;
+    uint32_t m_Key;
+
+    std::array<uint32_t, 20> m_UnknownArray;
+};
+
+/**
  * 0x1B objects are nets.
  *
  * They have names and pointers to various other objects.
@@ -1383,14 +1385,10 @@ struct BLK_0x1C_PADSTACK
      * assembly variant, etc). The exact slot-to-layer mapping is version-dependent
      * and not fully contiguous.
      *
-     * V<165 (10 fixed)
-     *   Slot 0  = ~TSM (top solder mask)
-     *   Slot 5  = ~TPM (top paste mask)
-     *   Slot 7  = ~TFM (top film mask)
-     *
-     * V<172 (11 fixed):
-     *   Slot 0  = ??? (looks the same size as a solder mask)
+     * V<172 (10 fixed before 16.5, 11 after), the same layout in every 16.x file seen:
+     *   Slot 0  = ??? (present on every pad, NOSM_* pads included)
      *   Slot 1  = ~TSM (top solder mask)
+     *   Slot 5  = ~BSM (bottom solder mask)
      *   Slot 6  = ~TPM (top paste mask)
      *   Slot 8  = ~TFM (top film mask)
      *
@@ -1401,13 +1399,10 @@ struct BLK_0x1C_PADSTACK
     enum SLOTS
     {
         // V<172 verified slots
-        SOLDERMASK_TOP_V16X = 0,
-        PASTEMASK_TOP_V16X  = 5,
-        FILMMASK_TOP_V16X   = 7,
-
-        SOLDERMASK_TOP_V165 = 1,
-        PASTEMASK_TOP_V165  = 6,
-        FILMMASK_TOP_V165   = 8,
+        SOLDERMASK_TOP_V16X = 1,
+        SOLDERMASK_BOT_V16X = 5,
+        PASTEMASK_TOP_V16X  = 6,
+        FILMMASK_TOP_V16X   = 8,
 
         // V>=172 verified slots
         SOLDERMASK_TOP_V17X = 14,
@@ -1546,10 +1541,9 @@ struct BLK_0x1E_SI_MODEL
     uint32_t m_Key;
     uint32_t m_Next;         ///< Linked list next pointer (used by LL_WALKER)
 
-    // Versioning seems unsure here
-    // At least it is in Kinoma (V_164)
-    COND_GE<FMT_VER::V_164, uint16_t> m_Unknown2;
-    COND_GE<FMT_VER::V_164, uint16_t> m_Unknown3;
+    // Present in V_161, 16.2 (TWR-MCF51JG LAY-26493) and Kinoma (V_164); no 16.0 sample yet
+    COND_GE<FMT_VER::V_161, uint16_t> m_Unknown2;
+    COND_GE<FMT_VER::V_161, uint16_t> m_Unknown3;
 
     uint32_t m_StrPtr;
     uint32_t m_Size;
@@ -1704,8 +1698,10 @@ struct BLK_0x24_RECT
 
 
 /**
- * Match group indirection for differential pairs and match groups.
- * NET.m_MatchGroupPtr -> 0x26 -> m_GroupPtr -> 0x2C TABLE -> group name string (V172+).
+ * Indirection used for match groups and, on tested boards, calculated copper fills.
+ * For a NET match group: NET.m_MatchGroupPtr -> this block -> m_GroupPtr -> 0x2C TABLE.
+ * For a fill: ETCH shape.m_TablePtr -> this block -> m_GroupPtr -> the same 0x2C TABLE
+ * as its source BOUNDARY. The exact Cadence name for this record is not known.
  */
 struct BLK_0x26_MATCH_GROUP
 {
@@ -1747,8 +1743,8 @@ struct BLK_0x27_CSTRMGR_XREF
  * m_LL_Shapes), computed copper fills (on net assignment chains), board outline, keepout
  * areas, place bounds, and custom pad shapes (shape symbol type 0x16).
  *
- * Zone net resolution follows m_Ptr7 (V172+) or m_Ptr7_16x (pre-V172) through a
- * 0x2C TABLE and 0x37 pointer array to reach the owning 0x1B NET.
+ * A BOUNDARY's m_TablePtr (V172+) or m_TablePtr_16x (pre-V172) leads through a
+ * 0x2C TABLE and 0x37 pointer array to its 0x1B NET record when one is present.
  */
 struct BLK_0x28_SHAPE
 {
@@ -1833,6 +1829,7 @@ struct BLK_0x2A_LAYER_LIST
     struct NONREF_ENTRY
     {
         std::string m_Name;
+        uint32_t    m_Properties; ///< Same layer flags as REF_ENTRY, stored after the 32 byte name
     };
 
     struct REF_ENTRY
@@ -2102,6 +2099,9 @@ struct BLK_0x30_STR_WRAPPER
 
     COND_LT<FMT_VER::V_172, uint32_t> m_PtrGroup_16x;
 
+    /// Zero or key of a 0x3E block.
+    COND_GE<FMT_VER::V_181, uint32_t> m_Ptr0x3E_V181;
+
     uint32_t GetGroupPtr() const
     {
         return m_PtrGroup_17x.value_or( m_PtrGroup_16x.value_or( 0 ) );
@@ -2242,16 +2242,36 @@ struct BLK_0x34_KEEPOUT
 
 /**
  * File path references to Allegro log and report files (terminator.log, eclrpt.txt).
- * Content is a 120-byte fixed buffer with null-terminated path strings. Not imported.
  */
 struct BLK_0x35_FILE_REF
 {
     static constexpr uint8_t BLOCK_TYPE_CODE = 0x35;
 
     uint8_t  m_T2;
-    uint16_t m_T3;
+    uint16_t m_T3; // Always 0x01 so far
 
-    std::array<uint8_t, 120> m_Content;
+    uint32_t m_Next;
+
+    uint32_t m_Unknown1; // 0x7fffffff usually
+
+    std::array<char, 20> m_LogFile; // Usually "terminator.log"
+
+    uint32_t m_Unknown2; // 0x01010101 usually
+
+    std::array<char, 20> m_UnusedFile;    // Always 0x00
+    std::array<char, 20> m_EclReportFile; // "eclrpt.txt"
+    std::array<char, 20> m_EclLogFile;    // "eclrep.log"
+
+    uint32_t m_Unknown3;
+
+    std::array<char, 8> m_Version; // Always '1.0'
+
+    uint32_t m_Unknown4;
+    uint32_t m_Unknown5;
+    uint32_t m_Unknown6;
+
+    /// Key of this record.
+    uint32_t m_Key;
 };
 
 
@@ -2373,9 +2393,11 @@ struct BLK_0x36_DEF_TABLE
 
 
 /**
- * Fixed-capacity pointer array (100 entries). Used in zone net resolution where
- * m_Ptrs[0] points to the owning 0x1B NET block. m_Count indicates how many entries
- * are valid.
+ * Pointer array. Used in zone net resolution where m_Ptrs[0] points to the owning
+ * 0x1B NET block. m_Count indicates how many entries are valid, counted from the
+ * start.
+ *
+ * m_Capacity is usually 100, but a 25.1 board was seen with 4096 (TinyCircularTMR).
  */
 struct BLK_0x37_PTR_ARRAY
 {
@@ -2392,7 +2414,7 @@ struct BLK_0x37_PTR_ARRAY
 
     COND_GE<FMT_VER::V_174, uint32_t> m_Unknown3;
 
-    std::array<uint32_t, 100> m_Ptrs;
+    std::vector<uint32_t> m_Ptrs;
 };
 
 

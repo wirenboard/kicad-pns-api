@@ -23,6 +23,7 @@
 #include <wx/valnum.h>
 #include <wx/hyperlink.h>
 
+#include <bitmaps.h>
 #include <widgets/bitmap_button.h>
 #include <widgets/font_choice.h>
 #include <dialogs/html_message_box.h>
@@ -170,6 +171,8 @@ DIALOG_TEXT_PROPERTIES::DIALOG_TEXT_PROPERTIES( PCB_BASE_EDIT_FRAME* aParent, PC
                        m_PositionYCtrl, m_OrientCtrl,    m_sdbSizerOK,         m_sdbSizerCancel };
     }
 
+    m_separator0->SetIsSeparator();
+
     m_bold->SetIsCheckButton();
     m_bold->SetBitmap( KiBitmapBundle( BITMAPS::text_bold ) );
     m_italic->SetIsCheckButton();
@@ -199,7 +202,7 @@ DIALOG_TEXT_PROPERTIES::DIALOG_TEXT_PROPERTIES( PCB_BASE_EDIT_FRAME* aParent, PC
     m_mirrored->SetBitmap( KiBitmapBundle( BITMAPS::text_mirrored ) );
 
     m_autoTextThickness->SetIsCheckButton();
-    m_autoTextThickness->SetBitmap( KiBitmapBundle( BITMAPS::edit_cmp_symb_links ) );
+    m_autoTextThickness->SetBitmap( KiBitmapBundle( BITMAPS::link ) );
 
     SetTitle( title );
     m_hash_key = title;
@@ -488,7 +491,7 @@ bool DIALOG_TEXT_PROPERTIES::TransferDataFromWindow()
 
     m_item->SetLocked( m_cbLocked->GetValue() );
 
-    m_item->SetLayer( ToLAYER_ID( m_LayerSelectionCtrl->GetLayerSelection() ) );
+    m_item->SetLayer( m_LayerSelectionCtrl->GetLayerIDSelection() );
     m_item->SetIsKnockout( m_cbKnockout->GetValue() );
 
     if( m_fontCtrl->HaveFontSelection() )

@@ -116,7 +116,6 @@
 #include <tools/diff_phase_skew_tool.h>
 #include <generators/via_stitch_tool.h>
 #include <tools/drc_tool.h>
-#include <tools/drc_rule_editor_tool.h>
 #include <tools/global_edit_tool.h>
 #include <tools/convert_tool.h>
 #include <tools/constraint_edit_tool.h>
@@ -150,6 +149,7 @@
 #include <widgets/wx_infobar.h>
 #include <widgets/panel_selection_filter.h>
 #include <widgets/pcb_properties_panel.h>
+#include <widgets/git_commit_pane.h>
 #include <widgets/pcb_net_inspector_panel.h>
 #include <widgets/wx_aui_utils.h>
 #include <kiplatform/app.h>
@@ -160,7 +160,6 @@
 #include <footprint_viewer_frame.h>
 #include <footprint_chooser_frame.h>
 #include <toolbars_pcb_editor.h>
-#include <drc/rule_editor/dialog_drc_rule_editor.h>
 
 #include <richio.h>
 
@@ -261,7 +260,7 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     // Create GAL canvas
     PCB_DRAW_PANEL_GAL* canvas = new PCB_DRAW_PANEL_GAL( this, -1, wxPoint( 0, 0 ), m_frameSize,
                                                          GetGalDisplayOptions(),
-                                                         EDA_DRAW_PANEL_GAL::GAL_FALLBACK );
+                                                         EDA_DRAW_PANEL_GAL::GAL_TYPE_MODERN );
 
     SetCanvas( canvas );
     SetBoard( new BOARD() );
@@ -318,6 +317,7 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     m_netInspectorPanel = new PCB_NET_INSPECTOR_PANEL( this, this );
     m_designBlocksPane = new PCB_DESIGN_BLOCK_PANE( this, nullptr, m_designBlockHistoryList );
     m_constraintsPanel = new PANEL_CONSTRAINTS( this );
+    m_gitCommitPane = new GIT_COMMIT_PANE( this );
 
     m_auimgr.SetManagedWindow( this );
 
@@ -428,7 +428,25 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
                       .CloseButton( true )
                       .Hide() );
 
+    m_auimgr.AddPane( m_gitCommitPane,
+                      EDA_PANE()
+                              .Name( GitCommitPaneName() )
+                              .Right()
+                              .Layer( 5 )
+                              .Caption( _( "Version Control" ) )
+                              .PaneBorder( false )
+                              .MinSize( wxSize( m_gitCommitPane->GetMinDockWidth(), FromDIP( 120 ) ) )
+                              .BestSize( wxSize( std::max( m_gitCommitPane->GetMinDockWidth(), FromDIP( 300 ) ),
+                                                 FromDIP( 300 ) ) )
+                              .FloatingSize( FromDIP( wxSize( 300, 400 ) ) )
+                              .DestroyOnClose( false )
+                              .CloseButton( true )
+                              .Hide() );
+
     RestoreAuiLayout();
+
+    // A saved layout brings its own minimum, so the one the panel needs is set again.
+    m_auimgr.GetPane( GitCommitPaneName() ).min_size.x = m_gitCommitPane->GetMinDockWidth();
 
     m_auimgr.GetPane( "LayersManager" ).Show( m_ShowLayerManagerTools );
     m_auimgr.GetPane( "SelectionFilter" ).Show( m_ShowLayerManagerTools );
@@ -436,6 +454,7 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     m_auimgr.GetPane( NetInspectorPanelName() ).Show( m_ShowNetInspector );
     m_auimgr.GetPane( SearchPaneName() ).Show( m_ShowSearch );
     m_auimgr.GetPane( DesignBlocksPaneName() ).Show( GetPcbNewSettings()->m_AuiPanels.design_blocks_show );
+    m_auimgr.GetPane( GitCommitPaneName() ).Show( GetPcbNewSettings()->m_AuiPanels.show_git_commit_pane );
 
     wxAuiPaneInfo& selectionFilterPane = m_auimgr.GetPane( wxS( "SelectionFilter" ) );
 
@@ -506,10 +525,6 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
 
     GetToolManager()->PostAction( ACTIONS::zoomFitScreen );
 
-    // This is used temporarily to fix a client size issue on GTK that causes zoom to fit
-    // to calculate the wrong zoom size.  See PCB_EDIT_FRAME::onSize().
-    Bind( wxEVT_SIZE, &PCB_EDIT_FRAME::onSize, this );
-
     Bind( wxEVT_IDLE,
           [this]( wxIdleEvent& aEvent )
           {
@@ -519,6 +534,7 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
               {
                   redrawNetnames();
                   m_lastNetnamesViewport = viewport;
+                  m_lastNetnamesScale = GetCanvas()->GetView()->GetScale();
               }
 
               // Do not forget to pass the Idle event to other clients:
@@ -553,6 +569,9 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
 
     resolveCanvasType();
     ActivateGalCanvas();
+
+    // Starting without a file still shows a board, so give it the project settings as File > New does
+    LoadProjectSettings();
 
     // Default shutdown reason until a file is loaded
     KIPLATFORM::APP::SetShutdownBlockReason( this, _( "New PCB file is unsaved" ) );
@@ -629,6 +648,9 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     m_acceptedExts.emplace( FILEEXT::LegacyPcbFileExtension, &PCB_ACTIONS::ddAppendBoard );
     m_acceptedExts.emplace( wxS( "dxf" ), &PCB_ACTIONS::ddImportGraphics );
     m_acceptedExts.emplace( FILEEXT::SVGFileExtension, &PCB_ACTIONS::ddImportGraphics );
+    m_acceptedExts.emplace( FILEEXT::PngFileExtension, &PCB_ACTIONS::ddPlaceReferenceImage );
+    m_acceptedExts.emplace( FILEEXT::JpegFileExtension, &PCB_ACTIONS::ddPlaceReferenceImage );
+    m_acceptedExts.emplace( wxS( "jpeg" ), &PCB_ACTIONS::ddPlaceReferenceImage );
     DragAcceptFiles( true );
 
     Bind( EDA_EVT_CLOSE_DIALOG_BOOK_REPORTER, &PCB_EDIT_FRAME::onCloseModelessBookReporterDialogs, this );
@@ -683,7 +705,8 @@ void PCB_EDIT_FRAME::StartCrossProbeFlash( const std::vector<BOARD_ITEM*>& aItem
     if( !m_crossProbeFlashTimer.GetOwner() )
         m_crossProbeFlashTimer.SetOwner( this );
 
-    bool started = m_crossProbeFlashTimer.Start( 500, wxTIMER_CONTINUOUS ); // 0.5s intervals -> 3s total for 6 phases
+    // 0.5s intervals -> 3s total for 6 phases
+    [[maybe_unused]] bool started = m_crossProbeFlashTimer.Start( 500, wxTIMER_CONTINUOUS );
     wxLogTrace( traceCrossProbeFlash, "StartCrossProbeFlash(PCB): timer start=%d id=%d",
                 (int) started, m_crossProbeFlashTimer.GetId() );
 }
@@ -805,11 +828,6 @@ PCB_EDIT_FRAME::~PCB_EDIT_FRAME()
     if( drcDlg )
         drcDlg->Close( true );
 
-    wxWindow* ruleEditorDlg = wxWindow::FindWindowByName( DIALOG_DRC_RULE_EDITOR_WINDOW_NAME );
-
-    if( ruleEditorDlg )
-        ruleEditorDlg->Close( true );
-
     // Shutdown all running tools
     if( m_toolManager )
         m_toolManager->ShutdownAllTools();
@@ -873,6 +891,7 @@ void PCB_EDIT_FRAME::SetBoard( BOARD* aBoard, bool aBuildConnectivity, PROGRESS_
 
     PCB_BASE_EDIT_FRAME::SetBoard( aBoard, aReporter );
 
+    aBoard->AddListener( this );
     aBoard->SetProject( &Prj() );
 
     if( aBuildConnectivity )
@@ -917,6 +936,43 @@ void PCB_EDIT_FRAME::redrawNetnames()
     BOX2D        viewport = view->GetViewport();
 
     view->SyncLayerVisibilityCache();   // Required for ViewGetLOD() calls.
+
+    if( view->GetGAL()->HasRetainedScene() )
+    {
+        // Labels sit on the visible part of their track. A track wholly inside both the old and new
+        // view keeps its label, so only the others are repainted, and only on net name layers.
+        const BOX2I before = BOX2ISafe( m_lastNetnamesViewport );
+        const BOX2I now = BOX2ISafe( viewport );
+        BOX2D       reach = viewport;
+
+        view->RepaintLayers(
+                BOX2ISafe( reach.Inflate( pcbIUScale.mmToIU( 2.0 ) ) ),
+                []( int aLayer )
+                {
+                    return IsNetnameLayer( aLayer );
+                },
+                [&]( KIGFX::VIEW_ITEM* aItem, int aLayer )
+                {
+                    PCB_TRACK* track = dynamic_cast<PCB_TRACK*>( aItem );
+
+                    if( !track || track->Type() == PCB_VIA_T )
+                        return false;
+
+                    const double lod = track->ViewGetLOD( aLayer, view );
+
+                    const BOX2I  bbox = track->GetBoundingBox();
+
+                    if( lod < m_lastNetnamesScale && before.Contains( bbox ) && now.Contains( bbox ) )
+                        return false;
+
+                    return lod < view->GetScale();
+                } );
+
+        // Labels are laid out on idle after a zoom's last paint and would otherwise wait for
+        // whatever paints next
+        GetCanvas()->Refresh();
+        return;
+    }
 
     // Inflate to catch most of the track width
     BOX2I_MINMAX clipbox( BOX2ISafe( viewport.Inflate( pcbIUScale.mmToIU( 2.0 ) ) ) );
@@ -1018,7 +1074,15 @@ void PCB_EDIT_FRAME::SetPageSettings( const PAGE_INFO& aPageSettings )
                             }
 
                             if( aDep->IsBOARD_ITEM() )
-                                view->Update( aDep, KIGFX::REPAINT );
+                            {
+                                if( PCB_TEXT* text = dynamic_cast<PCB_TEXT*>( aDep ) )
+                                {
+                                    text->ClearRenderCache();
+                                    text->ClearBoundingBoxCache();
+                                }
+
+                                view->Update( aDep, KIGFX::GEOMETRY | KIGFX::REPAINT );
+                            }
                         } );
             }
         }
@@ -1083,7 +1147,6 @@ void PCB_EDIT_FRAME::setupTools()
     m_toolManager->RegisterTool( new MATCH_PROPERTIES_TOOL );
     m_toolManager->RegisterTool( new GRAPHIC_EDIT_TOOL );
     m_toolManager->RegisterTool( new EMBED_TOOL );
-    m_toolManager->RegisterTool( new DRC_RULE_EDITOR_TOOL );
     m_toolManager->RegisterTool( new DIFF_PHASE_SKEW_TOOL );
     m_toolManager->InitTools();
 
@@ -1175,6 +1238,8 @@ void PCB_EDIT_FRAME::setupUIConditions()
                         ENABLE( SELECTION_CONDITIONS::NotEmpty ).HotkeyEnable( hasElements ) );
     mgr->SetConditions( PCB_ACTIONS::mirrorV,
                         ENABLE( SELECTION_CONDITIONS::NotEmpty ).HotkeyEnable( hasElements ) );
+    mgr->SetConditions( PCB_ACTIONS::mirrorInteractive,
+                        ENABLE( SELECTION_CONDITIONS::NotEmpty ).HotkeyEnable( hasElements ) );
 
     static const std::vector<KICAD_T> groupTypes = { PCB_GROUP_T, PCB_GENERATOR_T };
 
@@ -1265,6 +1330,12 @@ void PCB_EDIT_FRAME::setupUIConditions()
                 return m_auimgr.GetPane( DesignBlocksPaneName() ).IsShown();
             };
 
+    auto gitCommitPaneCond =
+            [this] ( const SELECTION& )
+            {
+                return IsGitCommitPaneShown();
+            };
+
     auto highContrastCond =
             [this] ( const SELECTION& )
             {
@@ -1322,6 +1393,7 @@ void PCB_EDIT_FRAME::setupUIConditions()
     mgr->SetConditions( PCB_ACTIONS::showSearch,           CHECK( searchPaneCond ) );
     mgr->SetConditions( PCB_ACTIONS::showConstraintsPanel, CHECK( constraintsPaneCond ) );
     mgr->SetConditions( PCB_ACTIONS::showDesignBlockPanel, CHECK( designBlockCond ) );
+    mgr->SetConditions( ACTIONS::showGitCommitPane,        CHECK( gitCommitPaneCond ) );
 
     mgr->SetConditions( PCB_ACTIONS::saveBoardAsDesignBlock,     ENABLE( hasElements ) );
     mgr->SetConditions( PCB_ACTIONS::saveSelectionAsDesignBlock, ENABLE( SELECTION_CONDITIONS::NotEmpty ) );
@@ -1490,6 +1562,7 @@ void PCB_EDIT_FRAME::setupUIConditions()
     CURRENT_EDIT_TOOL( PCB_ACTIONS::drawEllipse );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::drawEllipseArc );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::drawArc );
+    setArcModeConditions( PCB_ACTIONS::drawArc, isDRCIdle );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::drawPolygon );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::drawBezier );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::placePoint );
@@ -1552,9 +1625,15 @@ void PCB_EDIT_FRAME::OnQuit( wxCommandEvent& event )
 
 void PCB_EDIT_FRAME::ResolveDRCExclusions( bool aCreateMarkers )
 {
+    addExclusionMarkers( GetBoard()->ResolveDRCExclusions( aCreateMarkers ) );
+}
+
+
+void PCB_EDIT_FRAME::addExclusionMarkers( const std::vector<PCB_MARKER*>& aMarkers )
+{
     BOARD_COMMIT commit( this );
 
-    for( PCB_MARKER* marker : GetBoard()->ResolveDRCExclusions( aCreateMarkers ) )
+    for( PCB_MARKER* marker : aMarkers )
     {
         if( marker->GetMarkerType() == MARKER_BASE::MARKER_DRAWING_SHEET )
             marker->GetRCItem()->SetItems( GetCanvas()->GetDrawingSheet() );
@@ -1577,11 +1656,8 @@ void PCB_EDIT_FRAME::ResolveDRCExclusions( bool aCreateMarkers )
 bool PCB_EDIT_FRAME::canCloseWindow( wxCloseEvent& aEvent )
 {
     // Shutdown blocks must be determined and vetoed as early as possible
-    if( KIPLATFORM::APP::SupportsShutdownBlockReason() && aEvent.GetId() == wxEVT_QUERY_END_SESSION
-                                                       && IsContentModified() )
-    {
+    if( isBlockableSessionEnd() && IsContentModified() )
         return false;
-    }
 
     ZONE_FILLER_TOOL* zoneFillerTool = m_toolManager->GetTool<ZONE_FILLER_TOOL>();
 
@@ -1705,11 +1781,6 @@ void PCB_EDIT_FRAME::doCloseWindow()
 
     if( drcDlg )
         drcDlg->Close( true );
-
-    wxWindow* ruleEditorDlg = wxWindow::FindWindowByName( DIALOG_DRC_RULE_EDITOR_WINDOW_NAME );
-
-    if( ruleEditorDlg )
-        ruleEditorDlg->Close( true );
 
     if( m_findDialog )
     {
@@ -1859,95 +1930,150 @@ void PCB_EDIT_FRAME::ShowBoardSetupDialog( const wxString& aInitialPage, wxWindo
     // QuasiModal required for Scintilla auto-complete
     if( dlg.ShowQuasiModal() == wxID_OK )
     {
-        // Note: We must synchronise time domain properties before nets and classes, otherwise the updates
-        // called by the board listener events are using stale data
-        GetBoard()->SynchronizeTuningProfileProperties();
-        GetBoard()->SynchronizeNetsAndNetClasses( true );
-
-        if( !GetBoard()->SynchronizeComponentClasses( std::unordered_set<wxString>() ) )
-        {
-            m_infoBar->RemoveAllButtons();
-            m_infoBar->AddCloseButton();
-            m_infoBar->ShowMessage( _( "Could not load component class assignment rules" ), wxICON_WARNING,
-                                    WX_INFOBAR::MESSAGE_TYPE::GENERIC );
-        }
-
         // We don't know if anything was modified, so err on the side of requiring a save
         OnModify();
 
         Kiway().CommonSettingsChanged( TEXTVARS_CHANGED );
-
-        Prj().IncrementTextVarsTicker();
-        Prj().IncrementNetclassesTicker();
-
-        // CROSS_REF keys deliberately excluded — those are driven by per-item
-        // BOARD_COMMIT changes.
-        if( BOARD_TEXT_VAR_ADAPTER* adapter = GetBoard()->GetTextVarAdapter() )
-            adapter->Tracker().InvalidateProjectScoped();
-
-        PCBNEW_SETTINGS* settings = GetPcbNewSettings();
-        static LSET      maskAndPasteLayers = LSET( { F_Mask, F_Paste, B_Mask, B_Paste } );
-
-        GetCanvas()->GetView()->UpdateAllItemsConditionally(
-                [&]( KIGFX::VIEW_ITEM* aItem ) -> int
-                {
-                    int flags = 0;
-
-                    if( !aItem->IsBOARD_ITEM() )
-                        return flags;
-
-                    BOARD_ITEM* item = static_cast<BOARD_ITEM*>( aItem );
-
-                    if( item->Type() == PCB_VIA_T || item->Type() == PCB_PAD_T )
-                    {
-                        // Note: KIGFX::REPAINT isn't enough for things that go from invisible
-                        // to visible as they won't be found in the view layer's itemset for
-                        // re-painting.
-                        if( ( GetBoard()->GetVisibleLayers() & maskAndPasteLayers ).any() )
-                            flags |= KIGFX::ALL;
-                    }
-
-                    if( item->Type() == PCB_TRACE_T || item->Type() == PCB_ARC_T || item->Type() == PCB_VIA_T )
-                    {
-                        if( settings->m_Display.m_TrackClearance == SHOW_WITH_VIA_ALWAYS )
-                            flags |= KIGFX::REPAINT;
-                    }
-
-                    if( item->Type() == PCB_PAD_T )
-                    {
-                        if( settings->m_Display.m_PadClearance )
-                            flags |= KIGFX::REPAINT;
-                    }
-
-                    if( EDA_TEXT* text = dynamic_cast<EDA_TEXT*>( aItem ) )
-                    {
-                        if( text->HasTextVars() )
-                        {
-                            text->ClearRenderCache();
-                            text->ClearBoundingBoxCache();
-                            flags |= KIGFX::GEOMETRY | KIGFX::REPAINT;
-                        }
-                    }
-
-                    return flags;
-                } );
-
-        GetCanvas()->Refresh();
-
-        UpdateUserInterface();
-        ReCreateAuxiliaryToolbar();
-        m_toolManager->ResetTools( TOOL_BASE::MODEL_RELOAD );
-
-        //this event causes the routing tool to reload its design rules information
-        TOOL_EVENT toolEvent( TC_COMMAND, TA_MODEL_CHANGE, AS_ACTIVE );
-        toolEvent.SetHasPosition( false );
-        m_toolManager->ProcessEvent( toolEvent );
+        RefreshProjectSettings();
     }
 
     GetCanvas()->SetFocus();
 
     // Reset m_boardSetupDlg after the dialog is closed
     m_boardSetupDlg = nullptr;
+}
+
+
+void PCB_EDIT_FRAME::RefreshProjectSettings()
+{
+    // Note: We must synchronise time domain properties before nets and classes, otherwise the updates
+    // called by the board listener events are using stale data
+    GetBoard()->SynchronizeTuningProfileProperties();
+    GetBoard()->SynchronizeNetsAndNetClasses( true );
+
+    if( !GetBoard()->SynchronizeComponentClasses( std::unordered_set<wxString>() ) )
+    {
+        m_infoBar->RemoveAllButtons();
+        m_infoBar->AddCloseButton();
+        m_infoBar->ShowMessage( _( "Could not load component class assignment rules" ), wxICON_WARNING,
+                                WX_INFOBAR::MESSAGE_TYPE::GENERIC );
+    }
+
+    // Text variables resolve through the board's own copy of them before the project's
+    GetBoard()->SynchronizeProperties();
+
+    Prj().IncrementTextVarsTicker();
+    Prj().IncrementNetclassesTicker();
+
+    // CROSS_REF keys deliberately excluded — those are driven by per-item
+    // BOARD_COMMIT changes.
+    if( BOARD_TEXT_VAR_ADAPTER* adapter = GetBoard()->GetTextVarAdapter() )
+        adapter->Tracker().InvalidateProjectScoped();
+
+    PCBNEW_SETTINGS* settings = GetPcbNewSettings();
+    static LSET      maskAndPasteLayers = LSET( { F_Mask, F_Paste, B_Mask, B_Paste } );
+
+    GetCanvas()->GetView()->UpdateAllItemsConditionally(
+            [&]( KIGFX::VIEW_ITEM* aItem ) -> int
+            {
+                int flags = 0;
+
+                if( !aItem->IsBOARD_ITEM() )
+                    return flags;
+
+                BOARD_ITEM* item = static_cast<BOARD_ITEM*>( aItem );
+
+                if( item->Type() == PCB_VIA_T || item->Type() == PCB_PAD_T )
+                {
+                    // Note: KIGFX::REPAINT isn't enough for things that go from invisible
+                    // to visible as they won't be found in the view layer's itemset for
+                    // re-painting.
+                    if( ( GetBoard()->GetVisibleLayers() & maskAndPasteLayers ).any() )
+                        flags |= KIGFX::ALL;
+                }
+
+                if( item->Type() == PCB_TRACE_T || item->Type() == PCB_ARC_T || item->Type() == PCB_VIA_T )
+                {
+                    if( settings->m_Display.m_TrackClearance == SHOW_WITH_VIA_ALWAYS )
+                        flags |= KIGFX::REPAINT;
+                }
+
+                if( item->Type() == PCB_PAD_T )
+                {
+                    if( settings->m_Display.m_PadClearance )
+                        flags |= KIGFX::REPAINT;
+                }
+
+                if( EDA_TEXT* text = dynamic_cast<EDA_TEXT*>( aItem ) )
+                {
+                    if( text->HasTextVars() )
+                    {
+                        text->ClearRenderCache();
+                        text->ClearBoundingBoxCache();
+                        flags |= KIGFX::GEOMETRY | KIGFX::REPAINT;
+                    }
+                }
+
+                return flags;
+            } );
+
+    GetCanvas()->Refresh();
+
+    UpdateUserInterface();
+    ReCreateAuxiliaryToolbar();
+    // Before the model change, which makes the router reload its rules from the engine
+    recompileDesignRules();
+    m_toolManager->ResetTools( TOOL_BASE::MODEL_RELOAD );
+
+    //this event causes the routing tool to reload its design rules information
+    TOOL_EVENT toolEvent( TC_COMMAND, TA_MODEL_CHANGE, AS_ACTIVE );
+    toolEvent.SetHasPosition( false );
+    m_toolManager->ProcessEvent( toolEvent );
+}
+
+
+void PCB_EDIT_FRAME::ReloadProjectFileSettings()
+{
+    // Everything this frame copied from the project file and would write back on save or close
+    ApplyProjectFileSettings();
+    LoadDrawingSheet();
+
+    LAYER_PAIR current = m_layerPairSettings->GetCurrentLayerPair();
+    m_layerPairSettings->SetLayerPairs( Prj().GetProjectFile().m_LayerPairInfos );
+    m_layerPairSettings->SetCurrentLayerPair( current );
+
+    if( EDA_3D_VIEWER_FRAME* viewer = GetOur3DViewerFrame() )
+        viewer->ApplyProjectFileSettings();
+
+    std::vector<PCB_MARKER*> stale;
+    std::vector<PCB_MARKER*> created = GetBoard()->ReloadDRCExclusions( stale );
+
+    if( !stale.empty() )
+    {
+        m_toolManager->RunAction( ACTIONS::selectionClear );
+
+        std::unordered_set<const EDA_ITEM*> freed( stale.begin(), stale.end() );
+        m_undoList.ForgetItems( freed );
+        m_redoList.ForgetItems( freed );
+    }
+
+    for( PCB_MARKER* marker : stale )
+    {
+        GetCanvas()->GetView()->Remove( marker );
+        GetBoard()->Delete( marker );
+    }
+
+    addExclusionMarkers( created );
+
+    // The dialog lists marker pointers, some of which were just deleted
+    if( DIALOG_DRC* drcDialog = m_toolManager->GetTool<DRC_TOOL>()->GetDRCDialog() )
+        drcDialog->UpdateData();
+
+    RefreshProjectSettings();
+
+    // Net colors and the drawing sheet reach every item, not just the ones the refresh picks
+    GetCanvas()->GetView()->UpdateAllItems( KIGFX::ALL );
+    GetCanvas()->Refresh();
 }
 
 
@@ -1999,6 +2125,8 @@ void PCB_EDIT_FRAME::SaveSettings( APP_SETTINGS_BASE* aCfg )
         cfg->m_AuiPanels.search_panel_height = m_searchPane->GetSize().y;
         cfg->m_AuiPanels.search_panel_width = m_searchPane->GetSize().x;
         cfg->m_AuiPanels.search_panel_dock_direction = searchPaneInfo.dock_direction;
+
+        cfg->m_AuiPanels.show_git_commit_pane = m_auimgr.GetPane( GitCommitPaneName() ).IsShown();
 
         if( m_netInspectorPanel )
         {
@@ -2068,7 +2196,11 @@ void PCB_EDIT_FRAME::SetActiveLayer( PCB_LAYER_ID aLayer, bool aForceRedraw )
 
     m_toolManager->PostAction( PCB_ACTIONS::layerChanged );  // notify other tools
     GetCanvas()->SetFocus();                                // allow capture of hotkeys
-    GetCanvas()->SetHighContrastLayer( aLayer );
+
+    if( aForceRedraw )
+        GetCanvas()->SetHighContrastLayer( aLayer );
+    else
+        GetCanvas()->ChangeHighContrastLayer( aLayer );
 
     /*
     * Only show pad, via and track clearances when a copper layer is active
@@ -2333,14 +2465,37 @@ void PCB_EDIT_FRAME::OnModify()
     if( m_isClosing )
         return;
 
-    // A chart reports the board, so an edit that moved a hole has already made it wrong.
-    // Costs one integer comparison per chart when nothing drill related changed.
+    // A generated table reports the board, so any edit may already have made it wrong
+    // A drill chart compares a counter but a stackup table regenerates its text, ~100 us at 32 layers
     RefreshGeneratedTables( *GetBoard() );
 
     Update3DView( true, GetPcbNewSettings()->m_Display.m_Live3DRefresh );
 
     if( !GetTitle().StartsWith( wxT( "*" ) ) )
         UpdateTitle();
+}
+
+
+void PCB_EDIT_FRAME::OnBoardItemsChanged( BOARD& aBoard, std::vector<BOARD_ITEM*>& aItems )
+{
+    bool rebuilt = false;
+
+    for( BOARD_ITEM* item : aItems )
+    {
+        if( !IsGeneratedTableType( item->Type() ) )
+            continue;
+
+        rebuilt = true;
+
+        if( GetCanvas() )
+            GetCanvas()->GetView()->Update( item );
+    }
+
+    // The rebuild may have freed selected cells, which can no longer be asked what they were
+    PCB_SELECTION_TOOL* selTool = m_toolManager ? m_toolManager->GetTool<PCB_SELECTION_TOOL>() : nullptr;
+
+    if( rebuilt && selTool && !selTool->GetSelection().Empty() )
+        selTool->RebuildSelection();
 }
 
 
@@ -2730,6 +2885,18 @@ void PCB_EDIT_FRAME::CommonSettingsChanged( int aFlags )
 
     // Netclass definitions could have changed, either by us or by Eeschema, so we need to
     // recompile the implicit rules
+    recompileDesignRules();
+
+    GetCanvas()->GetView()->MarkTargetDirty( KIGFX::TARGET_NONCACHED );
+    GetCanvas()->ForceRefresh();
+
+    Layout();
+    SendSizeEvent();
+}
+
+
+void PCB_EDIT_FRAME::recompileDesignRules()
+{
     DRC_TOOL*   drcTool = m_toolManager->GetTool<DRC_TOOL>();
     WX_INFOBAR* infobar = GetInfoBar();
 
@@ -2752,12 +2919,6 @@ void PCB_EDIT_FRAME::CommonSettingsChanged( int aFlags )
         infobar->ShowMessage( _( "Could not compile custom design rules." ), wxICON_ERROR,
                               WX_INFOBAR::MESSAGE_TYPE::DRC_RULES_ERROR );
     }
-
-    GetCanvas()->GetView()->MarkTargetDirty( KIGFX::TARGET_NONCACHED );
-    GetCanvas()->ForceRefresh();
-
-    Layout();
-    SendSizeEvent();
 }
 
 
@@ -2790,6 +2951,9 @@ void PCB_EDIT_FRAME::ProjectChanged()
                 },
                 GetBoard()->GetHistoryLifetimeToken() );
     }
+
+    // A standalone editor has no project manager to record the project's own files
+    Kiway().LocalHistory().RegisterProjectSaver( &Prj() );
 }
 
 
@@ -2895,21 +3059,6 @@ bool PCB_EDIT_FRAME::PropertiesShown()
 bool PCB_EDIT_FRAME::NetInspectorShown()
 {
     return m_auimgr.GetPane( NetInspectorPanelName() ).IsShown();
-}
-
-
-void PCB_EDIT_FRAME::onSize( wxSizeEvent& aEvent )
-{
-    if( IsShownOnScreen() )
-    {
-        // We only need this until the frame is done resizing and the final client size is
-        // established.
-        Unbind( wxEVT_SIZE, &PCB_EDIT_FRAME::onSize, this );
-        GetToolManager()->RunAction( ACTIONS::zoomFitScreen );
-    }
-
-    // Skip() is called in the base class.
-    EDA_DRAW_FRAME::OnSize( aEvent );
 }
 
 
@@ -3062,6 +3211,7 @@ void PCB_EDIT_FRAME::onPluginAvailabilityChanged( wxCommandEvent& aEvt )
 {
     wxLogTrace( traceApi, "PCB frame: EDA_EVT_PLUGIN_AVAILABILITY_CHANGED" );
     RecreateToolbars();
+    ReCreateMenuBar();
     aEvt.Skip();
 }
 
@@ -3136,8 +3286,15 @@ void PCB_EDIT_FRAME::OnEditItemRequest( BOARD_ITEM* aItem )
         break;
     }
 
+    case PCB_STACKUP_TABLE_T:
+    {
+        DIALOG_GENERATED_TABLE_PROPERTIES dlg( this, static_cast<PCB_GENERATED_TABLE*>( aItem ), {} );
+        dlg.ShowModal();
+        break;
+    }
+
     case PCB_PAD_T:
-        ShowPadPropertiesDialog( static_cast<PAD*>( aItem ) );
+        ShowPadPropertiesDialog( static_cast<PAD&>( *aItem ) );
         break;
 
     case PCB_FOOTPRINT_T:

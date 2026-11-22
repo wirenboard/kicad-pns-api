@@ -21,6 +21,7 @@ set( QA_API_SRCS
     test_api_proto.cpp
     test_api_e2e.cpp
     test_api_handler_pcb.cpp
+    test_api_tasks.cpp
     test_api_jobs.cpp
     test_api_run_action.cpp
     test_api_wizards.cpp
@@ -34,9 +35,14 @@ add_executable( qa_api
     )
 
 add_dependencies( qa_api
+    eeschema
     pcbnew
     kicad-cli
     )
+
+if( TARGET api_schema_build_copy )
+    add_dependencies( qa_api api_schema_build_copy )
+endif()
 
 target_link_libraries( qa_api
     kiapi
@@ -74,6 +80,7 @@ target_compile_definitions( qa_api PRIVATE
 
 kicad_add_boost_test( qa_api qa_api )
 
-set_tests_properties( qa_api PROPERTIES TIMEOUT 180 )
+# The e2e cases drive kicad-cli and take 8-12 s each under Windows Debug
+set_tests_properties( qa_api PROPERTIES TIMEOUT 200 )
 
 setup_qa_env( qa_api )

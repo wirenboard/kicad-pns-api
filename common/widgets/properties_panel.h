@@ -31,12 +31,16 @@
 #include <memory>
 #include <functional>
 
+
 class EDA_BASE_FRAME;
 class EDA_ITEM;
 class PROPERTY_BASE;
 class BITMAP_BUTTON;
 class wxPropertyGridEvent;
 class wxStaticText;
+
+enum class BITMAPS : unsigned int;
+
 
 enum PROPERTIES_PANEL_CONTEXT_MENU_IDS
 {
@@ -169,6 +173,7 @@ protected:
 
 public:
     int                         m_SuppressGridChangeEvents;
+    bool                        m_ValueChangeVetoed;
 
 protected:
     std::vector<PROPERTY_BASE*> m_displayed;    // no ownership of pointers
@@ -180,8 +185,7 @@ protected:
 
     /// Not CallAfter(): on macOS the pending-event queue is drained from inside tool events,
     /// where a deferred rebuild would only re-defer itself forever.
-    wxTimer   m_deferredRebuildTimer;
-    SELECTION m_deferredSelection;
+    wxTimer m_deferredRebuildTimer;
 
     wxString m_editingOriginalLabel;
 

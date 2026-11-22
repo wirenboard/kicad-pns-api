@@ -28,6 +28,7 @@
 #include <import_export.h>
 #include <pgm_base.h>
 #include <properties/pg_cell_renderer.h>
+#include <properties/pg_properties.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
 #include <widgets/bitmap_button.h>
@@ -120,9 +121,9 @@ PROPERTIES_PANEL::PROPERTIES_PANEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame ) 
     m_grid->SetUnspecifiedValueAppearance( wxPGCell( wxT( "<...>" ) ) );
 
 #if wxCHECK_VERSION( 3, 3, 0 )
-    m_grid->SetValidationFailureBehavior( wxPGVFBFlags::MarkCell );
+    m_grid->SetValidationFailureBehavior( wxPGVFBFlags::StayInProperty );
 #else
-    m_grid->SetValidationFailureBehavior( wxPG_VFB_MARK_CELL );
+    m_grid->SetValidationFailureBehavior( wxPG_VFB_STAY_IN_PROPERTY );
 #endif
 
 #if wxCHECK_VERSION( 3, 3, 0 )
@@ -207,7 +208,8 @@ PROPERTIES_PANEL::PROPERTIES_PANEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame ) 
     Bind( wxEVT_TIMER,
           [this]( wxTimerEvent& )
           {
-              rebuildProperties( m_deferredSelection );
+              // The selection may have changed or lost items since the deferral
+              UpdateData();
           },
           m_deferredRebuildTimer.GetId() );
 }
@@ -258,10 +260,11 @@ void PROPERTIES_PANEL::rebuildProperties( const SELECTION& aSelection )
     if( static_cast<PROPERTIES_PANEL_GRID*>( m_grid )->IsProcessingWxPGEvent() )
     {
         hideCategoryButtons();
-        m_deferredSelection = aSelection;
         m_deferredRebuildTimer.StartOnce( 1 );
         return;
     }
+
+    m_deferredRebuildTimer.Stop();
 
     auto reset =
             [&]()
@@ -342,45 +345,27 @@ void PROPERTIES_PANEL::rebuildProperties( const SELECTION& aSelection )
         }
     }
 
-    for( const EDA_ITEM* item : aSelection )
+    std::vector<const INSPECTABLE*> inspectables( aSelection.begin(), aSelection.end() );
+
+    for( PROPERTY_BASE* prop : propMgr.GetCommonDynamicProperties( inspectables ) )
     {
-        for( PROPERTY_BASE* prop : item->GetDynamicProperties() )
+        if( commonProps.contains( prop->Name() ) )
+            continue;
+
+        commonProps.emplace( prop->Name(), prop );
+
+        auto maxOrderIt = std::ranges::max_element( displayOrder,
+                                                    []( const auto& aL, const auto& aR )
+                                                    {
+                                                        return aL.second < aR.second;
+                                                    } );
+        int  nextOrder = maxOrderIt == displayOrder.end() ? 0 : maxOrderIt->second + 1;
+        displayOrder.emplace( prop->Name(), nextOrder );
+
+        if( const wxString& dynGroup = prop->Group(); !dynGroup.IsEmpty() && !groups.contains( dynGroup ) )
         {
-            bool commonToAll = true;
-
-            for( const EDA_ITEM* other : aSelection )
-            {
-                std::vector<PROPERTY_BASE*> otherProps = other->GetDynamicProperties();
-
-                if( std::ranges::none_of( otherProps,
-                                          [&]( PROPERTY_BASE* p )
-                                          {
-                                              return p->Name() == prop->Name();
-                                          } ) )
-                {
-                    commonToAll = false;
-                    break;
-                }
-            }
-
-            if( !commonToAll || commonProps.contains( prop->Name() ) )
-                continue;
-
-            commonProps.emplace( prop->Name(), prop );
-
-            auto maxOrderIt = std::ranges::max_element( displayOrder,
-                                                        []( const auto& aL, const auto& aR )
-                                                        {
-                                                            return aL.second < aR.second;
-                                                        } );
-            int  nextOrder = maxOrderIt == displayOrder.end() ? 0 : maxOrderIt->second + 1;
-            displayOrder.emplace( prop->Name(), nextOrder );
-
-            if( const wxString& dynGroup = prop->Group(); !dynGroup.IsEmpty() && !groups.contains( dynGroup ) )
-            {
-                groupDisplayOrder.emplace_back( dynGroup );
-                groups.insert( dynGroup );
-            }
+            groupDisplayOrder.emplace_back( dynGroup );
+            groups.insert( dynGroup );
         }
     }
 
@@ -458,11 +443,19 @@ void PROPERTIES_PANEL::rebuildProperties( const SELECTION& aSelection )
             pgProp->SetChoices( choices );
 
         pgProp->SetValue( commonVal );
-        pgProp->ChangeFlag( wxPG_PROP_READONLY, !writeable );
+        pgProp->ChangeFlag( PG_PROP_READONLY, !writeable );
+
+        // If it's no longer writable any pending edits will be lost.  Life's tough.
+        if( !writeable && pgProp == m_grid->GetSelection() && m_grid->IsEditorFocused() )
+            m_grid->CommitChangesFromEditor();
     }
 
     if( !existingProps.empty() && existingProps == availableProps )
+    {
+        // A deferred rebuild hid the buttons and ends up here when the selection is unchanged
+        updateCategoryButtons();
         return;
+    }
 
     // Some difference exists:  start from scratch
     reset();
@@ -486,7 +479,7 @@ void PROPERTIES_PANEL::rebuildProperties( const SELECTION& aSelection )
                 pgProp->SetChoices( choices );
 
             pgProp->SetValue( commonVal );
-            pgProp->ChangeFlag( wxPG_PROP_READONLY, !writeable );
+            pgProp->ChangeFlag( PG_PROP_READONLY, !writeable );
             m_displayed.push_back( property );
 
             wxASSERT( displayOrder.count( name ) );
@@ -499,8 +492,17 @@ void PROPERTIES_PANEL::rebuildProperties( const SELECTION& aSelection )
 
     for( const wxString& groupName : groupDisplayOrder )
     {
-        if( groupName != _HKI( "Custom Properties" ) && !pgPropGroups.contains( groupName ) )
+        if( !pgPropGroups.contains( groupName )
+            && std::ranges::none_of( m_categoryButtons,
+                                     [&]( const CATEGORY_BUTTON& aButton )
+                                     {
+                                         return aButton.groupKey == groupName
+                                                && ( aButton.forceCategory || groupName == _HKI( "Custom Properties" ) )
+                                                && ( !aButton.enableFunc || aButton.enableFunc() );
+                                     } ) )
+        {
             continue;
+        }
 
         std::vector<wxPGProperty*> properties;
 
@@ -610,7 +612,7 @@ bool PROPERTIES_PANEL::extractValueAndWritability( const SELECTION& aSelection, 
         if( getItemValue( item, property, value ) )
         {
             // Null value indicates different property values between items
-            if( !different && !aValue.IsNull() && value != aValue )
+            if( !different && ( property->IsIndeterminate( item ) || ( !aValue.IsNull() && value != aValue ) ) )
             {
                 different = true;
                 aValue.MakeNull();
@@ -820,7 +822,14 @@ void PROPERTIES_PANEL::onCharHook( wxKeyEvent& aEvent )
         // the grid, so it never steps between properties.  Intercept Tab here to commit any
         // pending edit and move selection to the next (or previous, with Shift) editable
         // property, wrapping around at the ends.
-        m_grid->CommitChangesFromEditor();
+
+        // wxPropertyGrid::PerformValidation() fails to return true when the event is vetoed
+        // (though the code looks like it does it).  Anyway, for now make sure that we catch
+        // it.
+        m_ValueChangeVetoed = false;
+
+        if( !m_grid->CommitChangesFromEditor() || m_ValueChangeVetoed )
+            return;
 
         const bool forward = !aEvent.ShiftDown();
 
@@ -828,7 +837,7 @@ void PROPERTIES_PANEL::onCharHook( wxKeyEvent& aEvent )
                 []( wxPGProperty* aProp )
                 {
                     return aProp && !aProp->IsCategory() && aProp->IsVisible() && aProp->IsEnabled()
-                           && !aProp->HasFlag( wxPG_PROP_READONLY ) && aProp->GetEditorClass();
+                           && !aProp->HasFlag( PG_PROP_READONLY ) && aProp->GetEditorClass();
                 };
 
         auto findTarget =
@@ -881,13 +890,17 @@ void PROPERTIES_PANEL::onCharHook( wxKeyEvent& aEvent )
 
     if( aEvent.GetKeyCode() == 'C' && aEvent.GetModifiers() == wxMOD_CONTROL )
     {
-        if( wxPGProperty* prop = m_grid->GetSelectedProperty() )
+        // Let an open editor run it's own internal copy action
+        if( !m_grid->IsEditorFocused() )
         {
-            if( wxTheClipboard->Open() )
+            if( wxPGProperty* prop = m_grid->GetSelectedProperty() )
             {
-                wxTheClipboard->SetData( new wxTextDataObject( prop->GetValueAsString() ) );
-                wxTheClipboard->Close();
-                return;
+                if( wxTheClipboard->Open() )
+                {
+                    wxTheClipboard->SetData( new wxTextDataObject( prop->GetValueAsString() ) );
+                    wxTheClipboard->Close();
+                    return;
+                }
             }
         }
     }
@@ -907,12 +920,20 @@ void PROPERTIES_PANEL::onCharHook( wxKeyEvent& aEvent )
     if( aEvent.GetKeyCode() == WXK_RETURN || aEvent.GetKeyCode() == WXK_NUMPAD_ENTER
         || aEvent.GetKeyCode() == WXK_DOWN || aEvent.GetKeyCode() == WXK_UP )
     {
-        m_grid->CommitChangesFromEditor();
+        // wxPropertyGrid::PerformValidation() fails to return true when the event is vetoed
+        // (though the code looks like it does it).  Anyway, for now make sure that we catch
+        // it.
+        m_ValueChangeVetoed = false;
 
-        CallAfter( [this]()
-                   {
-                       m_grid->SelectProperty( m_grid->GetSelectedProperty(), true );
-                   } );
+        if( !m_grid->CommitChangesFromEditor() || m_ValueChangeVetoed )
+            return;
+
+        CallAfter(
+                [this]()
+                {
+                    if( wxPGProperty* prop = m_grid->GetSelectedProperty() )
+                        m_grid->SelectProperty( prop, true );
+                } );
     }
 
     aEvent.Skip();

@@ -259,7 +259,8 @@ FOOTPRINT* BOARD_NETLIST_UPDATER::addNewFootprint( COMPONENT* aComponent, const 
         // initial build after the footprint is committed, because we're going to immediately start
         // a move operation on the footprint and don't want its pads to drive nets onto vias/tracks
         // it happens to land on at the initial position.
-        footprint->SetAttributes( footprint->GetAttributes() | FP_JUST_ADDED );
+        if( m_willDrag )
+            footprint->SetAttributes( footprint->GetAttributes() | FP_JUST_ADDED );
 
         m_addedFootprints.push_back( footprint );
         m_commit.Add( footprint );
@@ -303,10 +304,7 @@ bool BOARD_NETLIST_UPDATER::updateComponentClass( FOOTPRINT* aFootprint, COMPONE
     FOOTPRINT* copy = nullptr;
 
     if( !m_isDryRun && !m_commit.GetStatus( aFootprint ) )
-    {
         copy = static_cast<FOOTPRINT*>( aFootprint->Clone() );
-        copy->SetParentGroup( nullptr );
-    }
 
     wxString msg;
 
@@ -437,7 +435,8 @@ FOOTPRINT* BOARD_NETLIST_UPDATER::replaceFootprint( NETLIST& aNetlist, FOOTPRINT
              // Expand the footprint pad layers
              newFootprint->FixUpPadsForBoard( m_board );
 
-             m_board->ExchangeFootprint( aFootprint, newFootprint, m_commit, true );
+             m_board->ExchangeFootprint( aFootprint, newFootprint, m_commit,
+                                         m_frame->GetPcbNewSettings()->m_FlipDirection, true );
 
              msg.Printf( _( "Changed %s footprint from '%s' to '%s'."),
                          aFootprint->GetReference(),
@@ -457,7 +456,7 @@ bool BOARD_NETLIST_UPDATER::updateFootprintParameters( FOOTPRINT* aFootprint, CO
 
     const COMPONENT_VARIANT* firstAssociatedVariant = nullptr;
 
-    if( aFootprint->GetFPID() != aNetlistComponent->GetFPID() )
+    if( !fpidsEquivalent( aFootprint->GetFPID(), aNetlistComponent->GetFPID() ) )
     {
         for( const auto& [_, test] : aNetlistComponent->GetVariants() )
         {
@@ -475,10 +474,7 @@ bool BOARD_NETLIST_UPDATER::updateFootprintParameters( FOOTPRINT* aFootprint, CO
     FOOTPRINT* copy = nullptr;
 
     if( !m_commit.GetStatus( aFootprint ) )
-    {
         copy = static_cast<FOOTPRINT*>( aFootprint->Clone() );
-        copy->SetParentGroup( nullptr );
-    }
 
     bool       changed = false;
 
@@ -578,20 +574,21 @@ bool BOARD_NETLIST_UPDATER::updateFootprintParameters( FOOTPRINT* aFootprint, CO
         fpFieldsAsMap[field->GetName()] = field->GetText();
     }
 
-    // Remove the ref/value/footprint fields that are individually handled
     nlohmann::ordered_map<wxString, wxString> compFields = aNetlistComponent->GetFields();
-    compFields.erase( GetDefaultFieldName( FIELD_T::REFERENCE, UNTRANSLATED ) );
-    compFields.erase( GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED ) );
-    compFields.erase( GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED ) );
-
-    // Remove any component class fields - these are not editable in the pcb editor
-    compFields.erase( wxT( "Component Class" ) );
 
     if( firstAssociatedVariant != nullptr )
     {
         for( const auto& [name, value] : firstAssociatedVariant->m_fields )
             compFields[name] = value;
     }
+
+    // Remove the ref/value/footprint fields that are individually handled
+    compFields.erase( GetDefaultFieldName( FIELD_T::REFERENCE, UNTRANSLATED ) );
+    compFields.erase( GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED ) );
+    compFields.erase( GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED ) );
+
+    // Remove any component class fields - these are not editable in the pcb editor
+    compFields.erase( wxT( "Component Class" ) );
 
     // Fields are stored as an ordered map, but we don't (yet) support reordering the footprint fields to
     // match the symbol, so we manually check the fields in the order they are stored in the symbol.
@@ -741,10 +738,12 @@ bool BOARD_NETLIST_UPDATER::updateFootprintParameters( FOOTPRINT* aFootprint, CO
         }
         else
         {
-            aFootprint->SetSheetname( sheetname );
             msg.Printf( _( "Updated %s sheetname to '%s'." ),
                         aFootprint->GetReference(),
                         EscapeHTML( sheetname ) );
+
+            changed = true;
+            aFootprint->SetSheetname( sheetname );
         }
 
         m_reporter->Report( msg, RPT_SEVERITY_ACTION );
@@ -760,10 +759,12 @@ bool BOARD_NETLIST_UPDATER::updateFootprintParameters( FOOTPRINT* aFootprint, CO
         }
         else
         {
-            aFootprint->SetSheetfile( sheetfile );
             msg.Printf( _( "Updated %s sheetfile to '%s'." ),
                         aFootprint->GetReference(),
                         EscapeHTML( sheetfile ) );
+
+            changed = true;
+            aFootprint->SetSheetfile( sheetfile );
         }
 
         m_reporter->Report( msg, RPT_SEVERITY_ACTION );
@@ -779,10 +780,12 @@ bool BOARD_NETLIST_UPDATER::updateFootprintParameters( FOOTPRINT* aFootprint, CO
         }
         else
         {
-            aFootprint->SetFilters( fpFilters );
             msg.Printf( _( "Updated %s footprint filters to '%s'." ),
                         aFootprint->GetReference(),
                         EscapeHTML( fpFilters ) );
+
+            changed = true;
+            aFootprint->SetFilters( fpFilters );
         }
 
         m_reporter->Report( msg, RPT_SEVERITY_ACTION );
@@ -1005,8 +1008,33 @@ bool BOARD_NETLIST_UPDATER::updateFootprintParameters( FOOTPRINT* aFootprint, CO
 }
 
 
-bool BOARD_NETLIST_UPDATER::updateFootprintGroup( FOOTPRINT* aPcbFootprint,
-                                                  COMPONENT* aNetlistComponent )
+PCB_GROUP* BOARD_NETLIST_UPDATER::findBoardGroup( const KIID& aUuid ) const
+{
+    for( PCB_GROUP* group : m_board->Groups() )
+    {
+        if( group->m_Uuid == aUuid )
+            return group;
+    }
+
+    return nullptr;
+}
+
+
+PCB_GROUP* BOARD_NETLIST_UPDATER::addBoardGroup( const NETLIST_GROUP& aNetlistGroup )
+{
+    PCB_GROUP* group = new PCB_GROUP( m_board );
+    group->SetUuid( aNetlistGroup.uuid );
+    group->SetName( aNetlistGroup.name );
+
+    m_board->Add( group );
+    m_commit.Added( group );
+    m_addedGroups.push_back( group );
+
+    return group;
+}
+
+
+bool BOARD_NETLIST_UPDATER::updateFootprintGroup( FOOTPRINT* aPcbFootprint, COMPONENT* aNetlistComponent )
 {
     if( !m_transferGroups )
         return false;
@@ -1025,26 +1053,13 @@ bool BOARD_NETLIST_UPDATER::updateFootprintGroup( FOOTPRINT* aPcbFootprint,
     FOOTPRINT* copy = nullptr;
 
     if( !m_isDryRun && !m_commit.GetStatus( aPcbFootprint ) )
-    {
         copy = static_cast<FOOTPRINT*>( aPcbFootprint->Clone() );
-        copy->SetParentGroup( nullptr );
-    }
 
     bool changed = false;
 
     // newGroup may point to an existing group on the board if we find an
     // incoming group UUID that matches an existing group
-    PCB_GROUP* newGroup = nullptr;
-
-    // Find existing group based on matching UUIDs
-    auto it = std::find_if( m_board->Groups().begin(), m_board->Groups().end(),
-                [&](PCB_GROUP* group) {
-                    return group->m_Uuid == newGroupKIID;
-                });
-
-    // If we find a group with the same UUID, use it
-    if( it != m_board->Groups().end() )
-        newGroup = *it;
+    PCB_GROUP* newGroup = findBoardGroup( newGroupKIID );
 
     // Remove from existing group
     if( existingGroupKIID != 0 )
@@ -1094,15 +1109,7 @@ bool BOARD_NETLIST_UPDATER::updateFootprintGroup( FOOTPRINT* aPcbFootprint,
 
             if( newGroup == nullptr )
             {
-                newGroup = new PCB_GROUP( m_board );
-                newGroup->SetUuid( newGroupKIID );
-                newGroup->SetName( aNetlistComponent->GetGroup()->name );
-
-                // Add the group to the board manually so we can find it by checking
-                // board groups for later footprints that are checking for existing groups
-                m_board->Add( newGroup );
-                m_commit.Added( newGroup );
-                m_addedGroups.push_back( newGroup );
+                newGroup = addBoardGroup( *aNetlistComponent->GetGroup() );
             }
             else
             {
@@ -1124,8 +1131,7 @@ bool BOARD_NETLIST_UPDATER::updateFootprintGroup( FOOTPRINT* aPcbFootprint,
 }
 
 
-bool BOARD_NETLIST_UPDATER::updateComponentPadConnections( FOOTPRINT* aFootprint,
-                                                           COMPONENT* aNewComponent )
+bool BOARD_NETLIST_UPDATER::updateComponentPadConnections( FOOTPRINT* aFootprint, COMPONENT* aNewComponent )
 {
     wxString msg;
 
@@ -1133,10 +1139,7 @@ bool BOARD_NETLIST_UPDATER::updateComponentPadConnections( FOOTPRINT* aFootprint
     FOOTPRINT* copy = nullptr;
 
     if( !m_isDryRun && !m_commit.GetStatus( aFootprint ) )
-    {
         copy = static_cast<FOOTPRINT*>( aFootprint->Clone() );
-        copy->SetParentGroup( nullptr );
-    }
 
     bool changed = false;
 
@@ -1229,14 +1232,19 @@ bool BOARD_NETLIST_UPDATER::updateComponentPadConnections( FOOTPRINT* aFootprint
 
             if( !m_isDryRun )
             {
-                changed = true;
-                pad->SetNetCode( NETINFO_LIST::UNCONNECTED );
+                if( pad->GetNetCode() != NETINFO_LIST::UNCONNECTED )
+                {
+                    changed = true;
+                    pad->SetNetCode( NETINFO_LIST::UNCONNECTED );
+                }
 
                 // If the pad has no net from netlist (i.e. not in netlist
                 // it cannot have a pin function
-                if( pad->GetNetname().IsEmpty() )
+                if( pad->GetNetname().IsEmpty() && !pad->GetPinFunction().IsEmpty() )
+                {
+                    changed = true;
                     pad->SetPinFunction( wxEmptyString );
-
+                }
             }
             else
             {
@@ -1347,7 +1355,7 @@ bool BOARD_NETLIST_UPDATER::updateComponentPadConnections( FOOTPRINT* aFootprint
 
     if( changed && copy )
         m_commit.Modified( aFootprint, copy );
-    else if( copy )
+    else
         delete copy;
 
     return true;
@@ -1384,10 +1392,7 @@ bool BOARD_NETLIST_UPDATER::updateComponentUnits( FOOTPRINT* aFootprint, COMPONE
     FOOTPRINT* copy = nullptr;
 
     if( !m_commit.GetStatus( aFootprint ) )
-    {
         copy = static_cast<FOOTPRINT*>( aFootprint->Clone() );
-        copy->SetParentGroup( nullptr );
-    }
 
     aFootprint->SetUnitInfo( newUnits );
 
@@ -1420,7 +1425,7 @@ void BOARD_NETLIST_UPDATER::applyComponentVariants( COMPONENT* aComponent,
     if( aBaseFpid.empty() )
         return;
 
-    const wxString footprintFieldName = GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED );
+    const wxString FOOTPRINT_FIELD_NAME = GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED );
 
     struct VARIANT_INFO
     {
@@ -1436,7 +1441,7 @@ void BOARD_NETLIST_UPDATER::applyComponentVariants( COMPONENT* aComponent,
     {
         LIB_ID variantFPID = aBaseFpid;
 
-        auto fieldIt = variant.m_fields.find( footprintFieldName );
+        auto fieldIt = variant.m_fields.find( FOOTPRINT_FIELD_NAME );
 
         if( fieldIt != variant.m_fields.end() && !fieldIt->second.IsEmpty() )
         {
@@ -1468,10 +1473,7 @@ void BOARD_NETLIST_UPDATER::applyComponentVariants( COMPONENT* aComponent,
         FOOTPRINT* copy = nullptr;
 
         if( !m_isDryRun && !m_commit.GetStatus( footprint ) )
-        {
             copy = static_cast<FOOTPRINT*>( footprint->Clone() );
-            copy->SetParentGroup( nullptr );
-        }
 
         bool changed = false;
 
@@ -1560,43 +1562,26 @@ void BOARD_NETLIST_UPDATER::applyComponentVariants( COMPONENT* aComponent,
             const COMPONENT_VARIANT& variant = *info.variant;
 
             // During dry run, just read current state. During actual run, create variant if needed.
-            const FOOTPRINT_VARIANT* currentVariant = footprint->GetVariant( info.name );
+            FOOTPRINT_VARIANT* currentVariant = footprint->GetVariant( info.name );
 
             // Check if this footprint is the active one for this variant
             bool isAssociatedFootprint = fpidsEquivalent( footprint->GetFPID(), info.variantFPID );
+
+            // If this footprint is not active, and it's not one of multiple footprints that share
+            // a RefDes (one per variant), then it doesn't need variant info for it.
+            if( !isAssociatedFootprint && aFootprints.size() <= 1 )
+                continue;
+
+            excessVariants.erase( info.name );
+            bool targetDnp = variant.m_hasDnp ? variant.m_dnp : baseFootprintDnp;
+            bool currentDnp = currentVariant ? currentVariant->GetDNP() : effectiveFootprintDnp;
 
             // When multiple footprints share a RefDes (one per variant), a footprint that is not
             // the active choice for this variant must be DNP for it so the 3D viewer and other
             // consumers hide it.  The base footprint carries no global DNP flag, so it needs an
             // explicit per-variant override; non-base footprints are already globally DNP above.
             if( !isAssociatedFootprint )
-            {
-                if( aFootprints.size() > 1 )
-                {
-                    excessVariants.erase( info.name );
-                    bool currentDnp = currentVariant ? currentVariant->GetDNP() : effectiveFootprintDnp;
-
-                    if( !currentDnp )
-                    {
-                        printAttributeMessage( true, _( "Do not place" ), info.name );
-
-                        if( !m_isDryRun )
-                        {
-                            if( FOOTPRINT_VARIANT* fpVariant = footprint->AddVariant( info.name ) )
-                                fpVariant->SetDNP( true );
-                        }
-
-                        m_reporter->Report( msg, RPT_SEVERITY_ACTION );
-                        changed = true;
-                    }
-                }
-
-                continue;
-            }
-
-            excessVariants.erase( info.name );
-            bool targetDnp = variant.m_hasDnp ? variant.m_dnp : baseFootprintDnp;
-            bool currentDnp = currentVariant ? currentVariant->GetDNP() : effectiveFootprintDnp;
+                targetDnp = true;
 
             if( currentDnp != targetDnp )
             {
@@ -1669,62 +1654,129 @@ void BOARD_NETLIST_UPDATER::applyComponentVariants( COMPONENT* aComponent,
                 changed = true;
             }
 
-            for( const auto& [fieldName, fieldValue] : variant.m_fields )
+            if( m_updateFields )
             {
-                if( fieldName.CmpNoCase( footprintFieldName ) == 0 )
-                    continue;
+                std::map<wxString, wxString> fpFieldsAsMap;
 
-                bool hasCurrentValue = currentVariant && currentVariant->HasFieldValue( fieldName );
-                wxString currentValue = hasCurrentValue ? currentVariant->GetFieldValue( fieldName ) : wxString();
+                for( PCB_FIELD* field : footprint->GetFields() )
+                    fpFieldsAsMap[field->GetName()] = field->GetText();
 
-                if( currentValue != fieldValue )
+                for( const auto& [fieldName, fieldValue] : variant.m_fields )
                 {
-                    if( m_isDryRun )
-                    {
-                        if( aFootprints.size() > 1 )
-                        {
-                            msg.Printf( _( "Change %s field '%s' to '%s' on variant %s (footprint %s)." ),
-                                        footprint->GetReference(),
-                                        fieldName,
-                                        fieldValue,
-                                        info.name,
-                                        footprint->GetFPIDAsString() );
-                        }
-                        else
-                        {
-                            msg.Printf( _( "Change %s field '%s' to '%s' on variant %s." ),
-                                        footprint->GetReference(),
-                                        fieldName,
-                                        fieldValue,
-                                        info.name );
-                        }
-                    }
+                    if( fieldName.CmpNoCase( FOOTPRINT_FIELD_NAME ) == 0 )
+                        continue;
+
+                    wxString currentValue;
+
+                    if( currentVariant && currentVariant->HasFieldValue( fieldName ) )
+                        currentValue = currentVariant->GetFieldValue( fieldName );
                     else
+                        currentValue = fpFieldsAsMap[fieldName];
+
+                    fpFieldsAsMap.erase( fieldName );   // leave fpFieldsAsMap containing only unprocessed fields
+
+                    if( currentValue != fieldValue )
                     {
-                        if( aFootprints.size() > 1 )
+                        if( m_isDryRun )
                         {
-                            msg.Printf( _( "Changed %s field '%s' to '%s' on variant %s (footprint %s)." ),
-                                        footprint->GetReference(),
-                                        fieldName,
-                                        fieldValue,
-                                        info.name,
-                                        footprint->GetFPIDAsString() );
+                            if( aFootprints.size() > 1 )
+                            {
+                                msg.Printf( _( "Change %s field '%s' to '%s' on variant %s (footprint %s)." ),
+                                            footprint->GetReference(),
+                                            fieldName,
+                                            fieldValue,
+                                            info.name,
+                                            footprint->GetFPIDAsString() );
+                            }
+                            else
+                            {
+                                msg.Printf( _( "Change %s field '%s' to '%s' on variant %s." ),
+                                            footprint->GetReference(),
+                                            fieldName,
+                                            fieldValue,
+                                            info.name );
+                            }
                         }
                         else
                         {
-                            msg.Printf( _( "Changed %s field '%s' to '%s' on variant %s." ),
-                                        footprint->GetReference(),
-                                        fieldName,
-                                        fieldValue,
-                                        info.name );
+                            if( aFootprints.size() > 1 )
+                            {
+                                msg.Printf( _( "Changed %s field '%s' to '%s' on variant %s (footprint %s)." ),
+                                            footprint->GetReference(),
+                                            fieldName,
+                                            fieldValue,
+                                            info.name,
+                                            footprint->GetFPIDAsString() );
+                            }
+                            else
+                            {
+                                msg.Printf( _( "Changed %s field '%s' to '%s' on variant %s." ),
+                                            footprint->GetReference(),
+                                            fieldName,
+                                            fieldValue,
+                                            info.name );
+                            }
+
+                            if( FOOTPRINT_VARIANT* fpVariant = footprint->AddVariant( info.name ) )
+                                fpVariant->SetFieldValue( fieldName, fieldValue );
                         }
 
-                        if( FOOTPRINT_VARIANT* fpVariant = footprint->AddVariant( info.name ) )
-                            fpVariant->SetFieldValue( fieldName, fieldValue );
+                        m_reporter->Report( msg, RPT_SEVERITY_ACTION );
+                        changed = true;
                     }
+                }
 
-                    m_reporter->Report( msg, RPT_SEVERITY_ACTION );
-                    changed = true;
+                // Go through everything left in fpFieldsAsMap and clear any variant field definitions
+                // that are no longer present in the schematic
+                for( const auto& [fieldName, fieldValue] : fpFieldsAsMap )
+                {
+                    if( fieldName.CmpNoCase( FOOTPRINT_FIELD_NAME ) == 0 )
+                        continue;
+
+                    if( currentVariant && currentVariant->HasFieldValue( fieldName ) )
+                    {
+                        if( m_isDryRun )
+                        {
+                            if( aFootprints.size() > 1 )
+                            {
+                                msg.Printf( _( "Remove %s field '%s' override on variant %s (footprint %s)." ),
+                                            footprint->GetReference(),
+                                            fieldName,
+                                            info.name,
+                                            footprint->GetFPIDAsString() );
+                            }
+                            else
+                            {
+                                msg.Printf( _( "Remove %s field '%s' override on variant %s." ),
+                                            footprint->GetReference(),
+                                            fieldName,
+                                            info.name );
+                            }
+                        }
+                        else
+                        {
+                            if( aFootprints.size() > 1 )
+                            {
+                                msg.Printf( _( "Removed %s field '%s' override on variant %s (footprint %s)." ),
+                                            footprint->GetReference(),
+                                            fieldName,
+                                            info.name,
+                                            footprint->GetFPIDAsString() );
+                            }
+                            else
+                            {
+                                msg.Printf( _( "Removed %s field '%s' override on variant %s." ),
+                                            footprint->GetReference(),
+                                            fieldName,
+                                            info.name );
+                            }
+
+                            currentVariant->RemoveFieldValue( fieldName );
+                        }
+
+                        m_reporter->Report( msg, RPT_SEVERITY_ACTION );
+                        changed = true;
+                    }
                 }
             }
         }
@@ -2002,6 +2054,30 @@ bool BOARD_NETLIST_UPDATER::updateGroups( NETLIST& aNetlist )
 
     wxString msg;
 
+    for( size_t ii = 0; ii < m_board->Groups().size(); ++ii )
+    {
+        PCB_GROUP*     childGroup = m_board->Groups()[ii];
+        NETLIST_GROUP* childNetlistGroup = aNetlist.GetGroupByUuid( childGroup->m_Uuid );
+
+        if( !childNetlistGroup )
+            continue;
+
+        NETLIST_GROUP* parentNetlistGroup = aNetlist.GetParentGroup( childNetlistGroup->path );
+
+        if( !parentNetlistGroup || findBoardGroup( parentNetlistGroup->uuid ) )
+            continue;
+
+        if( m_isDryRun )
+        {
+            msg.Printf( _( "Add group '%s' to group '%s'." ), EscapeHTML( childGroup->GetName() ),
+                        EscapeHTML( parentNetlistGroup->name ) );
+            m_reporter->Report( msg, RPT_SEVERITY_ACTION );
+            continue;
+        }
+
+        addBoardGroup( *parentNetlistGroup );
+    }
+
     for( PCB_GROUP* pcbGroup : m_board->Groups() )
     {
         NETLIST_GROUP* netlistGroup = aNetlist.GetGroupByUuid( pcbGroup->m_Uuid );
@@ -2049,26 +2125,16 @@ bool BOARD_NETLIST_UPDATER::updateGroups( NETLIST& aNetlist )
             m_reporter->Report( msg, RPT_SEVERITY_ACTION );
         }
 
-        // A group member may be another group's uuid (a nested group).  Restore that
-        // parent/child relationship on the board.
+        // A group member may be another group (a nested group).  Restore that parent/child
+        // relationship on the board.
         for( const KIID_PATH& member : netlistGroup->members )
         {
-            if( member.empty() )
+            NETLIST_GROUP* memberGroup = aNetlist.GetGroupByPath( member );
+
+            if( !memberGroup )
                 continue;
 
-            KIID memberGroupUuid =
-                    member.size() == 1 ? member.front() : KIID::FromName( std::string( member.AsString().ToUTF8() ) );
-
-            PCB_GROUP* childGroup = nullptr;
-
-            for( PCB_GROUP* candidate : m_board->Groups() )
-            {
-                if( candidate->m_Uuid == memberGroupUuid )
-                {
-                    childGroup = candidate;
-                    break;
-                }
-            }
+            PCB_GROUP* childGroup = findBoardGroup( memberGroup->uuid );
 
             if( !childGroup || childGroup == pcbGroup || childGroup->GetParentGroup() == pcbGroup )
             {
@@ -2091,6 +2157,44 @@ bool BOARD_NETLIST_UPDATER::updateGroups( NETLIST& aNetlist )
 
             m_reporter->Report( msg, RPT_SEVERITY_ACTION );
         }
+    }
+
+    // Run after the nesting above so a child that moved to another parent is already there.
+    // The netlist does not describe board-only members, so only a child group it knows about
+    // can be said to have left its parent.
+    for( PCB_GROUP* childGroup : m_board->Groups() )
+    {
+        NETLIST_GROUP* childNetlistGroup = aNetlist.GetGroupByUuid( childGroup->m_Uuid );
+
+        if( !childNetlistGroup || !childGroup->GetParentGroup() )
+            continue;
+
+        PCB_GROUP*     parentGroup = static_cast<PCB_GROUP*>( childGroup->GetParentGroup() );
+        NETLIST_GROUP* parentNetlistGroup = aNetlist.GetGroupByUuid( parentGroup->m_Uuid );
+
+        if( !parentNetlistGroup )
+            continue;
+
+        const std::vector<KIID_PATH>& members = parentNetlistGroup->members;
+
+        if( std::find( members.begin(), members.end(), childNetlistGroup->path ) != members.end() )
+            continue;
+
+        if( m_isDryRun )
+        {
+            msg.Printf( _( "Remove group '%s' from group '%s'." ), EscapeHTML( childGroup->GetName() ),
+                        EscapeHTML( parentGroup->GetName() ) );
+        }
+        else
+        {
+            msg.Printf( _( "Removed group '%s' from group '%s'." ), EscapeHTML( childGroup->GetName() ),
+                        EscapeHTML( parentGroup->GetName() ) );
+            m_commit.Modify( parentGroup->AsEdaItem(), nullptr, RECURSE_MODE::NO_RECURSE );
+            m_commit.Modify( childGroup->AsEdaItem(), nullptr, RECURSE_MODE::NO_RECURSE );
+            parentGroup->RemoveItem( childGroup );
+        }
+
+        m_reporter->Report( msg, RPT_SEVERITY_ACTION );
     }
 
     return true;
@@ -2240,7 +2344,20 @@ bool BOARD_NETLIST_UPDATER::UpdateNetlist( NETLIST& aNetlist )
             }
 
             if( match )
-                matchingFootprints.push_back( footprint );
+            {
+                if( footprint->IsBoardOnly() )
+                {
+                    msg.Printf( _( "Found a footprint matching %s, but the footprint's 'Not in schematic' "
+                                   "flag indicates there should be no matching symbol." ),
+                                component->GetReference() );
+                    m_reporter->Report( msg, RPT_SEVERITY_WARNING );
+                    ++m_warningCount;
+                }
+                else
+                {
+                    matchingFootprints.push_back( footprint );
+                }
+            }
 
             if( footprint == lastPreexistingFootprint )
             {
@@ -2434,9 +2551,6 @@ bool BOARD_NETLIST_UPDATER::UpdateNetlist( NETLIST& aNetlist )
         bool matched = false;
         bool doDelete = m_deleteUnusedFootprints;
 
-        if( ( footprint->GetAttributes() & FP_BOARD_ONLY ) > 0 )
-            doDelete = false;
-
         bool isStaleVariantFootprint = false;
 
         if( usedFootprints.count( footprint ) )
@@ -2471,6 +2585,9 @@ bool BOARD_NETLIST_UPDATER::UpdateNetlist( NETLIST& aNetlist )
         // regardless of m_deleteUnusedFootprints setting.
         if( isStaleVariantFootprint )
             doDelete = true;
+
+        if( ( footprint->GetAttributes() & FP_BOARD_ONLY ) > 0 )
+            doDelete = false;
 
         if( doDelete && !matched && footprint->IsLocked() && !m_overrideLocks )
         {
@@ -2521,6 +2638,8 @@ bool BOARD_NETLIST_UPDATER::UpdateNetlist( NETLIST& aNetlist )
 
     if( !m_isDryRun )
     {
+        m_board->ClearNetChainColors();
+
         // Finalise the component class manager
         m_board->GetComponentClassManager().FinishNetlistUpdate();
         m_board->SynchronizeComponentClasses( sheetPaths );
@@ -2532,8 +2651,7 @@ bool BOARD_NETLIST_UPDATER::UpdateNetlist( NETLIST& aNetlist )
         {
             if( !net->IsCurrent() )
             {
-                msg.Printf( _( "Removed unused net %s." ),
-                            EscapeHTML( net->GetNetname() ) );
+                msg.Printf( _( "Removed unused net %s." ), EscapeHTML( net->GetNetname() ) );
                 m_reporter->Report( msg, RPT_SEVERITY_ACTION );
             }
         }
@@ -2656,29 +2774,29 @@ bool BOARD_NETLIST_UPDATER::UpdateNetlist( NETLIST& aNetlist )
         // pointers pick up cleared/changed chain entries even when no chain carries a netclass.
         m_board->SynchronizeNetsAndNetClasses( true );
 
-        for( const auto& sig : aNetlist.GetNetChainTerminalPins() )
+        for( const auto& [chain, terminalPins] : aNetlist.GetNetChainTerminalPins() )
         {
             PAD* pads[2] = { nullptr, nullptr };
 
-            for( size_t i = 0; i < sig.second.size() && i < 2; ++i )
+            for( size_t i = 0; i < terminalPins.size() && i < 2; ++i )
             {
-                const wxString& ref = sig.second[i].first;
-                const wxString& pin = sig.second[i].second;
-                FOOTPRINT* fp = m_board->FindFootprintByReference( ref );
+                const wxString& ref = terminalPins[i].first;
+                const wxString& pin = terminalPins[i].second;
+                FOOTPRINT*      fp = m_board->FindFootprintByReference( ref );
 
                 if( !fp )
                     continue;
 
-                PAD* candidate = nullptr;
-                PAD* best = nullptr;
-                int bestDist = std::numeric_limits<int>::max();
+                PAD*  candidate = nullptr;
+                PAD*  best = nullptr;
+                int   bestDist = std::numeric_limits<int>::max();
                 BOX2I bbox = fp->GetBoundingBox();
 
                 while( ( candidate = fp->FindPadByNumber( pin, candidate ) ) )
                 {
                     VECTOR2I pos = candidate->GetPosition();
                     int dist = std::min( { pos.x - bbox.GetLeft(), bbox.GetRight() - pos.x,
-                                            pos.y - bbox.GetTop(), bbox.GetBottom() - pos.y } );
+                                           pos.y - bbox.GetTop(), bbox.GetBottom() - pos.y } );
 
                     if( !best || dist < bestDist || ( dist == bestDist && candidate->m_Uuid < best->m_Uuid ) )
                     {
@@ -2697,16 +2815,13 @@ bool BOARD_NETLIST_UPDATER::UpdateNetlist( NETLIST& aNetlist )
 
                 NETINFO_ITEM* termNet = pads[i]->GetNet();
 
-                if( !termNet || termNet->GetNetChain() != sig.first )
+                if( !termNet || termNet->GetNetChain() != chain )
                     continue;
 
                 for( NETINFO_ITEM* net : m_board->GetNetInfo() )
                 {
-                    if( net != termNet && net->GetNetChain() == sig.first
-                        && net->GetTerminalPad( i ) )
-                    {
+                    if( net != termNet && net->GetNetChain() == chain && net->GetTerminalPad( i ) )
                         net->ClearTerminalPad( i );
-                    }
                 }
 
                 termNet->SetTerminal( i, pads[i] );

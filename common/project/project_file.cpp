@@ -49,10 +49,14 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
         m_topLevelSheets(),
         m_boards(),
         m_project( nullptr ),
-        m_wasMigrated( false )
+        m_wasMigrated( false ),
+        m_topLevelSheetsChanged( false )
 {
     // Keep old files around
     m_deleteLegacyAfterMigration = false;
+
+    // A shared project file changes only with the user's own edits
+    m_writeImplicitly = false;
 
     m_params.emplace_back( new PARAM_LIST<FILE_INFO_PAIR>( "sheets", &m_sheets, {} ) );
 
@@ -64,7 +68,8 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
     m_params.emplace_back( new PARAM_WXSTRING_MAP( "text_variables",
             &m_TextVars, {}, false, true /* array behavior, even though stored as a map */ ) );
 
-    m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "schematic.drawing.field_names",
+    m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>(
+            "schematic.drawing.field_names",
             [&]() -> nlohmann::json
             {
                 nlohmann::json ret = nlohmann::json::array();
@@ -83,7 +88,13 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
             },
             [&]( const nlohmann::json& aJson )
             {
-                if( !aJson.empty() && aJson.is_array() )
+                if( aJson.is_string() )
+                {
+                    m_TemplateFieldNames.DeleteFieldNameTemplates( TEMPLATES::SCOPE::PROJECT );
+                    m_TemplateFieldNames.AddTemplateFieldNames( wxString::FromUTF8( aJson.get<std::string>() ),
+                                                                TEMPLATES::SCOPE::PROJECT );
+                }
+                else if( aJson.is_array() )
                 {
                     m_TemplateFieldNames.DeleteFieldNameTemplates( TEMPLATES::SCOPE::PROJECT );
 
@@ -99,7 +110,8 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
                         }
                     }
                 }
-            }, {} ) );
+            },
+            {} ) );
 
     m_params.emplace_back( new PARAM_LIST<wxString>( "libraries.pinned_symbol_libs",
             &m_PinnedSymbolLibs, {} ) );
@@ -258,8 +270,24 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
     m_params.emplace_back( new PARAM<wxString>( "board.ipc2581.mode",
             &m_IP2581Bom.mode, wxEmptyString ) );
 
-    m_params.emplace_back( new PARAM<wxString>( "board.ipc2581.sections",
-            &m_IP2581Bom.sections, wxEmptyString ) );
+    // An empty key alone means the mode picks the sections, so the flag marks an empty choice
+    m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "board.ipc2581.sections",
+            [this]() { return nlohmann::json( m_IP2581Bom.sections.value_or( wxString() ) ); },
+            [this]( const nlohmann::json& aVal )
+            {
+                wxString sections = aVal.is_string() ? aVal.get<wxString>() : wxString();
+                m_IP2581Bom.sections = sections.IsEmpty() ? std::nullopt : std::optional<wxString>( sections );
+            },
+            nlohmann::json( "" ) ) );
+
+    m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "board.ipc2581.custom_sections",
+            [this]() { return nlohmann::json( m_IP2581Bom.sections && m_IP2581Bom.sections->IsEmpty() ); },
+            [this]( const nlohmann::json& aVal )
+            {
+                if( aVal.is_boolean() && aVal.get<bool>() && !m_IP2581Bom.sections )
+                    m_IP2581Bom.sections = wxString();
+            },
+            nlohmann::json( false ) ) );
 
     m_params.emplace_back( new PARAM<wxString>( "board.ipc2581.net_names",
             &m_IP2581Bom.netNames, wxEmptyString ) );
@@ -506,7 +534,7 @@ bool PROJECT_FILE::MigrateFromLegacy( wxConfigBase* aCfg )
     fromLegacyString( aCfg, "LastNetListRead",           "pcbnew.last_paths.netlist" );
     fromLegacyString( aCfg, "LastSTEPExportPath",        "pcbnew.last_paths.step" );
     fromLegacyString( aCfg, "LastIDFExportPath",         "pcbnew.last_paths.idf" );
-    fromLegacyString( aCfg, "LastVRMLExportPath",        "pcbnew.last_paths.vmrl" );
+    fromLegacyString( aCfg, "LastVRMLExportPath",        "pcbnew.last_paths.vrml" );
     fromLegacyString( aCfg, "LastSpecctraDSNExportPath", "pcbnew.last_paths.specctra_dsn" );
     fromLegacyString( aCfg, "LastGenCADExportPath",      "pcbnew.last_paths.gencad" );
 
@@ -604,11 +632,14 @@ bool PROJECT_FILE::MigrateFromLegacy( wxConfigBase* aCfg )
     fromLegacy<int>( aCfg, "DimensionUnits",     bp + "defaults.dimension_units" );
     fromLegacy<int>( aCfg, "DimensionPrecision", bp + "defaults.dimension_precision" );
 
-    std::string sev = bp + "rule_severities";
+    std::string sev = bp + "rule_severities.";
 
     fromLegacy<bool>( aCfg, "RequireCourtyardDefinitions", sev + "legacy_no_courtyard_defined" );
 
     fromLegacy<bool>( aCfg, "ProhibitOverlappingCourtyards", sev + "legacy_courtyards_overlap" );
+
+    // 5.1 and earlier always kept external zone fillets
+    Set( bp + "zones_allow_external_fillets", true );
 
     {
         int      idx     = 1;
@@ -635,7 +666,7 @@ bool PROJECT_FILE::MigrateFromLegacy( wxConfigBase* aCfg )
         wxString keyBase = "ViaDiameter";
         wxString key     = keyBase;
         double   diameter;
-        double   drill   = 1.0;
+        double   drill;
 
         nlohmann::json vias = nlohmann::json::array();
 
@@ -644,6 +675,7 @@ bool PROJECT_FILE::MigrateFromLegacy( wxConfigBase* aCfg )
         while( aCfg->Read( key, &diameter ) )
         {
             key = "ViaDrill";
+            drill = 1.0;
             aCfg->Read( key << idx, &drill );
 
             nlohmann::json via = { { "diameter", diameter }, { "drill", drill } };
@@ -661,8 +693,8 @@ bool PROJECT_FILE::MigrateFromLegacy( wxConfigBase* aCfg )
         wxString keyBase = "dPairWidth";
         wxString key     = keyBase;
         double   width;
-        double   gap     = 1.0;
-        double   via_gap = 1.0;
+        double   gap;
+        double   via_gap;
 
         nlohmann::json pairs = nlohmann::json::array();
 
@@ -671,9 +703,11 @@ bool PROJECT_FILE::MigrateFromLegacy( wxConfigBase* aCfg )
         while( aCfg->Read( key, &width ) )
         {
             key = "dPairGap";
+            gap = 1.0;
             aCfg->Read( key << idx, &gap );
 
             key = "dPairViaGap";
+            via_gap = 1.0;
             aCfg->Read( key << idx, &via_gap );
 
             nlohmann::json pair = { { "width", width }, { "gap", gap }, { "via_gap", via_gap } };
@@ -711,8 +745,7 @@ bool PROJECT_FILE::MigrateFromLegacy( wxConfigBase* aCfg )
 
                     if( tokens.size() == 2 )
                     {
-                        wxLogTrace( traceSettings, wxT( "%d: %s = %s" ), sheet, tokens[0],
-                                    tokens[1] );
+                        wxLogTrace( traceSettings, wxT( "%d: %s = %s" ), sheet, tokens[0], tokens[1] );
                         arr.push_back( nlohmann::json::array( { tokens[0], tokens[1] } ) );
                     }
                 }
@@ -795,7 +828,10 @@ bool PROJECT_FILE::MigrateFromLegacy( wxConfigBase* aCfg )
 
 bool PROJECT_FILE::LoadFromFile( const wxString& aDirectory )
 {
+    std::vector<TOP_LEVEL_SHEET_INFO> previousSheets = m_topLevelSheets;
     bool success = JSON_SETTINGS::LoadFromFile( aDirectory );
+
+    m_topLevelSheetsChanged = false;
 
     if( success )
     {
@@ -812,7 +848,8 @@ bool PROJECT_FILE::LoadFromFile( const wxString& aDirectory )
 
             m_topLevelSheets.push_back( std::move( defaultSheet ) );
 
-            // Mark as migrated so it will be saved with the new format
+            // Like a schema migration, this reaches the file with the next real change
+            Set( "schematic.top_level_sheets", nlohmann::json( m_topLevelSheets ) );
             m_wasMigrated = true;
 
             wxLogTrace( traceSettings, wxT( "PROJECT_FILE: Migrated old single-root format to top_level_sheets" ) );
@@ -829,22 +866,21 @@ bool PROJECT_FILE::LoadFromFile( const wxString& aDirectory )
 
             for( TOP_LEVEL_SHEET_INFO& sheetInfo : m_topLevelSheets )
             {
-                wxFileName referencedFile( projectPath, sheetInfo.filename );
+                wxFileName referencedFile( sheetInfo.filename );
+                referencedFile.MakeAbsolute( projectPath );
 
                 if( referencedFile.FileExists() )
                     continue;
 
                 // Try the project-name-based filename
-                wxString expectedFile =
-                        projectName + wxS( "." ) + FILEEXT::KiCadSchematicFileExtension;
+                wxString expectedFile = projectName + wxS( "." ) + FILEEXT::KiCadSchematicFileExtension;
 
                 wxFileName candidateFile( projectPath, expectedFile );
 
                 if( candidateFile.FileExists() )
                 {
                     wxLogTrace( traceSettings,
-                                wxT( "PROJECT_FILE: Fixing stale top_level_sheets reference "
-                                     "'%s' -> '%s'" ),
+                                wxT( "PROJECT_FILE: Fixing stale top_level_sheets reference '%s' -> '%s'" ),
                                 sheetInfo.filename, expectedFile );
 
                     sheetInfo.filename = expectedFile;
@@ -853,6 +889,9 @@ bool PROJECT_FILE::LoadFromFile( const wxString& aDirectory )
                 }
             }
         }
+
+        // A first read, or one over a list never written, has nothing to differ from
+        m_topLevelSheetsChanged = !previousSheets.empty() && m_topLevelSheets != previousSheets;
     }
 
     return success;
@@ -875,14 +914,17 @@ bool PROJECT_FILE::SaveToFile( const wxString& aDirectory, bool aForce )
 
     Set( "meta.filename", m_project->GetProjectName() + "." + FILEEXT::ProjectFileExtension );
 
-    // Even if parameters were not modified, we should resave after migration
-    bool force = aForce || m_wasMigrated;
-
     // If we're actually going ahead and doing the save, the flag that keeps code from doing the
     // save should be cleared at this.
     m_wasMigrated = false;
 
-    return JSON_SETTINGS::SaveToFile( aDirectory, force );
+    bool saved = JSON_SETTINGS::SaveToFile( aDirectory, aForce );
+
+    // The file now holds the list in memory, so a change read before is settled
+    if( saved )
+        m_topLevelSheetsChanged = false;
+
+    return saved;
 }
 
 

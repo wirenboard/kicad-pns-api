@@ -177,6 +177,16 @@ private:
     std::unique_ptr<PCB_TEXT>  buildPcbText( const BLK_0x30_STR_WRAPPER& aStrWrapper, BOARD_ITEM_CONTAINER& aParent );
 
     /**
+     * Add a 0x30 text object to a footprint, either as one of the built-in fields or as a
+     * graphic, depending on the Allegro class it is on.
+     *
+     * @param aValueFieldSet tracks whether the VALUE field has been filled already, so only
+     *                       the first candidate replaces it.
+     */
+    void addFootprintText( FOOTPRINT& aFp, GRAPHIC_DEDUP& aGraphics, const BLK_0x30_STR_WRAPPER& aStrWrapper,
+                           bool& aValueFieldSet );
+
+    /**
      * Build a rectangular shape from a 0x24 RECT block.
      */
     std::unique_ptr<PCB_SHAPE> buildRect( const BLK_0x24_RECT& aRect, BOARD_ITEM_CONTAINER& aParent );
@@ -212,9 +222,11 @@ private:
 
     /**
      * Construct "pad" items for a given 0x1C PADSTACK block.
+     *
+     * @param aBackSide is true when the footprint is flipped to the bottom after its pads are built.
      */
     std::vector<std::unique_ptr<BOARD_ITEM>> buildPadItems( const BLK_0x1C_PADSTACK& aPadstack, FOOTPRINT& aFp,
-                                                            const wxString& aPadName, int aNetcode );
+                                                            const wxString& aPadName, int aNetcode, bool aBackSide );
     std::unique_ptr<FOOTPRINT>               buildFootprint( const BLK_0x2D_FOOTPRINT_INST& aFpInstance );
     std::vector<std::unique_ptr<BOARD_ITEM>> buildTrack( const BLK_0x05_TRACK& aBlock, int aNetcode );
     std::unique_ptr<BOARD_ITEM>              buildVia( const BLK_0x33_VIA& aBlock, int aNetcode );
@@ -270,6 +282,13 @@ private:
     wxString resolveMatchGroupName( const BLK_0x1B_NET& aNet ) const;
 
     /**
+     * Follow a net's match group pointer to its 0x2C TABLE.
+     *
+     * @return the table, or nullptr if the net is in no match group
+     */
+    const BLK_0x2C_TABLE* resolveMatchGroupTable( const BLK_0x1B_NET& aNet ) const;
+
+    /**
      * Extract constraint set name from a 0x03 FIELD block pointer.
      *
      * Some boards store the constraint set name in a FIELD block referenced by m_FieldPtr in
@@ -286,6 +305,7 @@ private:
     void createBoardText();
     void createZones();
     void createTables();
+    void createPlaneVoidAreas();
     void applyZoneFills();
     void enablePadTeardrops();
     void applyConstraintSets();
@@ -328,6 +348,9 @@ private:
 
     // Keys that have been used as zone fills already
     std::unordered_set<uint32_t> m_usedZoneFillShapes;
+
+    // Void geometry drawn on negative plane layers, which the plane fill must keep clear
+    std::map<PCB_LAYER_ID, SHAPE_POLY_SET> m_planeVoids;
 
     std::unique_ptr<LAYER_MAPPER> m_layerMapper;
 

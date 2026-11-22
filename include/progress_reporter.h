@@ -24,7 +24,7 @@
 #define PROGRESS_REPORTER_H
 
 #include <kicommon.h>
-#include <wx/wx.h>
+#include <wx/string.h>
 
 /**
  * A progress reporter interface for use in multi-threaded environments.  The various advancement
@@ -69,6 +69,14 @@ public:
      * Display \a aMessage in the progress bar dialog.
      */
     virtual void Report( const wxString& aMessage ) = 0;
+
+    /**
+     * Ask for an indeterminate (pulsing) display, for work whose total is not known yet.
+     *
+     * Safe to call from a worker thread. Implementations record the request and apply it on
+     * the next UI refresh.
+     */
+    virtual void SetIndeterminate( bool aIndeterminate ) {}
 
     /**
      * Set the progress value to aProgress (0..1).

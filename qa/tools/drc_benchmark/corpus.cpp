@@ -162,7 +162,7 @@ const char* ConstraintTypeName( DRC_CONSTRAINT_T aType )
     case COURTYARD_CLEARANCE_CONSTRAINT:     return "courtyard_clearance";
     case SILK_CLEARANCE_CONSTRAINT:          return "silk_clearance";
     case TEXT_HEIGHT_CONSTRAINT:             return "text_height";
-    case TEXT_THICKNESS_CONSTRAINT:          return "text_thickness";
+    case LINE_WIDTH_CONSTRAINT:              return "line_width";
     case TRACK_WIDTH_CONSTRAINT:             return "track_width";
     case TRACK_SEGMENT_LENGTH_CONSTRAINT:    return "track_segment_length";
     case ANNULAR_WIDTH_CONSTRAINT:           return "annular_width";
@@ -193,7 +193,7 @@ const char* ConstraintTypeName( DRC_CONSTRAINT_T aType )
     case BRIDGED_MASK_CONSTRAINT:            return "bridged_mask";
     case SOLDER_MASK_SLIVER_CONSTRAINT: return "solder_mask_sliver";
     case MICROVIA_STACK_DEPTH_CONSTRAINT: return "microvia_stack_depth";
-    case MICROVIA_ASPECT_RATIO_CONSTRAINT: return "microvia_aspect_ratio";
+    case HOLE_ASPECT_RATIO_CONSTRAINT: return "hole_aspect_ratio";
     }
 
     return "?";
@@ -211,7 +211,7 @@ const std::vector<DRC_CONSTRAINT_T>& AllConstraintTypes()
                                                          COURTYARD_CLEARANCE_CONSTRAINT,
                                                          SILK_CLEARANCE_CONSTRAINT,
                                                          TEXT_HEIGHT_CONSTRAINT,
-                                                         TEXT_THICKNESS_CONSTRAINT,
+                                                         LINE_WIDTH_CONSTRAINT,
                                                          TRACK_WIDTH_CONSTRAINT,
                                                          TRACK_SEGMENT_LENGTH_CONSTRAINT,
                                                          ANNULAR_WIDTH_CONSTRAINT,
@@ -242,7 +242,7 @@ const std::vector<DRC_CONSTRAINT_T>& AllConstraintTypes()
                                                          BRIDGED_MASK_CONSTRAINT,
                                                          SOLDER_MASK_SLIVER_CONSTRAINT,
                                                          MICROVIA_STACK_DEPTH_CONSTRAINT,
-                                                         MICROVIA_ASPECT_RATIO_CONSTRAINT };
+                                                         HOLE_ASPECT_RATIO_CONSTRAINT };
 
     return types;
 }

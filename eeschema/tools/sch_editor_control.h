@@ -82,6 +82,7 @@ public:
     int ExplicitCrossProbeToPcb( const TOOL_EVENT& aEvent );
 
     int ExportSymbolsToLibrary( const TOOL_EVENT& aEvent );
+    int ExportForOlderVersion( const TOOL_EVENT& aEvent );
 
     int SimProbe( const TOOL_EVENT& aEvent );
     int SimTune( const TOOL_EVENT& aEvent );
@@ -159,6 +160,7 @@ public:
     int ShowHierarchy( const TOOL_EVENT& aEvent );
     int ShowNetNavigator( const TOOL_EVENT& aEvent );
     int ToggleProperties( const TOOL_EVENT& aEvent );
+    int ToggleGitCommitPane( const TOOL_EVENT& aEvent );
     int ToggleLibraryTree( const TOOL_EVENT& aEvent );
     int ToggleRemoteSymbolPanel( const TOOL_EVENT& aEvent );
 
@@ -230,8 +232,6 @@ private:
                                       SCH_SHEET_LIST* aPastedSheets,
                                       std::map<SCH_SHEET_PATH, SCH_REFERENCE_LIST>& aPastedSymbols );
 
-    void setPastedSymbolInstances( const SCH_SCREEN* aScreen );
-
     /**
      * Reconcile every pasted symbol's instances against the current project.
      *
@@ -277,9 +277,6 @@ private:
     // A map of sheet filename --> screens for the clipboard contents.  We use these to hook up
     // cut/paste operations for unsaved sheet content.
     std::map<wxString, SCH_SCREEN*>          m_supplementaryClipboard;
-
-    // A map of KIID_PATH --> symbol instances for the clipboard contents.
-    std::map<KIID_PATH, SCH_SYMBOL_INSTANCE> m_clipboardSymbolInstances;
 
     std::set<SCH_SYMBOL*>                    m_pastedSymbols;
 };

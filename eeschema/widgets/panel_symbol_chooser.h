@@ -87,6 +87,7 @@ public:
      * default is desired (usually 1).
      *
      * @param aUnit if not NULL, the selected unit is filled in here.
+     * @param aBodyStyle if not NULL the body style is filled here.
      * @return the #LIB_ID of the symbol that has been selected.
      */
     LIB_ID GetSelectedLibId( int* aUnit = nullptr, int* aBodyStyle = nullptr ) const;
@@ -166,6 +167,8 @@ protected:
     static wxString           g_symbolSearchString;
     static wxString           g_powerSearchString;
 
+    LIB_ID                    m_curSymbolId;
+
     wxTimer*                  m_dbl_click_timer;
     wxTimer*                  m_open_libs_timer;
     SYMBOL_PREVIEW_WIDGET*    m_symbol_preview;
@@ -179,7 +182,7 @@ protected:
     LIB_TREE*                 m_tree;
     HTML_WINDOW*              m_details;
 
-    static SCH_BASE_FRAME*    m_frame;      // Must be static becuase used in a static function
+    SCH_BASE_FRAME*           m_frame;
     std::function<void()>     m_acceptHandler;
     std::function<void()>     m_escapeHandler;
 
@@ -187,13 +190,13 @@ protected:
     bool                      m_allow_field_edits;
     bool                      m_show_footprints;
     wxString                  m_fp_override;
-    wxStaticText*            m_bodyStyleLabel;
-    wxChoice*                m_bodyStyleChoice;
-    int                      m_selectedBodyStyle;
+    wxStaticText*             m_bodyStyleLabel;
+    wxChoice*                 m_bodyStyleChoice;
+    int                       m_selectedBodyStyle;
 
     std::vector<std::pair<FIELD_T, wxString>>  m_field_edits;
 
-    SYMBOL_COMPAT_FUNC  m_compatCallback;
+    SYMBOL_COMPAT_FUNC        m_compatCallback;
 };
 
 #endif /* PANEL_SYMBOL_CHOOSER_H */

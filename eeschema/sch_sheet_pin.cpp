@@ -60,7 +60,7 @@ SCH_SHEET_PIN::SCH_SHEET_PIN( SCH_SHEET* parent, const VECTOR2I& pos, const wxSt
 }
 
 
-void SCH_SHEET_PIN::Serialize( kiapi::schematic::types::SheetPin& pin, const EDA_IU_SCALE& aScale ) const
+void SCH_SHEET_PIN::Serialize( kiapi::schematic::types::SheetPin& pin ) const
 {
     using namespace kiapi::schematic::types;
 
@@ -74,25 +74,28 @@ void SCH_SHEET_PIN::Serialize( kiapi::schematic::types::SheetPin& pin, const EDA
     pin.set_locked( SCH_ITEM::IsLocked() ? kiapi::common::types::LockedState::LS_LOCKED
                                          : kiapi::common::types::LockedState::LS_UNLOCKED );
 
-    EDA_TEXT::Serialize( *pin.mutable_text(), aScale );
+    EDA_TEXT::Serialize( *pin.mutable_text(), schIUScale );
 
+    kiapi::common::PackCustomProperties( pin.mutable_custom_properties(), *this );
 }
 
 void SCH_SHEET_PIN::Serialize( google::protobuf::Any& aContainer ) const
 {
     kiapi::schematic::types::SheetPin pin;
-    Serialize( pin, schIUScale );
-    aContainer.PackFrom( pin );
+    Serialize( pin );
+
+    if( !aContainer.PackFrom( pin ) )
+        wxFAIL_MSG( wxT( "Failed to pack SCH_SHEET_PIN" ) );
 }
 
 
-bool SCH_SHEET_PIN::Deserialize( const kiapi::schematic::types::SheetPin& pin, const EDA_IU_SCALE& aScale )
+bool SCH_SHEET_PIN::Deserialize( const kiapi::schematic::types::SheetPin& pin )
 {
     using namespace kiapi::schematic::types;
 
     const_cast<KIID&>( m_Uuid ) = KIID( pin.id().value() );
 
-    if( !EDA_TEXT::Deserialize( pin.text(), aScale ) )
+    if( !EDA_TEXT::Deserialize( pin.text(), schIUScale ) )
         return false;
 
     SetPosition( kiapi::common::UnpackVector2( pin.position(), schIUScale ) );
@@ -100,6 +103,7 @@ bool SCH_SHEET_PIN::Deserialize( const kiapi::schematic::types::SheetPin& pin, c
     SetSpinStyle( FromProtoEnum<SPIN_STYLE::SPIN, SchematicLabelSpinStyle>( pin.spin_style() ) );
     SetShape( FromProtoEnum<LABEL_FLAG_SHAPE, SchematicLabelShape>( pin.shape() ) );
     SetLocked( pin.locked() == kiapi::common::types::LockedState::LS_LOCKED );
+    kiapi::common::UnpackCustomProperties( pin.custom_properties(), *this );
     return true;
 }
 
@@ -110,7 +114,7 @@ bool SCH_SHEET_PIN::Deserialize( const google::protobuf::Any& aContainer )
     if( !aContainer.UnpackTo( &pin ) )
         return false;
 
-    return Deserialize( pin, schIUScale );
+    return Deserialize( pin );
 }
 
 
@@ -131,12 +135,6 @@ void SCH_SHEET_PIN::swapData( SCH_ITEM* aItem )
 
     std::swap( m_number, pin->m_number );
     std::swap( m_edge, pin->m_edge );
-}
-
-
-bool SCH_SHEET_PIN::operator==( const SCH_SHEET_PIN* aPin ) const
-{
-    return operator==( *aPin );
 }
 
 

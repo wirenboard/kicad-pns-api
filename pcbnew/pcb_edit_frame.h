@@ -23,6 +23,7 @@
 
 #include "pcb_base_edit_frame.h"
 #include "zones.h"
+#include <board.h>
 #include <mail_type.h>
 #include <settings/app_settings.h>
 #include <variant>
@@ -81,7 +82,7 @@ wxDECLARE_EVENT( EDA_EVT_PCB_LAST_SCH_SHEET_CHANGED, wxCommandEvent );
  *
  * See also class PCB_BASE_FRAME(): Basic class for Pcbnew and GerbView.
  */
-class PCB_EDIT_FRAME : public PCB_BASE_EDIT_FRAME
+class PCB_EDIT_FRAME : public PCB_BASE_EDIT_FRAME, public BOARD_LISTENER
 {
 public:
     virtual ~PCB_EDIT_FRAME();
@@ -224,6 +225,20 @@ public:
      */
     bool LoadProjectSettings();
 
+    /// Apply what the project file sets and this frame caches, leaving the local settings alone.
+    void ApplyProjectFileSettings();
+
+    /**
+     * Bring the frame in line with a project file that was reread from disk.
+     *
+     * Every value this frame copies out of the project file and writes back on save or close must be
+     * refreshed here; a copy left stale silently undoes the new file on the next save.
+     */
+    void ReloadProjectFileSettings();
+
+    /// Update what depends on the board's project settings after they changed in memory.
+    void RefreshProjectSettings();
+
     void LoadSettings( APP_SETTINGS_BASE* aCfg ) override;
 
     void SaveSettings( APP_SETTINGS_BASE* aCfg ) override;
@@ -287,6 +302,11 @@ public:
      * to update auxiliary information.
      */
     void OnModify() override;
+
+    /**
+     * Keep the selection and view in step with generated tables rebuilt outside a commit.
+     */
+    void OnBoardItemsChanged( BOARD& aBoard, std::vector<BOARD_ITEM*>& aItems ) override;
 
     /**
      * Change the currently active layer to \a aLayer and also update the #APPEARANCE_CONTROLS.
@@ -392,6 +412,14 @@ public:
     bool OpenProjectFiles( const std::vector<wxString>& aFileSet, int aCtl = 0 ) override;
 
     /**
+     * Reload the board from disk.
+     * The caller handles confirmation before unsaved edits are discarded.
+     *
+     * @return false when there is no filename or the reload fails.
+     */
+    bool ReloadFromDisk();
+
+    /**
      * Write the board data structures to \a a aFileName.
      *
      * Create a backup when requested and update flags (modified and saved flags).
@@ -466,8 +494,7 @@ public:
      *                 \a aStoreInNewLib as true.
      * @param aLibPath is the path to export the library to.
      */
-    void ExportFootprintsToLibrary( bool aStoreInNewLib, const wxString& aLibName = wxEmptyString,
-                                    wxString* aLibPath = nullptr );
+    void ExportFootprintsToLibrary( bool aStoreInNewLib );
 
     /**
      * Create the file(s) exporting current BOARD to a VRML file.
@@ -595,7 +622,7 @@ public:
      * Called after netlist is updated.
      *
      * @param aUpdater is the updater object that was run.
-     * @param aRunDragCommand is set to true if the drag command was invoked by this call.
+     * @param aRunDragCommand [out] is set to true if a drag command should be run following this call.
      */
     void OnNetlistChanged( BOARD_NETLIST_UPDATER& aUpdater, bool* aRunDragCommand );
 
@@ -788,8 +815,6 @@ protected:
     // protected so that PCB::IFACE::CreateWindow() is the only factory.
     PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent );
 
-    void onSize( wxSizeEvent& aEvent );
-
     int inferLegacyEdgeClearance( BOARD* aBoard, bool aShowUserMsg = true );
 
     void redrawNetnames();
@@ -835,6 +860,12 @@ public:
     void UpdateProperties() override;
 
 private:
+    /// Recompile the design rules, reporting a parse error in the infobar.
+    void recompileDesignRules();
+
+    /// Add the markers a resolve created for exclusions and redraw every excluded marker.
+    void addExclusionMarkers( const std::vector<PCB_MARKER*>& aMarkers );
+
     friend struct PCB::IFACE;
     friend class APPEARANCE_CONTROLS;
 
@@ -873,6 +904,7 @@ private:
      * Keep track of viewport so that track net labels can be adjusted when it changes.
      */
     BOX2D             m_lastNetnamesViewport;
+    double            m_lastNetnamesScale = 0.0;
 
     wxTimer*          m_eventCounterTimer;
 

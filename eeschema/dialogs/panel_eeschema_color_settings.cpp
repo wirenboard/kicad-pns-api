@@ -20,6 +20,7 @@
 
 #include <regex>
 
+#include <class_draw_panel_gal.h>
 #include <eeschema_settings.h>
 #include <gal/gal_display_options.h>
 #include <gal/graphics_abstraction_layer.h>
@@ -45,6 +46,7 @@
 #include <drawing_sheet/ds_proxy_view_item.h>
 #include <sch_base_frame.h>
 #include <widgets/color_swatch.h>
+#include <widgets/paged_dialog.h>
 #include <widgets/wx_panel.h>
 #include <wx/msgdlg.h>
 
@@ -537,14 +539,23 @@ void PANEL_EESCHEMA_COLOR_SETTINGS::updateAllowedSwatches()
 {
     // If the theme is not overriding individual item colors then don't show them so that
     // the user doesn't get seduced into thinking they'll have some effect.
-    m_labels[ LAYER_SHEET ]->Show( m_currentSettings->GetOverrideSchItemColors() );
-    m_swatches[ LAYER_SHEET ]->Show( m_currentSettings->GetOverrideSchItemColors() );
 
-    m_labels[ LAYER_SHEET_BACKGROUND ]->Show( m_currentSettings->GetOverrideSchItemColors() );
-    m_swatches[ LAYER_SHEET_BACKGROUND ]->Show( m_currentSettings->GetOverrideSchItemColors() );
+    if( m_labels.count( LAYER_SHEET ) )
+        m_labels[ LAYER_SHEET ]->Show( m_currentSettings->GetOverrideSchItemColors() );
+
+    if( m_swatches.count( LAYER_SHEET ) )
+        m_swatches[ LAYER_SHEET ]->Show( m_currentSettings->GetOverrideSchItemColors() );
+
+    if( m_labels.count( LAYER_SHEET_BACKGROUND ) )
+        m_labels[ LAYER_SHEET_BACKGROUND ]->Show( m_currentSettings->GetOverrideSchItemColors() );
+
+    if( m_swatches.count( LAYER_SHEET_BACKGROUND ) )
+        m_swatches[ LAYER_SHEET_BACKGROUND ]->Show( m_currentSettings->GetOverrideSchItemColors() );
 
     m_colorsGridSizer->Layout();
     m_colorsListWindow->Layout();
+
+    PAGED_DIALOG::InvalidateSearchIndex( this );
 }
 
 

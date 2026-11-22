@@ -25,6 +25,8 @@
 #include <api/api_handler_board.h>
 #include <api/pcb_context.h>
 #include <api/board/board_jobs.pb.h>
+#include <api/board/board_tasks.pb.h>
+#include <api/common/tasks.pb.h>
 #include <api/common/commands/cross_probe_commands.pb.h>
 #include <api/common/commands/project_commands.pb.h>
 #include <api/common/commands/variant_commands.pb.h>
@@ -37,6 +39,15 @@ using namespace kiapi::board::jobs;
 class PCB_EDIT_FRAME;
 class PCB_TRACK;
 class PROPERTY_BASE;
+class ZONE;
+class JOB_EXPORT_PCB_FAB;
+class JOB_EXPORT_PCB_ODB;
+
+
+void ApplyFabExportContent( const kiapi::board::jobs::FabExportContent& aContent, JOB_EXPORT_PCB_FAB& aJob );
+
+void ApplyOdbJobRequest( const kiapi::board::jobs::RunBoardJobExportODB& aRequest,
+                         JOB_EXPORT_PCB_ODB& aJob );
 
 
 class API_HANDLER_PCB : public API_HANDLER_BOARD
@@ -52,6 +63,7 @@ private:
             const HANDLER_CONTEXT<commands::GetOpenDocuments>& aCtx );
 
     HANDLER_RESULT<Empty> handleSaveDocument( const HANDLER_CONTEXT<commands::SaveDocument>& aCtx );
+    HANDLER_RESULT<Empty> handleSaveDocumentAs( const HANDLER_CONTEXT<commands::SaveDocumentAs>& aCtx );
 
     HANDLER_RESULT<Empty> handleSaveCopyOfDocument(
             const HANDLER_CONTEXT<commands::SaveCopyOfDocument>& aCtx );
@@ -115,6 +127,20 @@ private:
 
     HANDLER_RESULT<ImportNetlistResponse> handleImportNetlist(
             const HANDLER_CONTEXT<ImportNetlist>& aCtx );
+
+    HANDLER_RESULT<ImportSpecctraSessionResponse> handleImportSpecctraSession(
+            const HANDLER_CONTEXT<ImportSpecctraSession>& aCtx );
+    HANDLER_RESULT<kiapi::common::tasks::StartTaskResponse> handleStartRefillZonesTask(
+            const HANDLER_CONTEXT<kiapi::board::tasks::StartRefillZonesTask>& aCtx );
+
+    HANDLER_RESULT<kiapi::common::tasks::StartTaskResponse> handleStartDrcTask(
+            const HANDLER_CONTEXT<kiapi::board::tasks::StartDrcTask>& aCtx );
+
+    HANDLER_RESULT<kiapi::board::tasks::DrcTaskResult> handleGetDrcTaskResult(
+            const HANDLER_CONTEXT<kiapi::board::tasks::GetDrcTaskResult>& aCtx );
+
+    class REFILL_ZONES_TASK;
+    class DRC_TASK;
 
     HANDLER_RESULT<BoardEditorAppearanceSettings> handleGetBoardEditorAppearanceSettings(
             const HANDLER_CONTEXT<GetBoardEditorAppearanceSettings>& aCtx );
@@ -189,6 +215,9 @@ private:
     HANDLER_RESULT<types::RunJobResponse> handleRunBoardJobExportGencad(
             const HANDLER_CONTEXT<RunBoardJobExportGencad>& aCtx );
 
+    HANDLER_RESULT<types::RunJobResponse> handleRunBoardJobExportSpecctraDsn(
+            const HANDLER_CONTEXT<RunBoardJobExportSpecctraDsn>& aCtx );
+
     HANDLER_RESULT<types::RunJobResponse> handleRunBoardJobExportIpc2581(
             const HANDLER_CONTEXT<RunBoardJobExportIpc2581>& aCtx );
 
@@ -242,6 +271,9 @@ private:
     PCB_CONTEXT* pcbContext() const { return static_cast<PCB_CONTEXT*>( context() ); }
 
     PCB_EDIT_FRAME* frame() const;
+
+    HANDLER_RESULT<std::vector<ZONE*>>
+    resolveZonesToFill( const google::protobuf::RepeatedPtrField<kiapi::common::types::KIID>& aZoneIds ) const;
 };
 
 #endif //KICAD_API_HANDLER_PCB_H

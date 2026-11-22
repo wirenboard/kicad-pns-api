@@ -21,6 +21,7 @@
 
 #include <wx/hyperlink.h>
 
+#include <bitmaps.h>
 #include <widgets/bitmap_button.h>
 #include <widgets/font_choice.h>
 #include <dialogs/html_message_box.h>
@@ -135,7 +136,7 @@ DIALOG_TEXTBOX_PROPERTIES::DIALOG_TEXTBOX_PROPERTIES( PCB_BASE_EDIT_FRAME* aPare
     m_separator4->SetIsSeparator();
 
     m_autoTextThickness->SetIsCheckButton();
-    m_autoTextThickness->SetBitmap( KiBitmapBundle( BITMAPS::edit_cmp_symb_links ) );
+    m_autoTextThickness->SetBitmap( KiBitmapBundle( BITMAPS::link ) );
 
     // Configure the layers list selector.  Note that footprints are built outside the current
     // board and so we may need to show all layers if the text is on an unactivated layer.
@@ -244,6 +245,7 @@ bool DIALOG_TEXTBOX_PROPERTIES::TransferDataToWindow()
     }
 
     m_mirrored->Check( m_textBox->IsMirrored() );
+    m_knockout->SetValue( m_textBox->IsKnockout() );
 
     EDA_ANGLE orientation = m_textBox->GetTextAngle();
     m_orientation.SetAngleValue( orientation.Normalize180() );
@@ -373,7 +375,7 @@ bool DIALOG_TEXTBOX_PROPERTIES::TransferDataFromWindow()
 
     m_textBox->SetText( EscapeString( txt, CTX_QUOTED_STR ) );
     m_textBox->SetLocked( m_cbLocked->GetValue() );
-    m_textBox->SetLayer( ToLAYER_ID( m_LayerSelectionCtrl->GetLayerSelection() ) );
+    m_textBox->SetLayer( m_LayerSelectionCtrl->GetLayerIDSelection() );
 
     if( m_fontCtrl->HaveFontSelection() )
     {
@@ -401,6 +403,7 @@ bool DIALOG_TEXTBOX_PROPERTIES::TransferDataFromWindow()
         }
     }
 
+    m_textBox->SetIsKnockout( m_knockout->GetValue() );
     m_textBox->SetTextAngle( m_orientation.GetAngleValue().Normalize() );
     m_textBox->SetBoldFlag( m_bold->IsChecked() );
     m_textBox->SetItalicFlag( m_italic->IsChecked() );

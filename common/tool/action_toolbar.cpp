@@ -91,14 +91,13 @@ int ACTION_GROUP::GetUIId() const
 
 void ACTION_GROUP::SetDefaultAction( const TOOL_ACTION& aDefault )
 {
-    bool valid = std::any_of( m_actions.begin(), m_actions.end(),
-                              [&]( const TOOL_ACTION* aAction ) -> bool
-                              {
-                                  // For some reason, we can't compare the actions directly
-                                  return aAction->GetId() == aDefault.GetId();
-                              } );
-
-    wxASSERT_MSG( valid, wxS( "Action must be present in a group to be the default" ) );
+    wxASSERT_MSG( std::any_of( m_actions.begin(), m_actions.end(),
+                               [&]( const TOOL_ACTION* aAction ) -> bool
+                               {
+                                   // For some reason, we can't compare the actions directly
+                                   return aAction->GetId() == aDefault.GetId();
+                               } ),
+                  wxS( "Action must be present in a group to be the default" ) );
 
     m_defaultAction = &aDefault;
 }
@@ -709,6 +708,13 @@ void ACTION_TOOLBAR::UpdateControlWidth( int aID )
 
 void ACTION_TOOLBAR::ClearToolbar()
 {
+    // A group made again gets a new id, so the frame would keep this one's handler for good
+    if( m_toolManager )
+    {
+        for( const auto& [groupId, group] : m_actionGroups )
+            m_toolManager->GetToolHolder()->UnregisterUIUpdateHandler( groupId );
+    }
+
     // Clear all the maps keeping track of our items on the toolbar
     m_toolMenus.clear();
     m_actionGroups.clear();
@@ -861,7 +867,7 @@ void ACTION_TOOLBAR::onRightUp( wxMouseEvent& aEvent )
     // Hit-test the tool ourselves so the whole button works.
     wxAuiToolBarItem* item = FindToolByPosition( aEvent.GetX(), aEvent.GetY() );
 
-    if( !item )
+    if( !item || ( item->GetState() & wxAUI_BUTTON_STATE_DISABLED ) != 0 )
     {
         aEvent.Skip();
         return;
@@ -916,8 +922,8 @@ void ACTION_TOOLBAR::onMouseClick( wxMouseEvent& aEvent )
 
     if( item )
     {
-        // Ensure there is no active palette
-        if( m_palette )
+        // The release that ends the long press must not close the palette it opened
+        if( aEvent.LeftDown() && m_palette )
         {
             m_palette->Hide();
             m_palette->Destroy();
@@ -991,23 +997,25 @@ void ACTION_TOOLBAR::onPaletteEvent( wxCommandEvent& aEvent )
                                       return aAction->GetUIId() == aEvent.GetId();
                                   } );
 
-    if( actionIt != group->GetActions().end() )
+    const TOOL_ACTION* action = ( actionIt != group->GetActions().end() ) ? *actionIt : nullptr;
+
+    // Hide and destroy the palette first so it vanishes immediately, releases
+    // transient window mouse capture, and returns window focus to the canvas
+    // before the tool starts running.
+    palette->Hide();
+    palette->Destroy();
+
+    if( action )
     {
-        const TOOL_ACTION* action = *actionIt;
+        // Update the main toolbar item with the selected action
+        doSelectAction( group, *action );
 
         // Dispatch a tool event
         evt = action->MakeEvent();
         evt->SetHasPosition( false );
         m_toolManager->ProcessEvent( *evt );
         m_toolManager->GetToolHolder()->RefreshCanvas();
-
-        // Update the main toolbar item with the selected action
-        doSelectAction( group, *action );
     }
-
-    // Hide the palette
-    palette->Hide();
-    palette->Destroy();
 }
 
 
@@ -1157,8 +1165,11 @@ void ACTION_TOOLBAR::OnCustomRender(wxDC& aDc, const wxAuiToolBarItem& aItem, co
 
 bool ACTION_TOOLBAR::KiRealize()
 {
+    // Realize() leaves out a hidden overflow button and nothing adds it back once the tools stop fitting
+    SetOverflowVisible( true );
+
 #if wxCHECK_VERSION( 3, 3, 0 )
-    return Realize();
+    bool retval = Realize();
 #else
     wxClientDC dc( this );
 
@@ -1199,14 +1210,15 @@ bool ACTION_TOOLBAR::KiRealize()
     }
 
     Refresh( false );
-    return retval;
 #endif
+
+    SetOverflowVisible( !GetToolBarFits() );
+    return retval;
 }
 
 
 void ACTION_TOOLBAR::onThemeChanged( wxSysColourChangedEvent &aEvent )
 {
-    GetBitmapStore()->ThemeChanged();
     RefreshBitmaps();
 
     aEvent.Skip();
@@ -1261,7 +1273,9 @@ ACTION_TOOLBAR_CONTROL ACTION_TOOLBAR_CONTROLS::ipcScripting( "control.IPCPlugin
                                                               _( "IPC/Scripting plugins" ),
                                                               _( "Region to hold the IPC/Scripting action buttons" ),
                                                               { FRAME_SCH,
-                                                                FRAME_PCB_EDITOR } );
+                                                                FRAME_SCH_SYMBOL_EDITOR,
+                                                                FRAME_PCB_EDITOR,
+                                                                FRAME_FOOTPRINT_EDITOR } );
 
 ACTION_TOOLBAR_CONTROL ACTION_TOOLBAR_CONTROLS::layerSelector( "control.LayerSelector",
                                                                _( "Layer selector" ),

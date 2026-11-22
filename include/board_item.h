@@ -20,24 +20,26 @@
 
 #pragma once
 
-
 #include <map>
 
 #include <core/mirror.h>
 #include <eda_item.h>
 #include <geometry/approximation.h>
+#include <geometry/seg.h>
 #include <layer_ids.h>
 #include <properties/property.h>
 #include <lseq.h>
 #include <lset.h>
 #include <stroke_params.h>
 #include <geometry/eda_angle.h>
-#include "macros.h"
-#include "drc/drc_rule.h"
+#include <macros.h>
+#include <drc/drc_constraint_types.h>
+
 
 class BOARD;
 class BOARD_DESIGN_SETTINGS;
 class BOARD_ITEM_CONTAINER;
+class BOARD_ITEM_INDEX;
 class BOARD_COMMIT;
 class SHAPE_POLY_SET;
 class SHAPE_SEGMENT;
@@ -48,6 +50,7 @@ class FOOTPRINT;
 namespace KIGFX
 {
     class RENDER_SETTINGS;
+    class VIEW;
 };
 
 namespace KIFONT
@@ -74,6 +77,18 @@ enum ZONE_LAYER_OVERRIDE
     ZLO_FORCE_FLASHED,
     ZLO_FORCE_NO_ZONE_CONNECTION
 };
+
+/**
+ * @return the axis an axis-aligned mirror about aCentre in aFlipDirection uses, as the infinite
+ *         line through the two points of the returned segment.
+ */
+inline SEG MIRROR_AXIS( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
+{
+    if( aFlipDirection == FLIP_DIRECTION::LEFT_RIGHT )
+        return SEG( aCentre, aCentre + VECTOR2I( 0, 1 ) );
+
+    return SEG( aCentre, aCentre + VECTOR2I( 1, 0 ) );
+}
 
 /**
  * A base class for any item which can be embedded within the #BOARD container class, and
@@ -326,6 +341,14 @@ public:
     virtual PCB_LAYER_ID GetLayer() const;
 
     /**
+     * Return the layer paired with \a aLayer on the opposite side of the board.
+     *
+     * Uses the parent board's layer mapping when available.  Library items and other detached
+     * items use the standard front/back layer pairs.
+     */
+    PCB_LAYER_ID GetFlippedLayer( PCB_LAYER_ID aLayer ) const;
+
+    /**
      * Return the total number of layers for the board that this item resides on.
      */
     virtual int BoardLayerCount() const;
@@ -386,6 +409,17 @@ public:
     virtual BOARD_ITEM* Duplicate( bool addToParentGroup, BOARD_COMMIT* aCommit = nullptr ) const;
 
     /**
+     * Give a copy of this item this item's group, or no group.
+     *
+     * A copy carries this item's group pointer without being a member of that group.
+     *
+     * @param aDupe is the copy.
+     * @param addToParentGroup adds the copy to this item's group.  If true, aCommit must be provided.
+     * @param aCommit is the commit object for undo/redo.
+     */
+    void SetDuplicateGroup( BOARD_ITEM* aDupe, bool addToParentGroup, BOARD_COMMIT* aCommit ) const;
+
+    /**
      * Swap data between \a aItem and \a aImage.
      *
      * \a aItem and \a aImage should have the same type.
@@ -417,7 +451,7 @@ public:
     bool IsLocked() const override;
     void SetLocked( bool aLocked ) override { m_isLocked = aLocked; }
 
-    bool IsIndexedInBoard() const { return m_boardCacheOwner != nullptr; }
+    bool IsIndexedInBoard() const { return m_owningIndex != nullptr; }
 
     int GetMaxError() const;
 
@@ -484,6 +518,14 @@ public:
     virtual void Mirror( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection );
 
     /**
+     * Mirror this object about an arbitrary axis, without changing its layer or side.
+     *
+     * @param aAxis defines the axis. The item is reflected over the (infinite) line
+     *              through the two axis points.
+     */
+    virtual void Mirror( const SEG& aAxis );
+
+    /**
      * Perform any normalization required after a user rotate and/or flip.
      */
     virtual void Normalize() {}
@@ -513,6 +555,11 @@ public:
      * @return the layer name associated with this item.
      */
     wxString GetLayerName() const;
+
+    /**
+     * Return the name of a PCB layer using the owning board's layer names when available.
+     */
+    wxString GetLayerName( PCB_LAYER_ID aLayer ) const;
 
     virtual std::vector<int> ViewGetLayers() const override;
 
@@ -582,15 +629,21 @@ protected:
     /// Area of \a aPolySet with every contour closed first, holes subtracted.
     static double polygonArea( SHAPE_POLY_SET& aPolySet );
 
+    /// Enabled board layers that \a aView shows, for LOD checks on views that hide layers on their own.
+    LSET viewVisibleLayers( const KIGFX::VIEW* aView ) const;
+
 protected:
     PCB_LAYER_ID    m_layer;
     bool            m_isKnockout;
     bool            m_isLocked;
 
-    // Board that indexed this item, or nullptr. Set only by BOARD. Clones start detached.
-    mutable BOARD*  m_boardCacheOwner = nullptr;
+    /**
+     * Board index that indexes this item, or nullptr. Set only by the board's BOARD_ITEM_INDEX.
+     * Clones start detached.
+     */
+    mutable BOARD_ITEM_INDEX* m_owningIndex = nullptr;
 
-    friend class BOARD;
+    friend class BOARD_ITEM_INDEX;
 };
 
 DECLARE_ENUM_TO_WXANY( PCB_LAYER_ID );

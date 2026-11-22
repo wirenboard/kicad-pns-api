@@ -295,9 +295,11 @@ public:
      *
      * @param aFullPath is the full path to the project.
      * @param aSetActive if true will set the loaded project as the active project.
+     * @param aOverrideLock if true, an active load takes the project lock even when another
+     *                      session holds it.  Callers use this once the user has agreed to it.
      * @return true if the #PROJECT_FILE was successfully loaded from disk.
      */
-    bool LoadProject( const wxString& aFullPath, bool aSetActive = true );
+    bool LoadProject( const wxString& aFullPath, bool aSetActive = true, bool aOverrideLock = false );
 
     /**
      * Save, unload and unregister the given #PROJECT.
@@ -307,6 +309,14 @@ public:
      * @return true if the #PROJECT file was successfully saved.
      */
     bool UnloadProject( PROJECT* aProject, bool aSave = true );
+
+    /**
+     * Give up the lock of every loaded project without unloading it.
+     *
+     * Releasing a lock deletes its lock file through wxWidgets, so a project that is still loaded
+     * when the application exits must let go of it before static destruction begins.
+     */
+    void ReleaseProjectLocks();
 
     /**
      * Helper for checking if we have a project open.
@@ -550,6 +560,9 @@ private:
      * @return true if the #PROJECT file was successfully saved.
      */
     bool unloadProjectFile( PROJECT* aProject, bool aSave );
+
+    /// Cancels and joins every library preload and async load, so none can touch Prj() during a project change
+    void stopLibraryLoads();
 
     /// Helper to create built-in colors and register them.
     void registerBuiltinColorSettings();

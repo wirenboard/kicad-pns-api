@@ -155,7 +155,7 @@ public:
                     return wxGetTranslation( UNITS_ALL );
             }
 
-            if( aPin.GetUnit() == 0 )
+            if( aPin.GetUnit() == ALL_UNITS )
                 return wxGetTranslation( UNITS_ALL );
             else
                 return aPin.GetUnitDisplayName( aPin.GetUnit(), true );
@@ -167,7 +167,7 @@ public:
                     return wxGetTranslation( UNITS_ALL );
             }
 
-            if( aPin.GetBodyStyle() == 0 )
+            if( aPin.GetBodyStyle() == ALL_BODY_STYLES )
                 return wxGetTranslation( DEMORGAN_ALL );
             else
                 return aPin.GetBodyStyleDescription( aPin.GetBodyStyle(), true );
@@ -296,47 +296,14 @@ public:
 };
 
 
-void getSelectedArea( WX_GRID* aGrid, int* aRowStart, int* aRowCount )
-{
-    wxGridCellCoordsArray topLeft  = aGrid->GetSelectionBlockTopLeft();
-    wxGridCellCoordsArray botRight = aGrid->GetSelectionBlockBottomRight();
-
-    wxArrayInt  cols = aGrid->GetSelectedCols();
-    wxArrayInt  rows = aGrid->GetSelectedRows();
-
-    if( topLeft.Count() && botRight.Count() )
-    {
-        *aRowStart = topLeft[0].GetRow();
-        *aRowCount = botRight[0].GetRow() - *aRowStart + 1;
-    }
-    else if( cols.Count() )
-    {
-        *aRowStart = 0;
-        *aRowCount = aGrid->GetNumberRows();
-    }
-    else if( rows.Count() )
-    {
-        *aRowStart = rows[0];
-        *aRowCount = rows.Count();
-    }
-    else
-    {
-        *aRowStart = aGrid->GetGridCursorRow();
-        *aRowCount = *aRowStart >= 0 ? 1 : 0;
-    }
-}
-
-
 class PIN_TABLE_DATA_MODEL : public WX_GRID_TABLE_BASE
 {
 public:
-    PIN_TABLE_DATA_MODEL( SYMBOL_EDIT_FRAME* aFrame,
-                          DIALOG_LIB_EDIT_PIN_TABLE* aPinTable,
-                          LIB_SYMBOL* aSymbol,
+    PIN_TABLE_DATA_MODEL( SYMBOL_EDIT_FRAME* aFrame, DIALOG_LIB_EDIT_PIN_TABLE* aPinTable, LIB_SYMBOL* aSymbol,
                           const std::vector<SCH_PIN*>& aOrigSelectedPins ) :
             m_frame( aFrame ),
-            m_unitFilter( -1 ),
-            m_bodyStyleFilter( -1 ),
+            m_unitFilter( ALL_UNITS ),
+            m_bodyStyleFilter( ALL_BODY_STYLES ),
             m_filterBySelection( false ),
             m_edited( false ),
             m_pinTable( aPinTable ),
@@ -623,14 +590,9 @@ public:
                 for( SCH_PIN* pin : aPins )
                     pin->ClearTempFlags();
 
-                int firstSelectedRow;
-                int selectedRowCount;
-
-                getSelectedArea( grid, &firstSelectedRow, &selectedRowCount );
-
-                for( int ii = 0; ii < selectedRowCount; ++ii )
+                for( int row : grid->GetSelectedRowIndices() )
                 {
-                    for( SCH_PIN* pin : m_rows[ firstSelectedRow + ii ] )
+                    for( SCH_PIN* pin : m_rows[row] )
                     {
                         pin->SetFlags( CANDIDATE );
                         clear_flags.push_back( pin );
@@ -683,10 +645,14 @@ public:
 
         for( SCH_PIN* pin : aPins )
         {
-            const bool includedByUnit = m_unitFilter <= 0 || pin->GetUnit() == 0 || pin->GetUnit() == m_unitFilter;
-            const bool includedByBodyStyle =
-                    m_bodyStyleFilter <= 0 || pin->GetBodyStyle() == 0 || pin->GetBodyStyle() == m_bodyStyleFilter;
-            const bool includedBySelection = !m_filterBySelection || pinIsInEditorSelection( pin );
+            const bool includedByUnit = m_unitFilter == ALL_UNITS
+                                            || pin->GetUnit() == ALL_UNITS
+                                            || pin->GetUnit() == m_unitFilter;
+            const bool includedByBodyStyle = m_bodyStyleFilter == ALL_BODY_STYLES
+                                                || pin->GetBodyStyle() == ALL_BODY_STYLES
+                                                || pin->GetBodyStyle() == m_bodyStyleFilter;
+            const bool includedBySelection = !m_filterBySelection
+                                                || pinIsInEditorSelection( pin );
 
             if( includedByUnit && includedByBodyStyle && includedBySelection )
             {
@@ -802,8 +768,8 @@ private:
     // data model is a 2D vector.  If we're in the single pin case, each row's SCH_PINs
     // contains only a single pin.
     std::vector<std::vector<SCH_PIN*>> m_rows;
-    int                                m_unitFilter;      // 0 or -1 to show pins for all units
-    int                                m_bodyStyleFilter; // 0 or -1 to show all body styles
+    int                                m_unitFilter;         // 0 to show pins for all units
+    int                                m_bodyStyleFilter;    // 0 to show all body styles
     bool                               m_filterBySelection;
 
     bool                               m_edited;
@@ -832,10 +798,13 @@ DIALOG_LIB_EDIT_PIN_TABLE::DIALOG_LIB_EDIT_PIN_TABLE( SYMBOL_EDIT_FRAME* parent,
         m_originalColWidths[ i ] = m_grid->GetColSize( i );
 
     m_grid->SetTable( m_dataModel );
-    m_grid->PushEventHandler( new GRID_TRICKS( m_grid, [this]( wxCommandEvent& aEvent )
-                                                       {
-                                                           OnAddRow( aEvent );
-                                                       } ) );
+    GRID_TRICKS* gridTricks = new GRID_TRICKS( m_grid,
+                                               [this]( wxCommandEvent& aEvent )
+                                               {
+                                                   OnAddRow( aEvent );
+                                               } );
+    gridTricks->EnableColumnBulkEdit();
+    m_grid->PushEventHandler( gridTricks );
     m_grid->SetSelectionMode( wxGrid::wxGridSelectCells );
     m_grid->ShowHideColumns( "0 1 2 3 4 5 9 10" );
     m_columnsShown = m_grid->GetShownColumns();
@@ -1071,6 +1040,9 @@ bool DIALOG_LIB_EDIT_PIN_TABLE::TransferDataFromWindow()
 
 void DIALOG_LIB_EDIT_PIN_TABLE::OnColSort( wxGridEvent& aEvent )
 {
+    if( !m_grid->CommitPendingChanges() )
+        return;
+
     int sortCol = aEvent.GetCol();
     bool ascending;
 
@@ -1163,7 +1135,8 @@ void DIALOG_LIB_EDIT_PIN_TABLE::RemovePin( SCH_PIN* pin )
 
 void DIALOG_LIB_EDIT_PIN_TABLE::OnCellEdited( wxGridEvent& event )
 {
-    updateSummary();
+    // A bulk edit sends one event per row, so rebuild the summary once from OnUpdateUI
+    m_summaryDirty = true;
 }
 
 
@@ -1198,9 +1171,7 @@ void DIALOG_LIB_EDIT_PIN_TABLE::OnCellSelected( wxGridEvent& event )
         m_editFrame->GetCanvas()->Refresh();
     }
 
-    // Let WX_GRID run its editor-positioning handler
-    if( event.GetEventType() == wxEVT_GRID_EDITOR_SHOWN )
-        event.Skip();
+    event.Skip();
 }
 
 
@@ -1212,6 +1183,9 @@ bool DIALOG_LIB_EDIT_PIN_TABLE::IsDisplayGrouped()
 
 void DIALOG_LIB_EDIT_PIN_TABLE::OnGroupSelected( wxCommandEvent& event )
 {
+    if( !m_grid->CommitPendingChanges() )
+        return;
+
     m_cbGroup->SetValue( false );
 
     m_dataModel->RebuildRows( m_pins, false, true );
@@ -1288,7 +1262,7 @@ void DIALOG_LIB_EDIT_PIN_TABLE::OnFilterCheckBox( wxCommandEvent& event )
         }
         else
         {
-            m_dataModel->SetBodyStyleFilter( -1 );
+            m_dataModel->SetBodyStyleFilter( ALL_BODY_STYLES );
             m_bodyStyleFilter->SetSelection( -1 );
         }
     }
@@ -1306,12 +1280,12 @@ void DIALOG_LIB_EDIT_PIN_TABLE::OnFilterChoice( wxCommandEvent& event )
     if( event.GetEventObject() == m_unitFilter )
     {
         m_cbFilterByUnit->SetValue( true );
-        m_dataModel->SetUnitFilter( m_unitFilter->GetSelection() );
+        m_dataModel->SetUnitFilter( std::max( m_unitFilter->GetSelection(), ALL_UNITS ) );
     }
     else if( event.GetEventObject() == m_bodyStyleFilter )
     {
         m_cbFilterByBodyStyle->SetValue( true );
-        m_dataModel->SetBodyStyleFilter( m_bodyStyleFilter->GetSelection() );
+        m_dataModel->SetBodyStyleFilter( std::max( m_bodyStyleFilter->GetSelection(), ALL_BODY_STYLES ) );
     }
 
     OnRebuildRows( event );
@@ -1573,10 +1547,13 @@ void DIALOG_LIB_EDIT_PIN_TABLE::OnUpdateUI( wxUpdateUIEvent& event )
             adjustGridColumns();
     }
 
-    int firstSelectedRow;
-    int selectedRowCount;
+    if( m_summaryDirty )
+    {
+        m_summaryDirty = false;
+        updateSummary();
+    }
 
-    getSelectedArea( m_grid, &firstSelectedRow, &selectedRowCount );
+    const size_t selectedRowCount = m_grid->GetSelectedRowIndices().size();
 
     if( ( selectedRowCount > 1 ) != m_groupSelected->IsEnabled() )
         m_groupSelected->Enable( selectedRowCount > 1 );
@@ -1591,8 +1568,12 @@ void DIALOG_LIB_EDIT_PIN_TABLE::OnCancel( wxCommandEvent& event )
 
 void DIALOG_LIB_EDIT_PIN_TABLE::OnClose( wxCloseEvent& event )
 {
-    // This is a cancel, so commit quietly as we're going to throw the results away anyway.
-    m_grid->CommitPendingChanges( true );
+    // Closing can still save, so a pending bulk edit needs the events a quiet commit skips
+    if( !m_grid->CommitPendingChanges() && event.CanVeto() )
+    {
+        event.Veto();
+        return;
+    }
 
     int retval = wxID_CANCEL;
 

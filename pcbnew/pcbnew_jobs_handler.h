@@ -32,10 +32,19 @@ class FOOTPRINT;
 class JOB_EXPORT_PCB_GERBER;
 class JOB_EXPORT_PCB_GERBERS;
 class JOB_EXPORT_PCB_PLOT;
+class JOB_EXPORT_PCB_FAB;
 class JOB_FP_EXPORT_SVG;
 class TOOL_MANAGER;
 class REPORTER;
 class wxWindow;
+
+class WIDGET_DIFF_CANVAS;
+
+namespace KICAD_DIFF
+{
+class DIFF_CANVAS_CONTEXT;
+struct DOCUMENT_DIFF;
+} // namespace KICAD_DIFF
 
 class PCBNEW_JOBS_HANDLER : public JOB_DISPATCHER
 {
@@ -54,9 +63,11 @@ public:
     int JobExportGerber( JOB* aJob );
     int JobExportGerbers( JOB* aJob );
     int JobExportGencad( JOB* aJob );
+    int JobExportSpecctraDsn( JOB* aJob );
     int JobExportDrill( JOB* aJob );
     int JobExportPos( JOB* aJob );
     int JobExportFpUpgrade( JOB* aJob );
+    int JobFpDowngrade( JOB* aJob );
     int JobExportFpSvg( JOB* aJob );
     int JobExportDrc( JOB* aJob );
     int JobExportIpc2581( JOB* aJob );
@@ -65,7 +76,9 @@ public:
     int JobExportIpcD356( JOB* aJob );
     int JobExportStats( JOB* aJob );
     int JobExportStackup( JOB* aJob );
+    int JobExportHyperlynx( JOB* aJob );
     int JobUpgrade( JOB* aJob );
+    int JobDowngrade( JOB* aJob );
     int JobImport( JOB* aJob );
     int JobDiff( JOB* aJob );
     int JobFpDiff( JOB* aJob );
@@ -79,11 +92,18 @@ public:
                         const wxString& aLabelA, const wxString& aLabelB, wxWindow* aParent,
                         REPORTER* aReporter );
 
+    /// Diff two boards for a window outside the kiface, drawing the first on aBefore and the
+    /// second on aAfter. The result keeps both loaded while the canvases show them.
+    KICAD_DIFF::DIFF_CANVAS_CONTEXT* AttachDiffCanvases( KICAD_DIFF::DOC_KIND aKind, const wxString& aFileA,
+                                                         const wxString& aFileB, WIDGET_DIFF_CANVAS* aBefore,
+                                                         WIDGET_DIFF_CANVAS* aAfter, KICAD_DIFF::DOCUMENT_DIFF& aDiff,
+                                                         REPORTER* aReporter );
+
 private:
     int runPcbMerge( const wxString& aAncestor, const wxString& aOurs, const wxString& aTheirs,
                      const wxString& aOutput, bool aInteractive );
     int runFpLibMerge( const wxString& aAncestor, const wxString& aOurs, const wxString& aTheirs,
-                       const wxString& aOutput, bool aSingleFile );
+                       const wxString& aOutput, bool aInteractive, bool aSingleFile );
 
 public:
 
@@ -95,9 +115,11 @@ public:
 
 private:
     BOARD* getBoard( const wxString& aPath = wxEmptyString );
+    void refillFabZones( const JOB_EXPORT_PCB_FAB& aJob, BOARD* aBoard );
     LSEQ convertLayerArg( wxString& aLayerString, BOARD* aBoard ) const;
 
-    bool preparePlotLayers( JOB_EXPORT_PCB_PLOT* aJob, BOARD* aBoard, TOOL_MANAGER* aToolManager );
+    bool preparePlotLayers( JOB_EXPORT_PCB_PLOT* aJob, BOARD* aBoard, TOOL_MANAGER* aToolManager,
+                            LSEQ& aLayersToPlot );
     wxString resolvePlotOutputPath( JOB_EXPORT_PCB_PLOT* aJob, BOARD* aBoard,
                                    PLOT_FORMAT aFormat, bool aSingleOutput );
 

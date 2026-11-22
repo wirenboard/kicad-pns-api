@@ -252,6 +252,7 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
     bool                   dirtyConnectivity = false;
     bool                   rebuildHierarchyNavigator = false;
     bool                   refreshHierarchy = false;
+    bool                   refSuffixChanged = false;
     SCH_CLEANUP_FLAGS      connectivityCleanUp = NO_CLEANUP;
     SCH_SHEET_LIST         sheets= m_schematic->Hierarchy();
     bool                   clearedRepeatItems = false;
@@ -328,6 +329,10 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
             }
 
             RemoveFromScreen( eda_item, screen );
+
+            if( SCH_GROUP* group = dynamic_cast<SCH_GROUP*>( schItem ) )
+                group->RemoveAll();
+
             aList->SetPickedItemStatus( UNDO_REDO::DELETED, ii );
 
             bulkRemovedItems.emplace_back( schItem );
@@ -391,7 +396,8 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
             item->Restore( &Schematic() );
             *item = std::move( alt_item );
 
-            UpdateVariantSelectionCtrl( Schematic().GetVariantNamesForUI() );
+            SyncVariantUI();
+            SetCurrentVariant( Schematic().GetCurrentVariant() );
         }
         else if( schItem )
         {
@@ -408,6 +414,14 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
                 const bool hierarchyChanged = originalSheet->HasHierarchyChanges( *modifiedSheet );
                 rebuildHierarchyNavigator |= hierarchyChanged;
                 refreshHierarchy |= hierarchyChanged;
+
+                // The restored copy's screens are the ones the hierarchy keeps
+                if( hierarchyChanged && originalSheet->HasRefSuffixChanges( *modifiedSheet ) )
+                {
+                    static_cast<SCH_SHEET*>( itemCopy )->SetDescendantsModified();
+                    refSuffixChanged = true;
+                }
+
                 // Local undo cleanup only visits the displayed screen
                 fullSheetUpdate = !ADVANCED_CFG::GetCfg().m_ConnectivityEngine
                                       || screen != GetScreen()
@@ -527,6 +541,10 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
     if( refreshHierarchy )
         Schematic().RefreshHierarchy();
 
+    // Undo can restore a suffix while one of its child sheets is on screen
+    if( refSuffixChanged )
+        RefreshComposedReferences();
+
     if( dirtyConnectivity )
     {
         wxLogTrace( wxS( "CONN_PROFILE" ), wxS( "Undo/redo %s clean up connectivity rebuild." ),
@@ -562,7 +580,7 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
     if( updateVariantCtrl && m_schematic )
     {
         m_schematic->LoadVariants();
-        UpdateVariantSelectionCtrl( m_schematic->GetVariantNamesForUI() );
+        SyncVariantUI();
     }
 }
 

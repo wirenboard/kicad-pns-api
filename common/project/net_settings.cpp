@@ -201,10 +201,10 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
             },
             [&]( const nlohmann::json& aJson )
             {
+                m_netClasses.clear();
+
                 if( !aJson.is_array() )
                     return;
-
-                m_netClasses.clear();
 
                 for( const nlohmann::json& entry : aJson )
                 {
@@ -236,10 +236,10 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
             },
             [&]( const nlohmann::json& aJson )
             {
+                m_netColorAssignments.clear();
+
                 if( !aJson.is_object() )
                     return;
-
-                m_netColorAssignments.clear();
 
                 for( const auto& pair : aJson.items() )
                 {
@@ -267,10 +267,10 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
             },
             [&]( const nlohmann::json& aJson )
             {
+                m_netChainClasses.clear();
+
                 if( !aJson.is_object() )
                     return;
-
-                m_netChainClasses.clear();
 
                 for( const auto& pair : aJson.items() )
                 {
@@ -301,10 +301,10 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
             },
             [&]( const nlohmann::json& aJson )
             {
+                m_netChainNetClasses.clear();
+
                 if( !aJson.is_object() )
                     return;
-
-                m_netChainNetClasses.clear();
 
                 for( const auto& pair : aJson.items() )
                 {
@@ -343,10 +343,10 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
             },
             [&]( const nlohmann::json& aJson )
             {
+                m_netClassLabelAssignments.clear();
+
                 if( !aJson.is_object() )
                     return;
-
-                m_netClassLabelAssignments.clear();
 
                 for( const auto& pair : aJson.items() )
                 {
@@ -380,10 +380,10 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
             },
             [&]( const nlohmann::json& aJson )
             {
+                m_netClassPatternAssignments.clear();
+
                 if( !aJson.is_array() )
                     return;
-
-                m_netClassPatternAssignments.clear();
 
                 for( const nlohmann::json& entry : aJson )
                 {
@@ -759,6 +759,37 @@ void NET_SETTINGS::SetNetclassPatternAssignment( const wxString& pattern, const 
 }
 
 
+/**
+ * Tell a plain pattern from one that has to be matched. These are the characters the netclass
+ * matchers give a meaning to. A pattern with none of them matches itself and nothing else.
+ */
+static bool isLiteralPattern( const wxString& aPattern )
+{
+    static const wxString special = wxT( ".*+?^${}()|[]/\\" );
+
+    return !aPattern.IsEmpty() && aPattern.find_first_of( special ) == wxString::npos;
+}
+
+
+void NET_SETTINGS::buildPatternIndex()
+{
+    m_literalPatternIndex.clear();
+    m_patternsNeedingMatch.clear();
+
+    for( size_t ii = 0; ii < m_netClassPatternAssignments.size(); ++ii )
+    {
+        const auto& [matcher, netclassName] = m_netClassPatternAssignments[ii];
+
+        if( matcher && isLiteralPattern( matcher->GetPattern() ) )
+            m_literalPatternIndex[matcher->GetPattern()].push_back( netclassName );
+        else
+            m_patternsNeedingMatch.push_back( ii );
+    }
+
+    m_patternIndexValid = true;
+}
+
+
 void NET_SETTINGS::addSinglePatternAssignment( const wxString& pattern, const wxString& netclass )
 {
     // Avoid exact duplicates - these shouldn't cause problems, due to later de-duplication
@@ -786,6 +817,9 @@ void NET_SETTINGS::SetNetclassPatternAssignments(
 std::vector<std::pair<std::unique_ptr<EDA_COMBINED_MATCHER>, wxString>>&
 NET_SETTINGS::GetNetclassPatternAssignments()
 {
+    // The caller can rewrite the list through this reference, so the index may no longer fit it.
+    m_patternIndexValid = false;
+
     return m_netClassPatternAssignments;
 }
 
@@ -793,6 +827,7 @@ NET_SETTINGS::GetNetclassPatternAssignments()
 void NET_SETTINGS::ClearNetclassPatternAssignments()
 {
     m_netClassPatternAssignments.clear();
+    m_patternIndexValid = false;
 }
 
 
@@ -866,6 +901,7 @@ void NET_SETTINGS::ClearCacheForNet( const wxString& netName )
 
 void NET_SETTINGS::ClearAllCaches()
 {
+    m_patternIndexValid = false;
     m_effectiveNetclassCache.clear();
     m_compositeNetClasses.clear();
     m_netclassBusMembers.clear();
@@ -1066,6 +1102,16 @@ std::shared_ptr<NETCLASS> NET_SETTINGS::GetEffectiveNetClass( const wxString& aN
     }
 
     // Now find any pattern-matched netclass assignments (user + chain-derived)
+    auto addNetclassByName = [&]( const wxString& netclassName )
+    {
+        std::shared_ptr<NETCLASS> netclass = getExplicitNetclass( netclassName );
+
+        if( netclass )
+            resolvedNetclasses.insert( std::move( netclass ) );
+        else
+            resolvedNetclasses.insert( getOrAddImplicitNetcless( netclassName ) );
+    };
+
     auto applyPatternList =
             [&]( const std::vector<std::pair<std::unique_ptr<EDA_COMBINED_MATCHER>, wxString>>&
                          patterns )
@@ -1073,18 +1119,26 @@ std::shared_ptr<NETCLASS> NET_SETTINGS::GetEffectiveNetClass( const wxString& aN
                 for( const auto& [matcher, netclassName] : patterns )
                 {
                     if( matcher->StartsWith( aNetName ) )
-                    {
-                        std::shared_ptr<NETCLASS> netclass = getExplicitNetclass( netclassName );
-
-                        if( netclass )
-                            resolvedNetclasses.insert( std::move( netclass ) );
-                        else
-                            resolvedNetclasses.insert( getOrAddImplicitNetcless( netclassName ) );
-                    }
+                        addNetclassByName( netclassName );
                 }
             };
 
-    applyPatternList( m_netClassPatternAssignments );
+    if( !m_patternIndexValid )
+        buildPatternIndex();
+
+    if( auto it = m_literalPatternIndex.find( aNetName ); it != m_literalPatternIndex.end() )
+    {
+        for( const wxString& netclassName : it->second )
+            addNetclassByName( netclassName );
+    }
+
+    for( size_t idx : m_patternsNeedingMatch )
+    {
+        const auto& [matcher, netclassName] = m_netClassPatternAssignments[idx];
+
+        if( matcher->StartsWith( aNetName ) )
+            addNetclassByName( netclassName );
+    }
 
     for( const auto& [source, chainPatterns] : m_netClassChainPatternAssignments )
         applyPatternList( chainPatterns );
@@ -1141,10 +1195,7 @@ std::shared_ptr<NETCLASS> NET_SETTINGS::GetEffectiveNetClass( const wxString& aN
     // Make and cache the effective netclass. Note that makeEffectiveNetclass will add the default
     // netclass to resolvedNetclasses if it is needed to complete the netclass paramters set. It
     // will also sort resolvedNetclasses by priority order.
-    std::vector<NETCLASS*> netclassPtrs;
-
-    for( const std::shared_ptr<NETCLASS>& nc : resolvedNetclasses )
-        netclassPtrs.push_back( nc.get() );
+    std::vector<std::shared_ptr<NETCLASS>> netclassPtrs( resolvedNetclasses.begin(), resolvedNetclasses.end() );
 
     wxString name;
     name.Printf( "Effective for net: %s", aNetName );
@@ -1159,7 +1210,7 @@ std::shared_ptr<NETCLASS> NET_SETTINGS::GetEffectiveNetClass( const wxString& aN
     }
     else
     {
-        effectiveNetclass->SetConstituentNetclasses( std::move( netclassPtrs ) );
+        effectiveNetclass->SetConstituentOwners( std::move( netclassPtrs ) );
 
         m_compositeNetClasses[effectiveNetclass->GetName()] = effectiveNetclass;
         m_effectiveNetclassCache[aNetName] = effectiveNetclass;
@@ -1174,7 +1225,7 @@ void NET_SETTINGS::RecomputeEffectiveNetclasses()
     for( auto& [ncName, nc] : m_compositeNetClasses )
     {
         // Note this needs to be a copy in case we now need to add the default netclass
-        std::vector<NETCLASS*> constituents = nc->GetConstituentNetclasses();
+        std::vector<std::shared_ptr<NETCLASS>> constituents = nc->GetConstituentOwners();
 
         wxASSERT( constituents.size() > 0 );
 
@@ -1187,18 +1238,18 @@ void NET_SETTINGS::RecomputeEffectiveNetclasses()
         // Remake the netclass from original constituents
         nc->ResetParameters();
         makeEffectiveNetclass( nc, constituents );
-        nc->SetConstituentNetclasses( std::move( constituents ) );
+        nc->SetConstituentOwners( std::move( constituents ) );
     }
 }
 
 
-void NET_SETTINGS::makeEffectiveNetclass( std::shared_ptr<NETCLASS>& effectiveNetclass,
-                                          std::vector<NETCLASS*>&    constituentNetclasses ) const
+void NET_SETTINGS::makeEffectiveNetclass( std::shared_ptr<NETCLASS>&               effectiveNetclass,
+                                          std::vector<std::shared_ptr<NETCLASS>>& constituentNetclasses ) const
 {
     // Sort the resolved netclasses by priority (highest first), with same-priority netclasses
     // ordered alphabetically
     std::sort( constituentNetclasses.begin(), constituentNetclasses.end(),
-               []( NETCLASS* nc1, NETCLASS* nc2 )
+               []( const std::shared_ptr<NETCLASS>& nc1, const std::shared_ptr<NETCLASS>& nc2 )
                {
                    int p1 = nc1->GetPriority();
                    int p2 = nc2->GetPriority();
@@ -1215,7 +1266,7 @@ void NET_SETTINGS::makeEffectiveNetclass( std::shared_ptr<NETCLASS>& effectiveNe
     // Iterate from lowest priority netclass and fill effective netclass parameters
     for( auto itr = constituentNetclasses.rbegin(); itr != constituentNetclasses.rend(); ++itr )
     {
-        NETCLASS* nc = *itr;
+        NETCLASS* nc = itr->get();
 
         if( nc->HasClearance() )
         {
@@ -1314,7 +1365,7 @@ void NET_SETTINGS::makeEffectiveNetclass( std::shared_ptr<NETCLASS>& effectiveNe
 
     // Fill in any required defaults
     if( addMissingDefaults( effectiveNetclass.get() ) )
-        constituentNetclasses.push_back( m_defaultNetClass.get() );
+        constituentNetclasses.push_back( m_defaultNetClass );
 }
 
 

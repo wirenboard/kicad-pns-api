@@ -166,16 +166,11 @@ static void CheckCollisionsMatchExpected( BOARD& aBoard,
  * Run a single courtyard overlap test case.
  *
  * @param aCase The testcase to run.
- * @param aDumper
  */
 static void DoCourtyardOverlapTest( const COURTYARD_OVERLAP_TEST_CASE& aCase )
 {
-    const std::string path = KI_TEST::GetPcbnewTestDataDir() + "drc_courtyard/overlap/"
-                             + aCase.m_board_name + ".kicad_pcb";
-
-    std::unique_ptr<BOARD> board = KI_TEST::ReadBoardFromFileOrStream( path );
-
-    BOOST_REQUIRE( board );
+    std::unique_ptr<BOARD> board =
+            KI_TEST::RequireBoardFromPcbnewQAData( "drc_courtyard/overlap/" + aCase.m_board_name + ".kicad_pcb" );
 
     BOARD_DESIGN_SETTINGS& bds = board->GetDesignSettings();
 

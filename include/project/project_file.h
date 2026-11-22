@@ -148,6 +148,12 @@ public:
         return m_topLevelSheets;
     }
 
+    /// True when the last read of the file replaced a top-level sheet list held from before it
+    bool TopLevelSheetsChangedOnLoad() const { return m_topLevelSheetsChanged; }
+
+    /// Settle a changed list once the schematic has been loaded from it
+    void AcknowledgeTopLevelSheetChange() { m_topLevelSheetsChanged = false; }
+
     std::shared_ptr<NET_SETTINGS>& NetSettings()
     {
         return m_NetSettings;
@@ -236,9 +242,9 @@ public:
     /**
      * Board design settings for this project's board.  This will be initialized by PcbNew after
      * loading a board so that BOARD_DESIGN_SETTINGS doesn't need to live in common for now.
-     * Owned by the BOARD; may be null if a board isn't loaded: be careful
+     * May be null if a board isn't loaded: be careful.
      */
-    BOARD_DESIGN_SETTINGS* m_BoardSettings;
+    std::shared_ptr<BOARD_DESIGN_SETTINGS> m_BoardSettings;
 
     /**
      * Net settings for this project (owned here)
@@ -299,6 +305,7 @@ private:
     PROJECT* m_project;
 
     bool m_wasMigrated;
+    bool m_topLevelSheetsChanged;
 };
 
 // Specializations to allow directly reading/writing FILE_INFO_PAIRs from JSON

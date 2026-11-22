@@ -22,7 +22,9 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <wx/dataview.h>
 #include <wx/dialog.h>
+#include <wx/display.h>
 #include <wx/nonownedwnd.h>
 #include <wx/toplevel.h>
 #include <wx/button.h>
@@ -75,6 +77,12 @@ void KIPLATFORM::UI::GetInfoBarColours( wxColour& aFGColour, wxColour& aBGColour
 }
 
 
+wxWindow* KIPLATFORM::UI::CreateCanvasOverlay( wxWindow* aCanvas )
+{
+    return nullptr;
+}
+
+
 void KIPLATFORM::UI::ForceFocus( wxWindow* aWindow )
 {
     // On OSX we need to forcefully give the focus to the window
@@ -89,24 +97,15 @@ bool KIPLATFORM::UI::IsWindowActive( wxWindow* aWindow )
 }
 
 
-void KIPLATFORM::UI::EnsureVisible( wxWindow* aWindow )
-{
-    NSView* view = (NSView*)aWindow->GetHandle();
-    if( view )
-    {
-        NSWindow* nsWindow = [view window];
-        if( nsWindow )
-        {
-            [nsWindow setCollectionBehavior:
-                NSWindowCollectionBehaviorCanJoinAllSpaces];
-        }
-    }
-}
-
-
 void KIPLATFORM::UI::StabilizeWindowPosition( wxWindow* aWindow )
 {
     // Not needed on this platform
+}
+
+
+wxPoint KIPLATFORM::UI::GetRestorablePosition( wxWindow* aWindow )
+{
+    return aWindow->GetPosition();
 }
 
 
@@ -185,6 +184,22 @@ double KIPLATFORM::UI::GetContentScaleFactor( const wxWindow* aWindow )
 }
 
 
+double KIPLATFORM::UI::GetDisplayRefreshRate( const wxWindow* aWindow )
+{
+    NSView*   view = (NSView*) aWindow->GetHandle();
+    NSScreen* screen = view.window.screen;
+
+    if( !screen )
+        return 0.0;
+
+    if( @available( macOS 12.0, * ) )
+        return static_cast<double>( screen.maximumFramesPerSecond );
+
+    // Built-in panels report 0 here
+    return wxDisplay( aWindow ).GetCurrentMode().refresh;
+}
+
+
 wxSize KIPLATFORM::UI::GetUnobscuredSize( const wxWindow* aWindow )
 {
     return wxSize( aWindow->GetSize().GetX() - wxSystemSettings::GetMetric( wxSYS_VSCROLL_X ),
@@ -199,6 +214,24 @@ void KIPLATFORM::UI::SetOverlayScrolling( const wxWindow* aWindow, bool overlay 
 
 
 bool KIPLATFORM::UI::AllowIconsInMenus()
+{
+    return true;
+}
+
+
+bool KIPLATFORM::UI::SupportsKeyState()
+{
+    return true;
+}
+
+
+wxKeyEvent KIPLATFORM::UI::GetNativePopupDismissalEvent()
+{
+    return wxKeyEvent();
+}
+
+
+bool KIPLATFORM::UI::PrepareChoicePopup( wxWindow* )
 {
     return true;
 }
@@ -252,17 +285,13 @@ void KIPLATFORM::UI::SetFloatLevel( wxWindow* aWindow )
 
 void KIPLATFORM::UI::ReleaseChildWindow( wxNonOwnedWindow* aWindow )
 {
-    if( wxTopLevelWindow* parent = static_cast<wxTopLevelWindow*>(
-            wxGetTopLevelParent( aWindow->GetParent() ) ) )
-    {
-        NSWindow* parentWindow = parent->GetWXWindow();
-        NSWindow* theWindow = aWindow->GetWXWindow();
+    NSWindow* theWindow = aWindow->GetWXWindow();
 
-        if( parentWindow && theWindow )
-        {
-            [parentWindow removeChildWindow:theWindow];
-            [theWindow setLevel:NSFloatingWindowLevel];
-        }
+    // ReparentWindow can attach to a window other than the wx parent, e.g. a report onto the DRC dialog
+    if( NSWindow* parentWindow = [theWindow parentWindow] )
+    {
+        [parentWindow removeChildWindow:theWindow];
+        [theWindow setLevel:NSFloatingWindowLevel];
     }
 }
 
@@ -270,6 +299,12 @@ void KIPLATFORM::UI::ReleaseChildWindow( wxNonOwnedWindow* aWindow )
 void KIPLATFORM::UI::AllowNetworkFileSystems( wxDialog* aDialog )
 {
     // Not needed on macOS - file dialogs show network filesystems by default
+}
+
+
+int KIPLATFORM::UI::GetColumnWidth( const wxDataViewColumn* aColumn )
+{
+    return aColumn->WXGetSpecifiedWidth();
 }
 
 
@@ -282,4 +317,36 @@ void KIPLATFORM::UI::CancelPendingScroll( wxDataViewCtrl* aCtrl )
 void KIPLATFORM::UI::SetWMClass( wxWindow* aWindow, const wxString& aClass )
 {
     // Not applicable on macOS; the bundle identifier provides the application identity.
+}
+
+
+void KIPLATFORM::UI::GetNativeWindowHandles( wxWindow* aWindow, void** aHandle, void** aDisplay,
+                                             int* aDisplayType )
+{
+    *aHandle = nullptr;
+    *aDisplay = nullptr;
+
+    if( aDisplayType )
+        *aDisplayType = NATIVE_DISPLAY_TYPE::DISPLAY_COCOA;
+
+    if( aWindow )
+        *aHandle = aWindow->GetHandle();
+}
+
+
+void KIPLATFORM::UI::PrepareForExternalRendering( wxWindow* aWindow )
+{
+    // macOS composites Metal layers natively
+}
+
+
+void KIPLATFORM::UI::KeepAboveExternalRendering( wxWindow* aChild )
+{
+    // Child views are composited above the Metal layer of their parent
+}
+
+
+void KIPLATFORM::UI::RebindOnRealize( wxWindow* aWindow )
+{
+    // An NSView keeps its identity when reparented
 }

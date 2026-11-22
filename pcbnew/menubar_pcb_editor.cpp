@@ -131,6 +131,7 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
     submenuExport->SetIcon( BITMAPS::export_file );
 
     submenuExport->Add( PCB_ACTIONS::exportSpecctraDSN, ACTION_MENU::NORMAL, _( "Specctra DSN..." ) );
+    submenuExport->Add( ACTIONS::exportForOlderVersion, ACTION_MENU::NORMAL, _( "For Older KiCad Version..." ) );
     submenuExport->Add( PCB_ACTIONS::exportGenCAD,      ACTION_MENU::NORMAL, _( "GenCAD..." ) );
     submenuExport->Add( PCB_ACTIONS::exportVRML,        ACTION_MENU::NORMAL, _( "VRML..." ) );
     submenuExport->Add( PCB_ACTIONS::exportIDF,         ACTION_MENU::NORMAL, _( "IDFv3..." ) );
@@ -208,6 +209,7 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
     editMenu->Add( PCB_ACTIONS::trimGraphic );
     editMenu->Add( PCB_ACTIONS::editTracksAndVias );
     editMenu->Add( PCB_ACTIONS::editTextAndGraphics );
+    editMenu->Add( PCB_ACTIONS::mirrorInteractive );
     editMenu->Add( PCB_ACTIONS::editTeardrops );
     editMenu->Add( PCB_ACTIONS::changeFootprints );
     editMenu->Add( PCB_ACTIONS::swapLayers );
@@ -234,6 +236,7 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
     showHidePanels->Add( PCB_ACTIONS::showLayersManager,          ACTION_MENU::CHECK );
     showHidePanels->Add( PCB_ACTIONS::showNetInspector,           ACTION_MENU::CHECK );
     showHidePanels->Add( PCB_ACTIONS::showConstraintsPanel,       ACTION_MENU::CHECK );
+    showHidePanels->Add( ACTIONS::showGitCommitPane, ACTION_MENU::CHECK );
 
     if( ADVANCED_CFG::GetCfg().m_EnablePcbDesignBlocks )
         showHidePanels->Add( PCB_ACTIONS::showDesignBlockPanel, ACTION_MENU::CHECK, _( "Design Blocks" ) );
@@ -391,6 +394,7 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
     routeMenu->AppendSeparator();
     routeMenu->Add( PCB_ACTIONS::routeSingleTrack );
     routeMenu->Add( PCB_ACTIONS::routeDiffPair );
+    routeMenu->Add( PCB_ACTIONS::routerSpreadTracks );
 
     routeMenu->AppendSeparator();
     routeMenu->Add( PCB_ACTIONS::tuneSingleTrack );
@@ -472,7 +476,11 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
     multichannelSubmenu->SetTitle( _( "Multi-Channel" ) );
     multichannelSubmenu->SetIcon( BITMAPS::mode_module );
     multichannelSubmenu->Add( PCB_ACTIONS::generatePlacementRuleAreas );
+    multichannelSubmenu->Add( PCB_ACTIONS::expandToMatchingTopology );
+    multichannelSubmenu->Add( PCB_ACTIONS::expandToLargestTopology );
     multichannelSubmenu->Add( PCB_ACTIONS::repeatLayout );
+    multichannelSubmenu->Add( PCB_ACTIONS::updateLinkedLayouts );
+    multichannelSubmenu->Add( PCB_ACTIONS::unlinkLayout );
 
     toolsMenu->Add( multichannelSubmenu );
 
@@ -480,8 +488,11 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
     submenuActionPlugins->SetTitle( _( "External Plugins" ) );
     submenuActionPlugins->SetIcon( BITMAPS::puzzle_piece );
 
+    if( Pgm().GetCommonSettings()->m_Api.enable_server && AddApiPluginMenuItems( submenuActionPlugins ) > 0 )
+        submenuActionPlugins->AppendSeparator();
+
     submenuActionPlugins->Add( ACTIONS::pluginsReload );
-    submenuActionPlugins->Add( PCB_ACTIONS::pluginsShowFolder );
+    submenuActionPlugins->Add( ACTIONS::pluginsShowFolder );
 
     toolsMenu->AppendSeparator();
     toolsMenu->Add( submenuActionPlugins );

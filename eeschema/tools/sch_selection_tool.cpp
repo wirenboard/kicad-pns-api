@@ -690,6 +690,11 @@ bool SCH_SELECTION_TOOL::Init()
                 return aSel.GetSize() >= 1 && aSel.OnlyContains( { SCH_SYMBOL_T } );
             };
 
+    SELECTION_CONDITION imageSelection = []( const SELECTION& aSel )
+    {
+        return aSel.GetSize() == 1 && aSel.OnlyContains( { SCH_BITMAP_T } );
+    };
+
     std::shared_ptr<NET_CHAIN_MENU> netChainMenu = std::make_shared<NET_CHAIN_MENU>();
     netChainMenu->SetTool( this );
     m_menu->RegisterSubMenu( netChainMenu );
@@ -699,6 +704,7 @@ bool SCH_SELECTION_TOOL::Init()
     menu.AddItem( ACTIONS::groupLeave,                  inGroupCondition,    1 );
     menu.AddItem( SCH_ACTIONS::placeLinkedDesignBlock,  groupEnterCondition, 1 );
     menu.AddItem( SCH_ACTIONS::saveToLinkedDesignBlock, groupEnterCondition, 1 );
+    menu.AddItem( SCH_ACTIONS::convertImageToOutlines,  imageSelection,      1 );
     menu.AddItem( SCH_ACTIONS::clearHighlight,          haveHighlight && SCH_CONDITIONS::Idle, 1 );
     menu.AddSeparator(                                  haveHighlight && SCH_CONDITIONS::Idle, 1 );
 
@@ -765,6 +771,9 @@ void SCH_SELECTION_TOOL::Reset( RESET_REASON aReason )
         // Remove pointers to the selected items from containers without changing their
         // properties (as they are already deleted while a new sheet is loaded)
         m_selection.Clear();
+
+        if( m_grid )
+            m_grid->FullReset();
     }
 
     if( aReason == RESET_REASON::SHUTDOWN )
@@ -802,7 +811,11 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
     m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
 
     KIID lastRolloverItemId = niluuid;
-    EE_GRID_HELPER grid( m_toolMgr );
+
+    if( !m_grid )
+        m_grid = std::make_unique<EE_GRID_HELPER>( m_toolMgr );
+
+    EE_GRID_HELPER& grid = *m_grid;
 
     auto pinOrientation =
             []( EDA_ITEM* aItem )
@@ -1483,7 +1496,6 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
         {
             // Passing reactivation would nest another selection loop and retain its view items.
             evt->SetPassEvent( false );
-            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
         }
         else if( evt->Action() == TA_UNDO_REDO_PRE )
         {
@@ -1580,6 +1592,11 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             )
             {
                 m_nonModifiedCursor = KICURSOR::MOVING;
+            }
+            else if( m_selectionMode == SELECTION_MODE::INSIDE_LASSO
+                     || m_selectionMode == SELECTION_MODE::TOUCHING_LASSO )
+            {
+                m_nonModifiedCursor = KICURSOR::SELECT_LASSO;
             }
             else
             {
@@ -1742,7 +1759,7 @@ int SCH_SELECTION_TOOL::disambiguateCursor( const TOOL_EVENT& aEvent )
 
 void SCH_SELECTION_TOOL::OnIdle( wxIdleEvent& aEvent )
 {
-    if( m_frame->ToolStackIsEmpty() && !m_multiple )
+    if( m_frame->IsActive() && m_frame->IsEnabled() && m_frame->ToolStackIsEmpty() && !m_inSelectMultiple )
     {
         wxMouseState keyboardState = wxGetMouseState();
 
@@ -2036,7 +2053,7 @@ bool SCH_SELECTION_TOOL::SelectPoint( const VECTOR2I& aWhere, const std::vector<
 int SCH_SELECTION_TOOL::SelectAll( const TOOL_EVENT& aEvent )
 {
     SCH_COLLECTOR collection;
-    m_multiple = true;          // Multiple selection mode is active
+    m_inSelectMultiple = true;          // Multiple selection mode is active
     KIGFX::VIEW* view = getView();
 
     std::vector<EDA_ITEM*> sheetPins;
@@ -2085,7 +2102,7 @@ int SCH_SELECTION_TOOL::SelectAll( const TOOL_EVENT& aEvent )
         }
     }
 
-    m_multiple = false;
+    m_inSelectMultiple = false;
 
     m_toolMgr->ProcessEvent( EVENTS::SelectedEvent );
     m_frame->GetCanvas()->ForceRefresh();
@@ -2094,7 +2111,7 @@ int SCH_SELECTION_TOOL::SelectAll( const TOOL_EVENT& aEvent )
 
 int SCH_SELECTION_TOOL::UnselectAll( const TOOL_EVENT& aEvent )
 {
-    m_multiple = true;          // Multiple selection mode is active
+    m_inSelectMultiple = true;          // Multiple selection mode is active
     KIGFX::VIEW* view = getView();
 
     // hold all visible items
@@ -2126,7 +2143,7 @@ int SCH_SELECTION_TOOL::UnselectAll( const TOOL_EVENT& aEvent )
         }
     }
 
-    m_multiple = false;
+    m_inSelectMultiple = false;
 
     m_toolMgr->ProcessEvent( EVENTS::UnselectedEvent );
     m_frame->GetCanvas()->ForceRefresh();
@@ -2612,6 +2629,7 @@ void SCH_SELECTION_TOOL::updateReferencePoint()
 int SCH_SELECTION_TOOL::SetSelectPoly( const TOOL_EVENT& aEvent )
 {
     m_selectionMode = SELECTION_MODE::INSIDE_LASSO;
+    m_nonModifiedCursor = KICURSOR::SELECT_LASSO;
     m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::SELECT_LASSO );
     m_toolMgr->PostAction( ACTIONS::selectionTool );
     return 0;
@@ -2621,6 +2639,7 @@ int SCH_SELECTION_TOOL::SetSelectPoly( const TOOL_EVENT& aEvent )
 int SCH_SELECTION_TOOL::SetSelectRect( const TOOL_EVENT& aEvent )
 {
     m_selectionMode = SELECTION_MODE::INSIDE_RECTANGLE;
+    m_nonModifiedCursor = KICURSOR::ARROW;
     m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
     m_toolMgr->PostAction( ACTIONS::selectionTool );
     return 0;
@@ -2648,7 +2667,7 @@ bool SCH_SELECTION_TOOL::selectMultiple()
         return false;
 
     bool cancelled = false;     // Was the tool canceled while it was running?
-    m_multiple = true;          // Multiple selection mode is active
+    m_inSelectMultiple = true;          // Multiple selection mode is active
     KIGFX::VIEW* view = getView();
 
     KIGFX::PREVIEW::SELECTION_AREA area;
@@ -2709,7 +2728,7 @@ bool SCH_SELECTION_TOOL::selectMultiple()
 
     // Stop drawing the selection box
     view->Remove( &area );
-    m_multiple = false;         // Multiple selection mode is inactive
+    m_inSelectMultiple = false;         // Multiple selection mode is inactive
 
     if( !cancelled )
         m_selection.ClearReferencePoint();
@@ -2721,7 +2740,7 @@ bool SCH_SELECTION_TOOL::selectMultiple()
 bool SCH_SELECTION_TOOL::selectLasso()
 {
     bool cancelled = false;
-    m_multiple = true;
+    m_inSelectMultiple = true;
     KIGFX::PREVIEW::SELECTION_AREA area;
     getView()->Add( &area );
     getView()->SetVisible( &area, true );
@@ -2809,7 +2828,7 @@ bool SCH_SELECTION_TOOL::selectLasso()
     getViewControls()->SetAutoPan( false );
     getView()->SetVisible( &area, false );
     getView()->Remove( &area );
-    m_multiple = false;
+    m_inSelectMultiple = false;
 
     if( !cancelled )
         m_selection.ClearReferencePoint();
@@ -2856,7 +2875,7 @@ void SCH_SELECTION_TOOL::SelectMultiple( KIGFX::PREVIEW::SELECTION_AREA& aArea, 
         }
         else if( SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( item ) )
         {
-            for( SCH_PIN* pin : symbol->GetPins() )
+            for( SCH_PIN* pin : symbol->GetPins( &getEditFrame<SCH_EDIT_FRAME>()->GetCurrentSheet() ) )
             {
                 if( boxMode ? selectionRect.Intersects( pin->GetBoundingBox() )
                             : KIGEOM::BoxHitTest( aArea.GetPoly(), pin->GetBoundingBox(), true ) )
@@ -3043,8 +3062,8 @@ void SCH_SELECTION_TOOL::SelectMultiple( KIGFX::PREVIEW::SELECTION_AREA& aArea, 
             item->SetFlags( SHOW_ELEC_TYPE );
 
         // If the pin lives inside a group that is already being selected, don't also select the pin.
-        if( EDA_GROUP* group = SCH_GROUP::TopLevelGroup( static_cast<SCH_ITEM*>( item ), m_enteredGroup,
-                                                         m_isSymbolEditor ) )
+        if( EDA_GROUP* group =
+                    SCH_GROUP::TopLevelGroup( *static_cast<SCH_ITEM*>( item ), m_enteredGroup, m_isSymbolEditor ) )
         {
             if( collector.HasItem( group->AsEdaItem() ) )
             {
@@ -3113,7 +3132,7 @@ void SCH_SELECTION_TOOL::FilterCollectorForHierarchy( SCH_COLLECTOR& aCollector,
             start = sym;
 
         // If a group is entered, disallow selections of objects outside the group.
-        if( m_enteredGroup && !SCH_GROUP::WithinScope( item, m_enteredGroup, m_isSymbolEditor ) )
+        if( m_enteredGroup && !SCH_GROUP::WithinScope( *item, m_enteredGroup, m_isSymbolEditor ) )
         {
             aCollector.Remove( item );
             continue;
@@ -3121,8 +3140,8 @@ void SCH_SELECTION_TOOL::FilterCollectorForHierarchy( SCH_COLLECTOR& aCollector,
 
         // If any element is a member of a group, replace those elements with the top containing
         // group.
-        if( EDA_GROUP* top = promoteToGroups ? SCH_GROUP::TopLevelGroup( start, m_enteredGroup, m_isSymbolEditor )
-                                             : nullptr )
+        if( EDA_GROUP* top =
+                    promoteToGroups ? SCH_GROUP::TopLevelGroup( *start, m_enteredGroup, m_isSymbolEditor ) : nullptr )
         {
             if( top->AsEdaItem() != item )
             {
@@ -3242,7 +3261,7 @@ void SCH_SELECTION_TOOL::SelectCellsBetween( const VECTOR2D& start, const VECTOR
 bool SCH_SELECTION_TOOL::selectTableCells( SCH_TABLE* aTable )
 {
     bool cancelled = false;
-    m_multiple = true;
+    m_inSelectMultiple = true;
 
     InitializeSelectionState( aTable );
 
@@ -3295,7 +3314,7 @@ bool SCH_SELECTION_TOOL::selectTableCells( SCH_TABLE* aTable )
 
     getViewControls()->SetAutoPan( false );
 
-    m_multiple = false;
+    m_inSelectMultiple = false;
 
     if( !cancelled )
         m_selection.ClearReferencePoint();
@@ -4074,10 +4093,10 @@ bool SCH_SELECTION_TOOL::Selectable( const EDA_ITEM* aItem, const VECTOR2I* aPos
 
         if( symEditFrame )
         {
-            if( pin->GetUnit() && pin->GetUnit() != symEditFrame->GetUnit() )
+            if( pin->GetUnit() != ALL_UNITS && pin->GetUnit() != symEditFrame->GetUnit() )
                 return false;
 
-            if( pin->GetBodyStyle() && pin->GetBodyStyle() != symEditFrame->GetBodyStyle() )
+            if( pin->GetBodyStyle() != ALL_BODY_STYLES && pin->GetBodyStyle() != symEditFrame->GetBodyStyle() )
                 return false;
         }
 
@@ -4139,10 +4158,10 @@ bool SCH_SELECTION_TOOL::Selectable( const EDA_ITEM* aItem, const VECTOR2I* aPos
         {
             const SCH_ITEM* sch_item = static_cast<const SCH_ITEM*>( aItem );
 
-            if( sch_item->GetUnit() && sch_item->GetUnit() != symEditFrame->GetUnit() )
+            if( sch_item->GetUnit() != ALL_UNITS && sch_item->GetUnit() != symEditFrame->GetUnit() )
                 return false;
 
-            if( sch_item->GetBodyStyle() && sch_item->GetBodyStyle() != symEditFrame->GetBodyStyle() )
+            if( sch_item->GetBodyStyle() != ALL_BODY_STYLES && sch_item->GetBodyStyle() != symEditFrame->GetBodyStyle() )
                 return false;
         }
 
@@ -4196,7 +4215,7 @@ void SCH_SELECTION_TOOL::select( EDA_ITEM* aItem )
     // Don't group when we select new items, the schematic editor selects all new items for moving.
     // The PCB editor doesn't need this logic because it doesn't select new items for moving.
     if( m_enteredGroup && !aItem->IsNew()
-        && !SCH_GROUP::WithinScope( static_cast<SCH_ITEM*>( aItem ), m_enteredGroup, m_isSymbolEditor ) )
+        && !SCH_GROUP::WithinScope( *static_cast<SCH_ITEM*>( aItem ), m_enteredGroup, m_isSymbolEditor ) )
     {
         ExitGroup();
     }

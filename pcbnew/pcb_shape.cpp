@@ -29,6 +29,7 @@
 #include <macros.h>
 #include <pcb_edit_frame.h>
 #include <board_design_settings.h>
+#include <board_design_settings_defaults.h>
 #include <board.h>
 #include <footprint.h>
 #include <lset.h>
@@ -48,6 +49,68 @@
 #include <api/api_utils.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
+
+
+// Move every vertex of the polygon through the transform. SetVertex turns the arc a vertex
+// belongs to into segments, so a uniform transform maps each arc as an arc and only a skewing
+// one is left to flatten them.
+static void transformPolyVertices( SHAPE_POLY_SET& aPoly, const TRANSFORM_TRS& aXform, bool aInverse )
+{
+    auto map = [&]( const VECTOR2I& aPt )
+    {
+        return aInverse ? aXform.InverseApply( aPt ) : aXform.Apply( aPt );
+    };
+
+    if( !aXform.IsUniformScale() )
+    {
+        for( auto it = aPoly.IterateWithHoles(); it; it++ )
+            aPoly.SetVertex( it.GetIndex(), map( *it ) );
+
+        return;
+    }
+
+    // a mirroring transform reverses the sweep of an arc
+    const bool mirrored = aXform.GetScaleX() * aXform.GetScaleY() < 0;
+
+    auto transformChain = [&]( SHAPE_LINE_CHAIN& aChain )
+    {
+        SHAPE_LINE_CHAIN mapped;
+
+        for( int i = 0; i < aChain.PointCount(); i++ )
+        {
+            int arcIndex = aChain.ArcIndex( i );
+
+            if( arcIndex < 0 )
+            {
+                mapped.Append( map( aChain.CPoint( i ) ) );
+                continue;
+            }
+
+            const SHAPE_ARC& arc = aChain.Arc( arcIndex );
+            EDA_ANGLE        sweep = arc.GetCentralAngle();
+
+            // three points fix an arc exactly, except a full circle whose ends coincide
+            if( arc.GetP0() != arc.GetP1() )
+                mapped.Append( SHAPE_ARC( map( arc.GetP0() ), map( arc.GetArcMid() ), map( arc.GetP1() ), 0 ) );
+            else
+                mapped.Append( SHAPE_ARC( map( arc.GetCenter() ), map( arc.GetP0() ), mirrored ? -sweep : sweep ) );
+
+            while( i + 1 < aChain.PointCount() && aChain.ArcIndex( i + 1 ) == arcIndex )
+                i++;
+        }
+
+        mapped.SetClosed( aChain.IsClosed() );
+        aChain = mapped;
+    };
+
+    for( int i = 0; i < aPoly.OutlineCount(); i++ )
+    {
+        transformChain( aPoly.Outline( i ) );
+
+        for( int j = 0; j < aPoly.HoleCount( i ); j++ )
+            transformChain( aPoly.Hole( i, j ) );
+    }
+}
 
 
 namespace
@@ -172,6 +235,7 @@ PCB_SHAPE::PCB_SHAPE( BOARD_ITEM* aParent, KICAD_T aItemType, SHAPE_T aShapeType
         EDA_SHAPE( aShapeType, pcbIUScale.mmToIU( DEFAULT_LINE_WIDTH ), FILL_T::NO_FILL ),
         m_libStart( 0, 0 ),
         m_libEnd( 0, 0 ),
+        m_libCornerRadius( 0 ),
         m_libArcMid( 0, 0 ),
         m_libBezierC1( 0, 0 ),
         m_libBezierC2( 0, 0 ),
@@ -192,6 +256,7 @@ PCB_SHAPE::PCB_SHAPE( BOARD_ITEM* aParent, SHAPE_T shapetype ) :
         EDA_SHAPE( shapetype, pcbIUScale.mmToIU( DEFAULT_LINE_WIDTH ), FILL_T::NO_FILL ),
         m_libStart( 0, 0 ),
         m_libEnd( 0, 0 ),
+        m_libCornerRadius( 0 ),
         m_libArcMid( 0, 0 ),
         m_libBezierC1( 0, 0 ),
         m_libBezierC2( 0, 0 ),
@@ -259,7 +324,9 @@ void PCB_SHAPE::Serialize( google::protobuf::Any &aContainer ) const
     }
 
     kiapi::common::PackCustomProperties( msg.mutable_custom_properties(), *this );
-    aContainer.PackFrom( msg );
+
+    if( !aContainer.PackFrom( msg ) )
+        wxFAIL_MSG( wxT( "Failed to pack PCB_SHAPE" ) );
 }
 
 
@@ -390,8 +457,7 @@ int PCB_SHAPE::GetSolderMaskExpansion() const
     int margin = 0;
 
     if( GetBoard() && GetBoard()->GetDesignSettings().m_DRCEngine
-        && GetBoard()->GetDesignSettings().m_DRCEngine->HasRulesForConstraintType(
-                   SOLDER_MASK_EXPANSION_CONSTRAINT ) )
+        && GetBoard()->GetDesignSettings().m_DRCEngine->HasRulesForConstraintType( SOLDER_MASK_EXPANSION_CONSTRAINT ) )
     {
         DRC_CONSTRAINT              constraint;
         std::shared_ptr<DRC_ENGINE> drcEngine = GetBoard()->GetDesignSettings().m_DRCEngine;
@@ -576,6 +642,10 @@ void PCB_SHAPE::UpdateHatching() const
 SHAPE_POLY_SET PCB_SHAPE::getHatchingKnockouts() const
 {
     SHAPE_POLY_SET knockouts;
+
+    if( !GetBoard() )
+        return knockouts;
+
     PCB_LAYER_ID   layer = GetLayer();
     BOX2I          bbox = GetBoundingBox();
     int            maxError = ARC_LOW_DEF;
@@ -664,9 +734,9 @@ int PCB_SHAPE::GetWidth() const
 }
 
 
-void PCB_SHAPE::StyleFromSettings( const BOARD_DESIGN_SETTINGS& settings, bool aCheckSide )
+void PCB_SHAPE::StyleFromSettings( const BOARD_DESIGN_SETTINGS& aSettings, bool aCheckSide )
 {
-    m_stroke.SetWidth( settings.GetLineThickness( GetLayer() ) );
+    m_stroke.SetWidth( aSettings.GetLineThickness( GetLayer() ) );
 }
 
 
@@ -893,17 +963,11 @@ void PCB_SHAPE::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
             mirrorPt( m_libBezierC2 );
         }
 
+        // Mirror() moves the arcs of the polygon as arcs, which a vertex at a time would turn into segments
         if( m_libShape == SHAPE_T::POLY )
-        {
-            for( auto it = m_libPoly.IterateWithHoles(); it; it++ )
-            {
-                VECTOR2I p = *it;
-                mirrorPt( p );
-                m_libPoly.SetVertex( it.GetIndex(), p );
-            }
-        }
+            m_libPoly.Mirror( libCenter, aFlipDirection );
 
-        SetLayer( GetBoard()->FlipLayer( GetLayer() ) );
+        SetLayer( GetFlippedLayer( GetLayer() ) );
         rebakeFromTransform( xform );
         return;
     }
@@ -933,14 +997,14 @@ void PCB_SHAPE::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
             m_libEllipseEndAngle = -oldStart;
         }
 
-        SetLayer( GetBoard()->FlipLayer( GetLayer() ) );
+        SetLayer( GetFlippedLayer( GetLayer() ) );
         rebakeFromTransform( xform );
         return;
     }
 
     flip( aCentre, aFlipDirection );
 
-    SetLayer( GetBoard()->FlipLayer( GetLayer() ) );
+    SetLayer( GetFlippedLayer( GetLayer() ) );
     syncLibCoords();
 }
 
@@ -955,6 +1019,20 @@ void PCB_SHAPE::SetStart( const VECTOR2I& aStart )
 void PCB_SHAPE::SetEnd( const VECTOR2I& aEnd )
 {
     EDA_SHAPE::SetEnd( aEnd );
+    syncLibCoords();
+}
+
+
+void PCB_SHAPE::SetCenter( const VECTOR2I& aCenter )
+{
+    EDA_SHAPE::SetCenter( aCenter );
+    syncLibCoords();
+}
+
+
+void PCB_SHAPE::SetCornerRadius( int aCornerRadius )
+{
+    EDA_SHAPE::SetCornerRadius( aCornerRadius );
     syncLibCoords();
 }
 
@@ -1022,7 +1100,7 @@ void PCB_SHAPE::RebakeFromLib()
 
 void PCB_SHAPE::rebakeFromTransform( const TRANSFORM_TRS& xform )
 {
-    const bool nonUniform = xform.GetScaleX() != xform.GetScaleY();
+    const bool nonUniform = !xform.IsUniformScale();
 
     if( m_libShape == SHAPE_T::CIRCLE )
     {
@@ -1164,15 +1242,14 @@ void PCB_SHAPE::rebakeFromTransform( const TRANSFORM_TRS& xform )
 
             if( isArc )
             {
-                libEllipse = std::make_unique<SHAPE_ELLIPSE>(
-                        m_libEllipseCenter, m_libEllipseMajorRadius, m_libEllipseMinorRadius,
-                        m_libEllipseRotation, m_libEllipseStartAngle, m_libEllipseEndAngle );
+                libEllipse = std::make_unique<SHAPE_ELLIPSE>( m_libEllipseCenter, m_libEllipseMajorRadius,
+                                                              m_libEllipseMinorRadius, m_libEllipseRotation,
+                                                              m_libEllipseStartAngle, m_libEllipseEndAngle );
             }
             else
             {
-                libEllipse = std::make_unique<SHAPE_ELLIPSE>(
-                        m_libEllipseCenter, m_libEllipseMajorRadius, m_libEllipseMinorRadius,
-                        m_libEllipseRotation );
+                libEllipse = std::make_unique<SHAPE_ELLIPSE>( m_libEllipseCenter, m_libEllipseMajorRadius,
+                                                              m_libEllipseMinorRadius, m_libEllipseRotation );
             }
 
             SHAPE_LINE_CHAIN chain = libEllipse->ConvertToPolyline( getMaxError() );
@@ -1198,7 +1275,8 @@ void PCB_SHAPE::rebakeFromTransform( const TRANSFORM_TRS& xform )
         const VECTOR2I c3 = xform.Apply( m_libEnd );
         const VECTOR2I c4 = xform.Apply( VECTOR2I( m_libStart.x, m_libEnd.y ) );
 
-        if( xform.GetRotate().IsCardinal() )
+        if( xform.GetRotate().IsCardinal()
+                && ( m_libCornerRadius == 0 || xform.IsUniformScale() ) )
         {
             m_shape = SHAPE_T::RECTANGLE;
             BOX2I bbox( c1, VECTOR2I( 0, 0 ) );
@@ -1207,6 +1285,8 @@ void PCB_SHAPE::rebakeFromTransform( const TRANSFORM_TRS& xform )
             bbox.Merge( c4 );
             EDA_SHAPE::SetStart( bbox.GetOrigin() );
             EDA_SHAPE::SetEnd( bbox.GetEnd() );
+
+            EDA_SHAPE::SetCornerRadius( xform.ApplyLinearScale( m_libCornerRadius ) );
         }
         else
         {
@@ -1214,14 +1294,14 @@ void PCB_SHAPE::rebakeFromTransform( const TRANSFORM_TRS& xform )
             SHAPE_POLY_SET& poly = GetPolyShape();
             poly.RemoveAllContours();
 
-            if( m_cornerRadius > 0 )
+            if( m_libCornerRadius > 0 )
             {
                 SHAPE_POLY_SET rounded;
                 VECTOR2I       libCenter = ( m_libStart + m_libEnd ) / 2;
                 VECTOR2I       libSize( std::abs( m_libEnd.x - m_libStart.x ), std::abs( m_libEnd.y - m_libStart.y ) );
 
-                TransformRoundChamferedRectToPolygon( rounded, libCenter, libSize, ANGLE_0, m_cornerRadius, 0.0, 0, 0,
-                                                      getMaxError(), ERROR_INSIDE );
+                TransformRoundChamferedRectToPolygon( rounded, libCenter, libSize, ANGLE_0, m_libCornerRadius, 0.0,
+                                                      0, 0, getMaxError(), ERROR_INSIDE );
 
                 poly.NewOutline();
 
@@ -1249,8 +1329,7 @@ void PCB_SHAPE::rebakeFromTransform( const TRANSFORM_TRS& xform )
         SHAPE_POLY_SET& poly = GetPolyShape();
         poly = m_libPoly;
 
-        for( auto it = poly.IterateWithHoles(); it; it++ )
-            poly.SetVertex( it.GetIndex(), xform.Apply( *it ) );
+        transformPolyVertices( poly, xform, false );
 
         // m_libStart/m_libEnd are not seeded for POLY, skip the start/end fall-through below.
         return;
@@ -1315,8 +1394,7 @@ SHAPE_POLY_SET PCB_SHAPE::GetLibraryPolyShape() const
     {
         const TRANSFORM_TRS& xform = fp->GetTransform();
 
-        for( auto it = poly.IterateWithHoles(); it; it++ )
-            poly.SetVertex( it.GetIndex(), xform.InverseApply( *it ) );
+        transformPolyVertices( poly, xform, true );
     }
 
     return poly;
@@ -1456,10 +1534,7 @@ void PCB_SHAPE::syncLibCoords()
         m_libPoly = GetPolyShape();
 
         if( hasXform )
-        {
-            for( auto it = m_libPoly.IterateWithHoles(); it; it++ )
-                m_libPoly.SetVertex( it.GetIndex(), xform.InverseApply( *it ) );
-        }
+            transformPolyVertices( m_libPoly, xform, true );
 
         return;
     }
@@ -1468,6 +1543,13 @@ void PCB_SHAPE::syncLibCoords()
     {
         m_libStart = xform.InverseApply( GetStart() );
         m_libEnd = xform.InverseApply( GetEnd() );
+
+        if( m_shape == SHAPE_T::RECTANGLE )
+        {
+            // We assume xform is uniform scale.  If not, we should have been turned into a
+            // polygon.
+            m_libCornerRadius = xform.InverseApplyLinearScale( GetCornerRadius() );
+        }
 
         if( m_shape == SHAPE_T::ARC )
             m_libArcMid = xform.InverseApply( GetArcMid() );
@@ -1483,6 +1565,9 @@ void PCB_SHAPE::syncLibCoords()
         m_libStart = GetStart();
         m_libEnd = GetEnd();
 
+        if( m_shape == SHAPE_T::RECTANGLE )
+            m_libCornerRadius = GetCornerRadius();
+
         if( m_shape == SHAPE_T::ARC )
             m_libArcMid = GetArcMid();
 
@@ -1497,7 +1582,14 @@ void PCB_SHAPE::syncLibCoords()
 
 void PCB_SHAPE::Mirror( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
 {
-    flip( aCentre, aFlipDirection );
+    Mirror( MIRROR_AXIS( aCentre, aFlipDirection ) );
+}
+
+
+void PCB_SHAPE::Mirror( const SEG& aAxis )
+{
+    EDA_SHAPE::mirror( aAxis );
+    syncLibCoords();
 }
 
 
@@ -1736,7 +1828,12 @@ const BOX2I PCB_SHAPE::GetBoundingBox() const
 
 std::shared_ptr<SHAPE> PCB_SHAPE::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING, DRC_CONSTRAINT_T ) const
 {
-    return std::make_shared<SHAPE_COMPOUND>( MakeEffectiveShapesWithLineEndings( GetEffectiveWidth() ) );
+    int width = GetEffectiveWidth();
+
+    if( IsSolderMaskLayer( aLayer ) && HasSolderMask() && IsCopperLayer( GetLayer() ) )
+        width += 2 * GetSolderMaskExpansion();
+
+    return std::make_shared<SHAPE_COMPOUND>( MakeEffectiveShapesWithLineEndings( width ) );
 }
 
 
@@ -1764,11 +1861,25 @@ void PCB_SHAPE::swapData( BOARD_ITEM* aImage )
     std::swap( m_hasSolderMask, image->m_hasSolderMask );
     std::swap( m_solderMaskMargin, image->m_solderMaskMargin );
     std::swap( m_customProperties, image->m_customProperties );
+
+    std::swap( m_libStart, image->m_libStart );
+    std::swap( m_libEnd, image->m_libEnd );
+    std::swap( m_libCornerRadius, image->m_libCornerRadius );
+    std::swap( m_libArcMid, image->m_libArcMid );
+    std::swap( m_libBezierC1, image->m_libBezierC1 );
+    std::swap( m_libBezierC2, image->m_libBezierC2 );
+    std::swap( m_libPoly, image->m_libPoly );
+    std::swap( m_libEllipseCenter, image->m_libEllipseCenter );
+    std::swap( m_libEllipseMajorRadius, image->m_libEllipseMajorRadius );
+    std::swap( m_libEllipseMinorRadius, image->m_libEllipseMinorRadius );
+    std::swap( m_libEllipseRotation, image->m_libEllipseRotation );
+    std::swap( m_libEllipseStartAngle, image->m_libEllipseStartAngle );
+    std::swap( m_libEllipseEndAngle, image->m_libEllipseEndAngle );
+    std::swap( m_libShape, image->m_libShape );
 }
 
 
-bool PCB_SHAPE::cmp_drawings::operator()( const BOARD_ITEM* aFirst,
-                                          const BOARD_ITEM* aSecond ) const
+bool PCB_SHAPE::cmp_drawings::operator()( const BOARD_ITEM* aFirst, const BOARD_ITEM* aSecond ) const
 {
     if( aFirst->Type() != aSecond->Type() )
         return aFirst->Type() < aSecond->Type();
@@ -1946,7 +2057,8 @@ static struct PCB_SHAPE_DESC
 
         propMgr.ReplaceProperty( TYPE_HASH( BOARD_CONNECTED_ITEM ), _HKI( "Layer" ),
                     new PROPERTY_ENUM<PCB_SHAPE, PCB_LAYER_ID>( _HKI( "Layer" ),
-                                shapeLayerSetter, shapeLayerGetter ) ).SetIsCopyable();
+                                shapeLayerSetter, shapeLayerGetter ) )
+                .SetIsCopyable();
 
         auto isPolygonOrEllipse =
                 []( INSPECTABLE* aItem ) -> bool
@@ -2101,12 +2213,14 @@ static struct PCB_SHAPE_DESC
         propMgr.AddProperty( new PROPERTY<PCB_SHAPE, bool>( _HKI( "Soldermask" ),
                     &PCB_SHAPE::SetHasSolderMask, &PCB_SHAPE::HasSolderMask ),
                     groupTechLayers )
-                .SetAvailableFunc( isExternalCuLayer ).SetIsCopyable();
+                .SetAvailableFunc( isExternalCuLayer )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<PCB_SHAPE, std::optional<int>>( _HKI( "Soldermask Margin Override" ),
                     &PCB_SHAPE::SetLocalSolderMaskMargin, &PCB_SHAPE::GetLocalSolderMaskMargin,
                     PROPERTY_DISPLAY::PT_SIZE ),
                     groupTechLayers )
-                .SetAvailableFunc( isExternalCuLayer ).SetIsCopyable();
+                .SetAvailableFunc( isExternalCuLayer )
+                .SetIsCopyable();
     }
 } _PCB_SHAPE_DESC;

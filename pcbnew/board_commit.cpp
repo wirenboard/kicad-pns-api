@@ -23,6 +23,7 @@
 #include <pgm_base.h>
 #include <settings/settings_manager.h>
 #include <board.h>
+#include <board_tables/generated_table_refresh.h>
 #include <component_classes/component_class_manager.h>
 #include <footprint.h>
 #include <lset.h>
@@ -55,7 +56,8 @@ using namespace std::placeholders;
 // stamps the item's view private data, which a later VIEW::Remove would mis-index.
 static bool isNoGeometryItem( const BOARD_ITEM* aItem )
 {
-    return aItem->Type() == PCB_NETINFO_T || aItem->Type() == PCB_CONSTRAINT_T;
+    return aItem->Type() == PCB_NETINFO_T || aItem->Type() == PCB_CONSTRAINT_T
+           || aItem->Type() == PCB_3D_BODY_T;
 }
 
 
@@ -114,6 +116,10 @@ BOARD* BOARD_COMMIT::GetBoard() const
 
 COMMIT& BOARD_COMMIT::Stage( EDA_ITEM* aItem, CHANGE_TYPE aChangeType, BASE_SCREEN* aScreen, RECURSE_MODE aRecurse )
 {
+    // A modified item is edited in place before the push tells the board, and a save can read it in between
+    if( BOARD* board = GetBoard(); board && ( aChangeType & CHT_TYPE ) == CHT_MODIFY && aItem->IsBOARD_ITEM() )
+        board->bumpDrillModelFor( { static_cast<BOARD_ITEM*>( aItem ) } );
+
     if( aRecurse == RECURSE_MODE::RECURSE )
     {
         if( PCB_GROUP* group = dynamic_cast<PCB_GROUP*>( aItem ) )
@@ -146,6 +152,28 @@ COMMIT& BOARD_COMMIT::Stage( std::vector<EDA_ITEM*>& container, CHANGE_TYPE aCha
 COMMIT& BOARD_COMMIT::Stage( const PICKED_ITEMS_LIST& aItems, UNDO_REDO aModFlag, BASE_SCREEN* aScreen )
 {
     return COMMIT::Stage( aItems, aModFlag, aScreen );
+}
+
+
+bool BOARD_COMMIT::RemoveOrDiscard( BOARD_ITEM* aItem )
+{
+    COMMIT_LINE* entry = findEntry( aItem );
+
+    // An add already applied to the board has to be undone through it, so only pending adds are freed
+    if( !entry || entry->m_type != CHT_ADD )
+    {
+        Remove( aItem );
+        return false;
+    }
+
+    if( EDA_GROUP* parentGroup = aItem->GetParentGroup() )
+        parentGroup->RemoveItem( aItem );
+
+    if( PCB_GROUP* group = dynamic_cast<PCB_GROUP*>( aItem ) )
+        group->RemoveAll();
+
+    Unstage( aItem, nullptr );
+    return true;
 }
 
 
@@ -224,7 +252,7 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
         return;
 
     bool containsDrillMap = false;
-    bool containsDrillChart = false;
+    bool containsGeneratedTable = false;
 
     for( const COMMIT_LINE& entry : m_entries )
     {
@@ -233,19 +261,26 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
 
         BOARD_ITEM* item = static_cast<BOARD_ITEM*>( entry.m_item );
 
-        if( item->Type() == PCB_DRILL_CHART_T || item->Type() == PCB_DRILL_MAP_T )
-        {
-            containsDrillMap |= item->Type() == PCB_DRILL_MAP_T;
-            containsDrillChart |= item->Type() == PCB_DRILL_CHART_T;
-        }
+        containsDrillMap |= item->Type() == PCB_DRILL_MAP_T;
+        containsGeneratedTable |= IsGeneratedTableType( item->Type() );
     }
 
     undoList.SetDescription( aMessage );
+
+    // Copies handed in through Modified() were not made by makeImage(), but the undo stack owns them all
+    for( const COMMIT_LINE& entry : m_entries )
+    {
+        if( entry.m_copy )
+            entry.m_copy->SetFlags( UR_TRANSIENT );
+    }
 
     TEARDROP_MANAGER                   teardropMgr( board, m_toolMgr );
     std::shared_ptr<CONNECTIVITY_DATA> connectivity = board->GetConnectivity();
 
     // Note: frame == nullptr happens in QA tests
+
+    if( !frame )
+        aCommitFlags |= SKIP_UNDO;
 
     std::vector<BOARD_ITEM*> bulkAddedItems;
     std::vector<BOARD_ITEM*> bulkRemovedItems;
@@ -270,19 +305,25 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
 
         if( m_isBoardEditor )
         {
-            if( boardItem->Type() == PCB_VIA_T || boardItem->Type() == PCB_FOOTPRINT_T
-                    || boardItem->IsOnLayer( F_Mask ) || boardItem->IsOnLayer( B_Mask ) )
-            {
-                solderMaskDirty = true;
-            }
-
             BOARD_ITEM* preEditItem = nullptr;
 
             if( entry.m_copy && entry.m_copy->IsBOARD_ITEM() )
                 preEditItem = static_cast<BOARD_ITEM*>( entry.m_copy );
 
-            if( boardItem->IsOnLayer( Edge_Cuts ) || ( preEditItem && preEditItem->IsOnLayer( Edge_Cuts ) ) )
+            if( boardItem->Type() == PCB_VIA_T || boardItem->Type() == PCB_FOOTPRINT_T
+                    || boardItem->IsOnLayer( F_Mask )
+                    || boardItem->IsOnLayer( B_Mask )
+                    || ( preEditItem && preEditItem->IsOnLayer( F_Mask ) )
+                    || ( preEditItem && preEditItem->IsOnLayer( B_Mask ) ) )
+            {
+                solderMaskDirty = true;
+            }
+
+            if( boardItem->IsOnLayer( Edge_Cuts )
+                    || ( preEditItem && preEditItem->IsOnLayer( Edge_Cuts ) ) )
+            {
                 updateBoardBoundingBox = true;
+            }
 
             if( !( aCommitFlags & SKIP_TEARDROPS ) )
             {
@@ -370,10 +411,9 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
             };
 
     // We don't know that anything will be added to the entered group, but it does no harm to
-    // add it to the commit anyway.
-    if( enteredGroup )
+    // add it to the commit anyway (well, as long as we're not trying to remove it).
+    if( enteredGroup && GetStatus( enteredGroup ) == 0 )
         Modify( enteredGroup );
-
 
     for( COMMIT_LINE& entry : m_entries )
     {
@@ -436,6 +476,11 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 if( selTool )
                     selTool->RemoveItemFromSel( boardItem, true /* quiet mode */ );
 
+                // In an undo we're going to re-create from the item, not the image.  That seems wrong, but
+                // it would be a big risky change to make it use the image, so let's just reset the selection
+                // flag for now (so that on undo it comes back selected).
+                boardItem->SetFlags( SELECTED );
+
                 itemsDeselected = true;
             }
 
@@ -467,6 +512,7 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
             case PCB_TABLE_T:
             case PCB_DRILL_CHART_T:
             case PCB_DRILL_MAP_T:
+            case PCB_STACKUP_TABLE_T:
             case PCB_TRACE_T:
             case PCB_ARC_T:
             case PCB_VIA_T:
@@ -492,12 +538,14 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                         {
                             parentFP->Remove( boardItem );
                             connectivity->Remove( boardItem );
+                            itemsChanged.push_back( parentFP );
                         }
                     }
                     else if( FOOTPRINT* parentFP = boardItem->GetParentFootprint() )
                     {
                         parentFP->Remove( boardItem );
                         connectivity->Remove( boardItem );
+                        itemsChanged.push_back( parentFP );
                     }
                     else
                     {
@@ -523,16 +571,21 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
 
             // No-geometry items: never in the view, so skip view->Remove.
             case PCB_CONSTRAINT_T:
+            case PCB_3D_BODY_T:
                 if( !( changeFlags & CHT_DONE ) )
                 {
                     if( m_isFootprintEditor )
                     {
                         if( FOOTPRINT* parentFP = board->GetFirstFootprint() )
+                        {
                             parentFP->Remove( boardItem );
+                            itemsChanged.push_back( parentFP );
+                        }
                     }
                     else if( FOOTPRINT* parentFP = boardItem->GetParentFootprint() )
                     {
                         parentFP->Remove( boardItem );
+                        itemsChanged.push_back( parentFP );
                     }
                     else
                     {
@@ -662,17 +715,20 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 frame->HideSolderMask();
         }
 
-        if( updateBoardBoundingBox && view )
+        if( updateBoardBoundingBox )
         {
             if( PCB_BOARD_OUTLINE* outline = board->BoardOutline() )
             {
                 board->UpdateBoardOutline();
 
-                if( view->HasItem( outline ) )
-                    view->Update( outline );
-                else
-                    view->Add( outline );
-             }
+                if( view )
+                {
+                    if( view->HasItem( outline ) )
+                        view->Update( outline );
+                    else
+                        view->Add( outline );
+                }
+            }
 
             RefreshDrillMapOutlines( *board, view );
         }
@@ -738,7 +794,7 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
 
     // A shrinking table deletes the cells past its new end and the selection holds those
     // cells directly, so it has to be resolved again from what is still on the board
-    if( containsDrillChart && selTool )
+    if( containsGeneratedTable && selTool )
         selTool->RebuildSelection();
 
     if( frame )
@@ -836,6 +892,9 @@ EDA_ITEM* BOARD_COMMIT::MakeImage( EDA_ITEM* aItem )
 void BOARD_COMMIT::Revert()
 {
     RevertToCheckpoint( 0 );
+
+    // A save during the commit may have rebuilt tables from the edits just discarded
+    RefreshGeneratedTables( *GetBoard() );
 }
 
 
@@ -893,11 +952,15 @@ void BOARD_COMMIT::RevertToCheckpoint( int aCheckpoint )
                 if( m_isFootprintEditor )
                 {
                     if( FOOTPRINT* parentFP = board->GetFirstFootprint() )
+                    {
                         parentFP->Remove( boardItem );
+                        itemsChanged.push_back( parentFP );
+                    }
                 }
                 else if( FOOTPRINT* parentFP = boardItem->GetParentFootprint() )
                 {
                     parentFP->Remove( boardItem );
+                    itemsChanged.push_back( parentFP );
                 }
                 else
                 {
@@ -929,12 +992,14 @@ void BOARD_COMMIT::RevertToCheckpoint( int aCheckpoint )
                 {
                     parentFP->Add( boardItem, ADD_MODE::INSERT );
                     connectivity->Add( boardItem );
+                    itemsChanged.push_back( parentFP );
                 }
             }
             else if( FOOTPRINT* parentFP = boardItem->GetParentFootprint() )
             {
                 parentFP->Add( boardItem, ADD_MODE::INSERT );
                 connectivity->Add( boardItem );
+                itemsChanged.push_back( parentFP );
             }
             else
             {
@@ -1015,7 +1080,7 @@ void BOARD_COMMIT::RevertToCheckpoint( int aCheckpoint )
         }
     }
 
-    m_entries.erase( m_entries.begin() + aCheckpoint, m_entries.end() );
+    dropEntriesAfter( aCheckpoint );
 }
 
 

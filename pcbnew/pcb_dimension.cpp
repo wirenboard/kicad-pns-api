@@ -33,6 +33,7 @@
 #include <pcb_text.h>
 #include <view/view.h>
 #include <board_design_settings.h>
+#include <board_design_settings_defaults.h>
 #include <geometry/shape_compound.h>
 #include <geometry/shape_circle.h>
 #include <geometry/shape_segment.h>
@@ -372,7 +373,9 @@ void PCB_DIMENSION_BASE::Serialize( google::protobuf::Any &aContainer ) const
     dimension.set_keep_text_aligned( m_keepTextAligned );
 
     kiapi::common::PackCustomProperties( dimension.mutable_custom_properties(), *this );
-    aContainer.PackFrom( dimension );
+
+    if( !aContainer.PackFrom( dimension ) )
+        wxFAIL_MSG( wxT( "Failed to pack PCB_DIMENSION" ) );
 }
 
 
@@ -387,6 +390,10 @@ bool PCB_DIMENSION_BASE::Deserialize( const google::protobuf::Any &aContainer )
     SetLayer( FromProtoEnum<PCB_LAYER_ID, kiapi::board::types::BoardLayer>( dimension.layer() ) );
     SetUuidDirect( KIID( dimension.id().value() ) );
     SetLocked( dimension.locked() == types::LockedState::LS_LOCKED );
+
+    // Setting text attributes triggers Update(), which must already see the text position mode
+    SetTextPositionMode( FromProtoEnum<DIM_TEXT_POSITION>( dimension.text_position() ) );
+    SetKeepTextAligned( dimension.keep_text_aligned() );
 
     EDA_TEXT::Deserialize( dimension.text(), pcbIUScale );
 
@@ -404,8 +411,6 @@ bool PCB_DIMENSION_BASE::Deserialize( const google::protobuf::Any &aContainer )
     SetLineThickness( dimension.line_thickness().value_nm() );
     SetArrowLength( dimension.arrow_length().value_nm() );
     SetExtensionOffset( dimension.extension_offset().value_nm() );
-    SetTextPositionMode( FromProtoEnum<DIM_TEXT_POSITION>( dimension.text_position() ) );
-    SetKeepTextAligned( dimension.keep_text_aligned() );
 
     kiapi::common::UnpackCustomProperties( dimension.custom_properties(), *this );
 
@@ -507,7 +512,7 @@ wxString PCB_DIMENSION_BASE::GetValueText() const
 
     text.Printf( format, EDA_UNIT_UTILS::UI::ToUserUnit( pcbIUScale, m_units, val ) );
 
-    if( m_suppressZeroes )
+    if( m_suppressZeroes && precision > 0 )
     {
         while( text.EndsWith( '0' ) )
         {
@@ -527,10 +532,7 @@ wxString PCB_DIMENSION_BASE::GetValueText() const
 
 DIM_VALUE_MODE PCB_DIMENSION_BASE::GetValueMode() const
 {
-    // Read only here but shared lookup helpers require a mutable board pointer
-    BOARD* board = const_cast<BOARD*>( GetBoard() );
-
-    return DimensionValueMode( board, this );
+    return DimensionValueMode( GetBoard(), this );
 }
 
 
@@ -547,8 +549,7 @@ wxString PCB_DIMENSION_BASE::GetValueFieldText() const
     {
     case DIM_VALUE_MODE::DRIVING:
     {
-        PCB_CONSTRAINT* lengthConstraint =
-                FindDimensionLengthConstraint( const_cast<BOARD*>( GetBoard() ), this );
+        PCB_CONSTRAINT* lengthConstraint = FindDimensionLengthConstraint( GetBoard(), this );
 
         if( lengthConstraint && lengthConstraint->GetValue() )
         {
@@ -714,7 +715,7 @@ void PCB_DIMENSION_BASE::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDire
 {
     Mirror( aCentre, aFlipDirection );
 
-    SetLayer( GetBoard()->FlipLayer( GetLayer() ) );
+    SetLayer( GetFlippedLayer( GetLayer() ) );
 }
 
 
@@ -770,17 +771,17 @@ void PCB_DIMENSION_BASE::Mirror( const VECTOR2I& axis_pos, FLIP_DIRECTION aFlipD
 }
 
 
-void PCB_DIMENSION_BASE::StyleFromSettings( const BOARD_DESIGN_SETTINGS& settings, bool aCheckSide )
+void PCB_DIMENSION_BASE::StyleFromSettings( const BOARD_DESIGN_SETTINGS& aSettings, bool aCheckSide )
 {
-    PCB_TEXT::StyleFromSettings( settings, aCheckSide );
+    PCB_TEXT::StyleFromSettings( aSettings, aCheckSide );
 
-    SetLineThickness( settings.GetLineThickness( m_layer ) );
-    SetUnitsMode( settings.m_DimensionUnitsMode );
-    SetUnitsFormat( settings.m_DimensionUnitsFormat );
-    SetPrecision( settings.m_DimensionPrecision );
-    SetSuppressZeroes( settings.m_DimensionSuppressZeroes );
-    SetTextPositionMode( settings.m_DimensionTextPosition );
-    SetKeepTextAligned( settings.m_DimensionKeepTextAligned );
+    SetLineThickness( aSettings.GetLineThickness( m_layer ) );
+    SetUnitsMode( aSettings.m_DimensionUnitsMode );
+    SetUnitsFormat( aSettings.m_DimensionUnitsFormat );
+    SetPrecision( aSettings.m_DimensionPrecision );
+    SetSuppressZeroes( aSettings.m_DimensionSuppressZeroes );
+    SetTextPositionMode( aSettings.m_DimensionTextPosition );
+    SetKeepTextAligned( aSettings.m_DimensionKeepTextAligned );
 
     Update();    // refresh text & geometry
 
@@ -1081,14 +1082,17 @@ void PCB_DIM_ALIGNED::Serialize( google::protobuf::Any &aContainer ) const
     kiapi::board::types::Dimension dimension;
 
     PCB_DIMENSION_BASE::Serialize( aContainer );
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        wxFAIL_MSG( wxT( "Failed to unpack dimension from internal serialization" ) );
 
     PackVector2( *dimension.mutable_aligned()->mutable_start(), GetStart() );
     PackVector2( *dimension.mutable_aligned()->mutable_end(), GetEnd() );
     dimension.mutable_aligned()->mutable_height()->set_value_nm( m_height );
     dimension.mutable_aligned()->mutable_extension_height()->set_value_nm( m_extensionHeight );
 
-    aContainer.PackFrom( dimension );
+    if( !aContainer.PackFrom( dimension ) )
+        wxFAIL_MSG( wxT( "Failed to pack PCB_DIM_ALIGNED" ) );
 }
 
 
@@ -1100,15 +1104,17 @@ bool PCB_DIM_ALIGNED::Deserialize( const google::protobuf::Any &aContainer )
         return false;
 
     kiapi::board::types::Dimension dimension;
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        wxFAIL_MSG( wxT( "Failed to unpack dimension from internal serialization" ) );
 
     if( !dimension.has_aligned() )
         return false;
 
     SetStart( UnpackVector2( dimension.aligned().start() ) );
     SetEnd( UnpackVector2( dimension.aligned().end() ) );
-    SetHeight( dimension.aligned().height().value_nm());
-    SetExtensionHeight( dimension.aligned().extension_height().value_nm() );
+    SetHeight( (int) dimension.aligned().height().value_nm());
+    SetExtensionHeight( (int) dimension.aligned().extension_height().value_nm() );
 
     Update();
 
@@ -1316,7 +1322,9 @@ void PCB_DIM_ORTHOGONAL::Serialize( google::protobuf::Any &aContainer ) const
     kiapi::board::types::Dimension dimension;
 
     PCB_DIMENSION_BASE::Serialize( aContainer );
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        wxFAIL_MSG( wxT( "Failed to unpack dimension from internal serialization" ) );
 
     PackVector2( *dimension.mutable_orthogonal()->mutable_start(), GetStart() );
     PackVector2( *dimension.mutable_orthogonal()->mutable_end(), GetEnd() );
@@ -1326,7 +1334,8 @@ void PCB_DIM_ORTHOGONAL::Serialize( google::protobuf::Any &aContainer ) const
     dimension.mutable_orthogonal()->set_alignment( m_orientation == DIR::VERTICAL
                                                            ? types::AxisAlignment::AA_Y_AXIS
                                                            : types::AxisAlignment::AA_X_AXIS );
-    aContainer.PackFrom( dimension );
+    if( !aContainer.PackFrom( dimension ) )
+        wxFAIL_MSG( wxT( "Failed to pack PCB_DIM_ORTHOGONAL" ) );
 }
 
 
@@ -1338,18 +1347,19 @@ bool PCB_DIM_ORTHOGONAL::Deserialize( const google::protobuf::Any &aContainer )
         return false;
 
     kiapi::board::types::Dimension dimension;
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        return false;
 
     if( !dimension.has_orthogonal() )
         return false;
 
     SetStart( UnpackVector2( dimension.orthogonal().start() ) );
     SetEnd( UnpackVector2( dimension.orthogonal().end() ) );
-    SetHeight( dimension.orthogonal().height().value_nm());
-    SetExtensionHeight( dimension.orthogonal().extension_height().value_nm() );
-    SetOrientation( dimension.orthogonal().alignment() == types::AxisAlignment::AA_Y_AXIS
-                            ? DIR::VERTICAL
-                            : DIR::HORIZONTAL );
+    SetHeight( (int) dimension.orthogonal().height().value_nm());
+    SetExtensionHeight( (int) dimension.orthogonal().extension_height().value_nm() );
+    SetOrientation( dimension.orthogonal().alignment() == types::AxisAlignment::AA_Y_AXIS ? DIR::VERTICAL
+                                                                                          : DIR::HORIZONTAL );
 
     Update();
 
@@ -1589,7 +1599,9 @@ void PCB_DIM_LEADER::Serialize( google::protobuf::Any &aContainer ) const
     kiapi::board::types::Dimension dimension;
 
     PCB_DIMENSION_BASE::Serialize( aContainer );
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        wxFAIL_MSG( wxT( "Failed to unpack dimension from internal serialization" ) );
 
     PackVector2( *dimension.mutable_leader()->mutable_start(), GetStart() );
     PackVector2( *dimension.mutable_leader()->mutable_end(), GetEnd() );
@@ -1597,7 +1609,8 @@ void PCB_DIM_LEADER::Serialize( google::protobuf::Any &aContainer ) const
             ToProtoEnum<DIM_TEXT_BORDER, kiapi::board::types::DimensionTextBorderStyle>(
                     m_textBorder ) );
 
-    aContainer.PackFrom( dimension );
+    if( !aContainer.PackFrom( dimension ) )
+        wxFAIL_MSG( wxT( "Failed to pack PCB_DIM_LEADER" ) );
 }
 
 
@@ -1609,7 +1622,9 @@ bool PCB_DIM_LEADER::Deserialize( const google::protobuf::Any &aContainer )
         return false;
 
     kiapi::board::types::Dimension dimension;
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        return false;
 
     if( !dimension.has_leader() )
         return false;
@@ -1786,13 +1801,16 @@ void PCB_DIM_RADIAL::Serialize( google::protobuf::Any &aContainer ) const
     kiapi::board::types::Dimension dimension;
 
     PCB_DIMENSION_BASE::Serialize( aContainer );
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        wxFAIL_MSG( wxT( "Failed to unpack dimension from internal serialization" ) );
 
     PackVector2( *dimension.mutable_radial()->mutable_center(), GetStart() );
     PackVector2( *dimension.mutable_radial()->mutable_radius_point(), GetEnd() );
     dimension.mutable_radial()->mutable_leader_length()->set_value_nm( m_leaderLength );
 
-    aContainer.PackFrom( dimension );
+    if( !aContainer.PackFrom( dimension ) )
+        wxFAIL_MSG( wxT( "Failed to pack PCB_DIM_RADIAL" ) );
 }
 
 
@@ -1804,14 +1822,16 @@ bool PCB_DIM_RADIAL::Deserialize( const google::protobuf::Any &aContainer )
         return false;
 
     kiapi::board::types::Dimension dimension;
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        return false;
 
     if( !dimension.has_radial() )
         return false;
 
     SetStart( UnpackVector2( dimension.radial().center() ) );
     SetEnd( UnpackVector2( dimension.radial().radius_point() ) );
-    SetLeaderLength( dimension.radial().leader_length().value_nm() );
+    SetLeaderLength( (int) dimension.radial().leader_length().value_nm() );
 
     Update();
 
@@ -1948,12 +1968,15 @@ void PCB_DIM_CENTER::Serialize( google::protobuf::Any &aContainer ) const
     kiapi::board::types::Dimension dimension;
 
     PCB_DIMENSION_BASE::Serialize( aContainer );
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        wxFAIL_MSG( wxT( "Failed to unpack dimension from internal serialization" ) );
 
     PackVector2( *dimension.mutable_center()->mutable_center(), GetStart() );
     PackVector2( *dimension.mutable_center()->mutable_end(), GetEnd() );
 
-    aContainer.PackFrom( dimension );
+    if( !aContainer.PackFrom( dimension ) )
+        wxFAIL_MSG( wxT( "Failed to pack PCB_DIM_CENTER" ) );
 }
 
 
@@ -1965,7 +1988,9 @@ bool PCB_DIM_CENTER::Deserialize( const google::protobuf::Any &aContainer )
         return false;
 
     kiapi::board::types::Dimension dimension;
-    aContainer.UnpackTo( &dimension );
+
+    if( !aContainer.UnpackTo( &dimension ) )
+        return false;
 
     if( !dimension.has_center() )
         return false;
@@ -2110,6 +2135,11 @@ static struct DIMENSION_DESC
                     .Map( DIM_VALUE_MODE::DRIVING,   _HKI( "Driving" ) )
                     .Map( DIM_VALUE_MODE::ARBITRARY, _HKI( "Arbitrary" ) );
 
+        ENUM_MAP<DIM_TEXT_POSITION>::Instance()
+                    .Map( DIM_TEXT_POSITION::OUTSIDE, _HKI( "Outside" ) )
+                    .Map( DIM_TEXT_POSITION::INLINE,  _HKI( "Inline" ) )
+                    .Map( DIM_TEXT_POSITION::MANUAL,  _HKI( "Manual" ) );
+
         PROPERTY_MANAGER& propMgr = PROPERTY_MANAGER::Instance();
         REGISTER_TYPE( PCB_DIMENSION_BASE );
         propMgr.AddTypeCast( new TYPE_CAST<PCB_DIMENSION_BASE, PCB_TEXT> );
@@ -2133,6 +2163,12 @@ static struct DIMENSION_DESC
                 []( INSPECTABLE* aItem ) -> bool
                 {
                     return dynamic_cast<PCB_DIM_LEADER*>( aItem ) == nullptr;
+                };
+
+        auto isNotCenter =
+                []( INSPECTABLE* aItem ) -> bool
+                {
+                    return dynamic_cast<PCB_DIM_CENTER*>( aItem ) == nullptr;
                 };
 
         auto isMultiArrowDirection =
@@ -2249,26 +2285,57 @@ static struct DIMENSION_DESC
         propMgr.AddProperty( new PROPERTY_ENUM<PCB_DIMENSION_BASE, DIM_UNITS_MODE>( _HKI( "Units" ),
                     &PCB_DIMENSION_BASE::ChangeUnitsMode, &PCB_DIMENSION_BASE::GetUnitsMode ),
                     groupDimension )
-                .SetAvailableFunc( isNotLeader ).SetIsCopyable();
+                .SetAvailableFunc( isNotLeader )
+                .SetIsCopyable();
         propMgr.AddProperty( new PROPERTY_ENUM<PCB_DIMENSION_BASE, DIM_UNITS_FORMAT>( _HKI( "Units Format" ),
                     &PCB_DIMENSION_BASE::ChangeUnitsFormat, &PCB_DIMENSION_BASE::GetUnitsFormat ),
                     groupDimension )
-                .SetAvailableFunc( isNotLeader ).SetIsCopyable();
+                .SetAvailableFunc( isNotLeader )
+                .SetIsCopyable();
         propMgr.AddProperty( new PROPERTY_ENUM<PCB_DIMENSION_BASE, DIM_PRECISION>( _HKI( "Precision" ),
                     &PCB_DIMENSION_BASE::ChangePrecision, &PCB_DIMENSION_BASE::GetPrecision ),
                     groupDimension )
-                .SetAvailableFunc( isNotLeader ).SetIsCopyable();
+                .SetAvailableFunc( isNotLeader )
+                .SetIsCopyable();
         propMgr.AddProperty( new PROPERTY<PCB_DIMENSION_BASE, bool>( _HKI( "Suppress Trailing Zeroes" ),
                     &PCB_DIMENSION_BASE::ChangeSuppressZeroes, &PCB_DIMENSION_BASE::GetSuppressZeroes ),
                     groupDimension )
-                .SetAvailableFunc( isNotLeader ).SetIsCopyable();
+                .SetAvailableFunc( isNotLeader )
+                .SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY_ENUM<PCB_DIMENSION_BASE, DIM_ARROW_DIRECTION>( _HKI( "Arrow Direction"),
                     &PCB_DIMENSION_BASE::ChangeArrowDirection, &PCB_DIMENSION_BASE::GetArrowDirection ),
                     groupDimension )
-                .SetAvailableFunc( isMultiArrowDirection ).SetIsCopyable();
+                .SetAvailableFunc( isMultiArrowDirection )
+                .SetIsCopyable();
+
+        propMgr.AddProperty( new PROPERTY<PCB_DIMENSION_BASE, int>( _HKI( "Line Thickness" ),
+                    &PCB_DIMENSION_BASE::ChangeLineThickness, &PCB_DIMENSION_BASE::GetLineThickness,
+                    PROPERTY_DISPLAY::PT_SIZE ),
+                    groupDimension )
+                .SetIsCopyable();
+
+        propMgr.AddProperty( new PROPERTY<PCB_DIMENSION_BASE, int>( _HKI( "Arrow Length" ),
+                    &PCB_DIMENSION_BASE::ChangeArrowLength, &PCB_DIMENSION_BASE::GetArrowLength,
+                    PROPERTY_DISPLAY::PT_SIZE ),
+                    groupDimension )
+                .SetAvailableFunc( isNotCenter )
+                .SetIsCopyable();
+
+        propMgr.AddProperty( new PROPERTY<PCB_DIMENSION_BASE, int>( _HKI( "Extension Line Offset" ),
+                    &PCB_DIMENSION_BASE::ChangeExtensionOffset, &PCB_DIMENSION_BASE::GetExtensionOffset,
+                    PROPERTY_DISPLAY::PT_SIZE ),
+                    groupDimension )
+                .SetAvailableFunc( isNotCenter )
+                .SetIsCopyable();
 
         const wxString groupText = _HKI( "Text Properties" );
+
+        propMgr.AddProperty( new PROPERTY_ENUM<PCB_DIMENSION_BASE, DIM_TEXT_POSITION>( _HKI( "Text Position" ),
+                    &PCB_DIMENSION_BASE::ChangeTextPositionMode, &PCB_DIMENSION_BASE::GetTextPositionMode ),
+                    groupText )
+                .SetAvailableFunc( isNotLeader )
+                .SetIsCopyable();
 
         const auto isTextOrientationWriteable =
                 []( INSPECTABLE* aItem ) -> bool
@@ -2295,6 +2362,7 @@ ENUM_TO_WXANY( DIM_UNITS_FORMAT )
 ENUM_TO_WXANY( DIM_UNITS_MODE )
 ENUM_TO_WXANY( DIM_ARROW_DIRECTION )
 ENUM_TO_WXANY( DIM_VALUE_MODE )
+ENUM_TO_WXANY( DIM_TEXT_POSITION )
 
 
 static struct ALIGNED_DIMENSION_DESC

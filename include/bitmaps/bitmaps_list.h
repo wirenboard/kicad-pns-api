@@ -21,6 +21,12 @@
 #ifndef BITMAPS_PNG_BITMAPS_LIST__H
 #define BITMAPS_PNG_BITMAPS_LIST__H
 
+// GCC reports scoped enumerators such as git_push as shadowing libgit2's typedefs of the same name
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wshadow"
+#endif
+
 /**
  * A list of all bitmap identifiers.  These map to multiple actual images, i.e. light and dark icon
  * themes, and eventually multi-resolution icons.
@@ -37,6 +43,11 @@ enum class BITMAPS : unsigned int
     about,
     add_aligned_dimension,
     add_arc,
+    add_arc_center,
+    add_arc_start_end_mid,
+    add_arc_start_end_center,
+    add_arc_tangent,
+    add_arc_start_dir_end,
     add_barcode,
     add_bezier,
     add_board,
@@ -181,7 +192,6 @@ enum class BITMAPS : unsigned int
     e_192,
     edge_to_copper_clearance,
     edit,
-    edit_cmp_symb_links,
     edit_comp_footprint,
     edit_comp_ref,
     edit_comp_value,
@@ -243,6 +253,16 @@ enum class BITMAPS : unsigned int
     git_delete,
     git_good_check,
     git_out_of_date,
+    git_branches,
+    git_history,
+    git_remotes,
+    git_repository,
+    git_stashes,
+    git_tags,
+    git_fetch,
+    git_pull,
+    git_push,
+    git_changes,
     grid,
     grid_override,
     grid_select,
@@ -263,10 +283,6 @@ enum class BITMAPS : unsigned int
     hotkeys,
     hv45mode,
     icon_3d,
-    icon_bitmap2component,
-    icon_bitmap2component_16,
-    icon_bitmap2component_24,
-    icon_bitmap2component_32,
     icon_cvpcb,
     icon_cvpcb_24,
     icon_eeschema,
@@ -345,6 +361,7 @@ enum class BITMAPS : unsigned int
     library_table,
     lines_any,
     lines90,
+    link,
     list_nets,
     load_drill,
     load_gerber,
@@ -413,9 +430,13 @@ enum class BITMAPS : unsigned int
     pack_footprints,
     pad,
     pad_enumerate,
+    pad_npth,
     pad_number,
+    pad_paste_aperture,
     pad_sketch,
+    pad_smd,
     pad_table,
+    pad_tht,
     pads_mask_layers,
     pads_npth,
     pads_npth_bottom,
@@ -493,6 +514,7 @@ enum class BITMAPS : unsigned int
     puzzle_piece,
     py_script,
     question_mark,
+    r_divider,
     ray_tracing,
     reannotate_down_left,
     reannotate_down_right,
@@ -696,7 +718,7 @@ enum class BITMAPS : unsigned int
 
     constraint_basic_clearance,
     constraint_board_outline_clearance,
-    constraint_microvia_aspect_ratio,
+    constraint_hole_aspect_ratio,
     constraint_microvia_stack_depth,
     constraint_minimum_clearance,
     constraint_creepage_distance,
@@ -752,8 +774,14 @@ enum class BITMAPS : unsigned int
     constraint_angular_dimension,
     constraint_tangent,
     constraint_arc_angle,
-    constraint_auto
+    constraint_auto,
+
+    spread_tracks
 };
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 
 inline bool operator!( const BITMAPS& aBitmap ) { return aBitmap == BITMAPS::INVALID_BITMAP; }

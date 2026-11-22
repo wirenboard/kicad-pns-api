@@ -35,7 +35,6 @@
 #include <tool/tool_manager.h>
 #include <tools/pcb_actions.h>
 #include <tools/board_editor_control.h>
-#include <tools/pad_tool.h>
 #include <footprint.h>
 #include <zone.h>
 #include <pcb_group.h>
@@ -293,7 +292,9 @@ void FOOTPRINT_EDIT_FRAME::ExportFootprint( FOOTPRINT* aFootprint )
             aFootprint->SetOrientation( 0 );
         */
 
-        pcb_io.Format( aFootprint );
+        std::unique_ptr<FOOTPRINT> copy( static_cast<FOOTPRINT*>( aFootprint->Clone() ) );
+
+        pcb_io.FormatFootprintLibFile( copy.get() );
 
         FILE* fp = wxFopen( fn.GetFullPath(), wxT( "wt" ) );
 
@@ -669,8 +670,7 @@ bool FOOTPRINT_EDIT_FRAME::DeleteFootprintFromLibrary( const LIB_ID& aFPID, bool
 }
 
 
-void PCB_EDIT_FRAME::ExportFootprintsToLibrary( bool aStoreInNewLib, const wxString& aLibName,
-                                                wxString* aLibPath )
+void PCB_EDIT_FRAME::ExportFootprintsToLibrary( bool aStoreInNewLib )
 {
     if( GetBoard()->GetFirstFootprint() == nullptr )
     {
@@ -702,23 +702,7 @@ void PCB_EDIT_FRAME::ExportFootprintsToLibrary( bool aStoreInNewLib, const wxStr
             return;
     }
 
-    if( !aLibName.IsEmpty() )
-        nickname = aLibName; // non-interactive callers
-
     prj.SetRString( PROJECT::PCB_LIB_NICKNAME, nickname );
-
-    if( aLibPath )
-    {
-        if( std::optional<wxString> optUri =
-                    Pgm().GetLibraryManager().GetFullURI( LIBRARY_TABLE_TYPE::FOOTPRINT, nickname ) )
-        {
-            *aLibPath = *optUri;
-        }
-        else
-        {
-            *aLibPath = nickname;
-        }
-    }
 
     for( FOOTPRINT* footprint : GetBoard()->Footprints() )
     {
@@ -766,10 +750,7 @@ bool FOOTPRINT_EDIT_FRAME::SaveFootprint( FOOTPRINT* aFootprint )
     if( !aFootprint )      // Happen if no footprint loaded
         return false;
 
-    PAD_TOOL* padTool = m_toolManager->GetTool<PAD_TOOL>();
-
-    if( padTool->InPadEditMode() )
-        m_toolManager->RunAction( PCB_ACTIONS::recombinePad );
+    recombineEditedPad();
 
     wxString libraryName = aFootprint->GetFPID().GetLibNickname();
     wxString footprintName = aFootprint->GetFPID().GetLibItemName();
@@ -1032,7 +1013,9 @@ bool FOOTPRINT_EDIT_FRAME::SaveFootprintToBoard( bool aAddNew )
     {
         // In the main board the new footprint replaces the old one (pos, orient, ref, value, connections
         // and properties are kept) and the sourceFootprint (old footprint) is deleted
-        mainpcb->ExchangeFootprint( sourceFootprint, newFootprint, commit, true /* match pad positions */ );
+        mainpcb->ExchangeFootprint( sourceFootprint, newFootprint, commit,
+                                    pcbframe->GetPcbNewSettings()->m_FlipDirection,
+                                    true /* match pad positions */ );
 
         commit.Push( _( "Update Footprint" ) );
     }
@@ -1270,8 +1253,12 @@ bool FOOTPRINT_EDIT_FRAME::RevertFootprint( bool aSkipConfirmation )
 {
     if( GetScreen()->IsContentModified() && m_originalFootprintCopy )
     {
-        wxString msg = wxString::Format( _( "Revert '%s' to last version saved?" ),
-                                         GetLoadedFPID().GetLibItemName().wx_str() );
+        wxString msg;
+
+        if( IsCurrentFPFromBoard() )
+            msg.Printf( _( "Revert '%s' to version from board?" ), m_originalFootprintCopy->GetReference() );
+        else
+            msg.Printf( _( "Revert '%s' to last version saved?" ), GetLoadedFPID().GetLibItemName().wx_str() );
 
         if( aSkipConfirmation || ConfirmRevertDialog( this, msg ) )
         {
@@ -1454,13 +1441,13 @@ void PCB_BASE_FRAME::GetLibraryItemsForListDialog( wxArrayString& aHeaders,
     std::sort( aItemsToDisplay.begin(), aItemsToDisplay.end(),
                []( const wxArrayString& a, const wxArrayString& b )
                {
-                   return StrNumCmp( a[0], b[0], true ) < 0;
+                   return StrNumCmp( a[0], b[0], CMP_T::IGNORE_CASE ) < 0;
                } );
 
     std::sort( unpinned.begin(), unpinned.end(),
                []( const wxArrayString& a, const wxArrayString& b )
                {
-                   return StrNumCmp( a[0], b[0], true ) < 0;
+                   return StrNumCmp( a[0], b[0], CMP_T::IGNORE_CASE ) < 0;
                } );
 
     std::ranges::copy( unpinned, std::back_inserter( aItemsToDisplay ) );

@@ -104,8 +104,7 @@ bool FOOTPRINT_EDIT_FRAME::LoadFootprintFromBoard( FOOTPRINT* aFootprint )
     // of replacing the working document; re-editing the same footprint focuses the existing tab.
     wxCHECK( m_tabsPanel, false );
 
-    const wxString instanceKey =
-            FOOTPRINT_EDITOR_TAB_CONTEXT::MakeInstanceTabKey( aFootprint->m_Uuid );
+    const wxString instanceKey = FOOTPRINT_EDITOR_TAB_CONTEXT::MakeInstanceTabKey( aFootprint->m_Uuid );
     const bool     createdNewTab = m_tabsPanel->FindTab( instanceKey ) < 0;
 
     FOOTPRINT_EDITOR_TAB_CONTEXT* ctx = findOrCreateFootprintInstanceTab( aFootprint );
@@ -130,6 +129,15 @@ bool FOOTPRINT_EDIT_FRAME::LoadFootprintFromBoard( FOOTPRINT* aFootprint )
     // A re-focused instance tab keeps its live edit history; only a freshly opened tab starts clean.
     if( createdNewTab )
     {
+        // For revert:
+        m_originalFootprintCopy.reset( static_cast<FOOTPRINT*>( aFootprint->Clone() ) );
+        m_originalFootprintCopy->SetParent( nullptr );
+
+        // Mirror the load baseline into the tab context so it survives a tab switch (the frame
+        // members are only a borrowed view of the active context's baseline).
+        ctx->SetOriginalFootprintCopy( std::unique_ptr<FOOTPRINT>( static_cast<FOOTPRINT*>( aFootprint->Clone() ) ) );
+
+        // For undo/redo:
         ClearUndoRedoList();
         GetScreen()->SetContentModified( false );
     }
@@ -159,8 +167,6 @@ FOOTPRINT* PCB_BASE_FRAME::SelectFootprintFromLibrary( LIB_ID aPreselect )
     LIB_ID          fpid;
     FOOTPRINT*      footprint = nullptr;
 
-    static wxString lastComponentName;
-
     if( KIWAY_PLAYER* frame = Kiway().Player( FRAME_FOOTPRINT_CHOOSER, true, this ) )
     {
         if( frame->ShowModal( &footprintName, this ) )
@@ -175,10 +181,7 @@ FOOTPRINT* PCB_BASE_FRAME::SelectFootprintFromLibrary( LIB_ID aPreselect )
     footprint = LoadFootprint( fpid );
 
     if( footprint )
-    {
-        lastComponentName = footprintName;
         AddFootprintToHistory( footprintName );
-    }
 
     return footprint;
 }
@@ -196,8 +199,6 @@ FOOTPRINT* PCB_BASE_FRAME::LoadFootprint( const LIB_ID& aFootprintId )
 
 FOOTPRINT* FOOTPRINT_EDIT_FRAME::SelectFootprintFromBoard( BOARD* aPcb )
 {
-    static wxString oldName;       // Save name of last footprint selected.
-
     wxString        fpname;
     wxString        msg;
     wxArrayString   listnames;
@@ -228,8 +229,6 @@ FOOTPRINT* FOOTPRINT_EDIT_FRAME::SelectFootprintFromBoard( BOARD* aPcb )
         fpname = dlg.GetTextSelection();
     else
         return nullptr;
-
-    oldName = fpname;
 
     for( FOOTPRINT* fp : aPcb->Footprints() )
     {

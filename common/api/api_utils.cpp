@@ -78,6 +78,7 @@ KICOMMON_API std::optional<KICAD_T> TypeNameFromAny( const google::protobuf::Any
         { "type.googleapis.com/kiapi.board.types.Table", PCB_TABLE_T },
         { "type.googleapis.com/kiapi.board.types.DrillChart", PCB_DRILL_CHART_T },
         { "type.googleapis.com/kiapi.board.types.DrillMap", PCB_DRILL_MAP_T },
+        { "type.googleapis.com/kiapi.board.types.StackupTable", PCB_STACKUP_TABLE_T },
         { "type.googleapis.com/kiapi.board.types.TableCell", PCB_TABLECELL_T },
         { "type.googleapis.com/kiapi.board.types.BoardGraphicShape", PCB_SHAPE_T },
         { "type.googleapis.com/kiapi.board.types.Barcode", PCB_BARCODE_T },
@@ -92,6 +93,7 @@ KICOMMON_API std::optional<KICAD_T> TypeNameFromAny( const google::protobuf::Any
         { "type.googleapis.com/kiapi.board.types.ViaStitchArea", PCB_GENERATOR_T },
         { "type.googleapis.com/kiapi.board.types.ViaStack", PCB_GENERATOR_T },
         { "type.googleapis.com/kiapi.board.types.Constraint", PCB_CONSTRAINT_T },
+        { "type.googleapis.com/kiapi.board.types.Body3D", PCB_3D_BODY_T },
         { "type.googleapis.com/kiapi.board.types.Field", PCB_FIELD_T },
         { "type.googleapis.com/kiapi.board.types.FootprintInstance", PCB_FOOTPRINT_T },
         { "type.googleapis.com/kiapi.schematic.types.Junction", SCH_JUNCTION_T },
@@ -113,6 +115,7 @@ KICOMMON_API std::optional<KICAD_T> TypeNameFromAny( const google::protobuf::Any
         { "type.googleapis.com/kiapi.schematic.types.SheetSymbol", SCH_SHEET_T },
         { "type.googleapis.com/kiapi.schematic.types.SchematicSymbolInstance", SCH_SYMBOL_T },
         { "type.googleapis.com/kiapi.schematic.types.SchematicPin", SCH_PIN_T },
+        { "type.googleapis.com/kiapi.schematic.types.SchematicSymbol", LIB_SYMBOL_T },
         { "type.googleapis.com/kiapi.schematic.types.SchematicRuleArea", SCH_RULE_AREA_T },
     };
 
@@ -424,7 +427,10 @@ KICOMMON_API bool PackKiwayApiMessage( const google::protobuf::Message& aMessage
     request.mutable_header()->set_client_name( KiwayClientName );
 
     if( !request.mutable_message()->PackFrom( aMessage ) )
+    {
+        wxFAIL_MSG( "Failed to pack Kiway message" );
         return false;
+    }
 
     aBytes = request.SerializeAsString();
     return true;

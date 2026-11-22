@@ -24,6 +24,7 @@
 
 #include <schematic.h>
 
+#include <functional>
 #include <map>
 #include <set>
 #include <optional>
@@ -92,14 +93,19 @@ struct PIN_INFO
 /**
  * An abstract class used for the netlist exporters that Eeschema supports.
  */
+using EXPORT_EXCLUSION = std::function<bool( const SCH_SYMBOL*, const SCH_SHEET_PATH& )>;
+
+
 class NETLIST_EXPORTER_BASE
 {
 public:
     NETLIST_EXPORTER_BASE( SCHEMATIC* aSchematic, KIWAY* aKiway ) :
-        m_schematic( aSchematic ),
-        m_kiway( aKiway )
+            m_schematic( aSchematic ),
+            m_kiway( aKiway )
     {
         wxASSERT( aSchematic );
+
+        m_exportVariant = aSchematic->GetCurrentVariant();
     }
 
     virtual ~NETLIST_EXPORTER_BASE() = default;
@@ -155,8 +161,10 @@ protected:
         NETLIST_EXPORTER_BASE& m_exporter;
     };
 
-    virtual bool writeNetlist( const wxString& aOutFileName, unsigned aNetlistOptions,
-                              REPORTER& aReporter ) { return false; }
+    virtual bool writeNetlist( const wxString& aOutFileName, unsigned aNetlistOptions, REPORTER& aReporter )
+    {
+        return false;
+    }
 
     struct EXPORT_NET
     {
@@ -188,9 +196,22 @@ protected:
      *
      * @param aItem is a symbol to check
      * @param aSheetPath is the sheet to check the symbol for
+     * @param aExcluded tells which symbol instances the export leaves out, so they never claim a package
      * @return the symbol if it should be processed, or nullptr
      */
-    SCH_SYMBOL* findNextSymbol( EDA_ITEM* aItem, const SCH_SHEET_PATH& aSheetPath );
+    SCH_SYMBOL* findNextSymbol( EDA_ITEM* aItem, const SCH_SHEET_PATH& aSheetPath,
+                                const EXPORT_EXCLUSION& aExcluded = nullptr );
+
+    /**
+     * @return true if an exported unit on the sheet whose suffix names this package owns its footprint.
+     */
+    bool packageOwnedElsewhere( const SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& aSheetPath,
+                                const EXPORT_EXCLUSION& aExcluded ) const;
+
+    /**
+     * @return the exclusion of footprint exporters, which leave out symbols excluded from the board.
+     */
+    EXPORT_EXCLUSION boardExclusion() const;
 
     /**
      * Erase duplicate pins.
@@ -222,17 +243,18 @@ protected:
     void findAllUnitsOfSymbol( SCH_SYMBOL* aSchSymbol, const SCH_SHEET_PATH& aSheetPath,
                                std::vector<PIN_INFO>& aPins );
 
-    /// Used for "multiple symbols per package" symbols to avoid processing a lib symbol more than
-    /// once
-    UNIQUE_STRINGS        m_referencesAlreadyFound;
+protected:
+    /// Used for "multiple symbols per package" symbols to avoid processing a lib symbol more than once
+    UNIQUE_STRINGS                              m_referencesAlreadyFound;
 
     /// unique library symbols used. LIB_SYMBOL items are sorted by names
     std::set<LIB_SYMBOL*, LIB_SYMBOL_LESS_THAN> m_libParts;
 
-    /// The schematic we're generating a netlist for
-    SCHEMATIC*      m_schematic;
 
-    KIWAY* m_kiway = nullptr;
+    SCHEMATIC*      m_schematic;        /// The schematic we're generating a netlist for
+    wxString        m_exportVariant;    /// The variant of the schematic to export
+
+    KIWAY*          m_kiway = nullptr;
 
     mutable std::map<wxString, std::set<wxString>> m_footprintPadCache;
 };

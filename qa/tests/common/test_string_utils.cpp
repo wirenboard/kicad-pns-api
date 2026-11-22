@@ -23,6 +23,9 @@
 
 #include <string_utils.h>
 
+#include <wx/filefn.h>
+#include <wx/utils.h>
+
 
 BOOST_AUTO_TEST_SUITE( StringUtilsTests )
 
@@ -127,11 +130,41 @@ BOOST_AUTO_TEST_CASE( ReplaceIllegalFileNameChars_WxString_ReplacementChar )
     BOOST_TEST( name == "a_bad_name_file" );
 }
 
+#ifdef __WINDOWS__
+BOOST_AUTO_TEST_CASE( ConvertPathToFileUri_WindowsAbsolutePath )
+{
+    wxString systemRoot;
+    BOOST_REQUIRE( wxGetEnv( wxS( "SystemRoot" ), &systemRoot ) );
+
+    wxString expected = wxS( "file:///" ) + systemRoot;
+    expected.Replace( wxS( "\\" ), wxS( "/" ) );
+
+    BOOST_TEST( ConvertPathToFileUri( systemRoot, nullptr ) == expected );
+}
+
+BOOST_AUTO_TEST_CASE( ConvertPathToFileUri_WindowsRootedPath )
+{
+    wxString systemRoot;
+    BOOST_REQUIRE( wxGetEnv( wxS( "SystemRoot" ), &systemRoot ) );
+
+    // A rooted path takes the drive of the working directory
+    BOOST_REQUIRE( wxGetCwd().Left( 2 ).IsSameAs( systemRoot.Left( 2 ), false ) );
+
+    wxString rooted = systemRoot.Mid( 2 );
+    rooted.Replace( wxS( "\\" ), wxS( "/" ) );
+
+    wxString expected = wxS( "file:///" ) + systemRoot;
+    expected.Replace( wxS( "\\" ), wxS( "/" ) );
+
+    BOOST_TEST( ConvertPathToFileUri( rooted, nullptr ) == expected );
+}
+#else
 BOOST_AUTO_TEST_CASE( ConvertPathToFileUri_UnixAbsolutePath )
 {
     // /tmp exists on all Unix CI machines
     BOOST_TEST( ConvertPathToFileUri( wxS( "/tmp" ), nullptr ) == wxString( "file:///tmp" ) );
 }
+#endif
 
 BOOST_AUTO_TEST_CASE( ConvertPathToFileUri_AlreadyHasScheme )
 {
@@ -353,6 +386,27 @@ BOOST_AUTO_TEST_CASE( StringEscape )
 
         BOOST_TEST( unescaped == testString.Input );
     }
+}
+
+
+BOOST_AUTO_TEST_CASE( RegexEscapeKeepsOrdinaryCharacters )
+{
+    BOOST_TEST( EscapeString( wxS( "DDR3_DQ0" ), CTX_REGEX ) == wxS( "DDR3_DQ0" ) );
+    BOOST_TEST( EscapeString( wxS( "+3.3V" ), CTX_REGEX ) == wxS( "\\+3\\.3V" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( SplitGraphemeClustersKeepsCharactersWhole )
+{
+    // e + combining acute, Thai "ko" + tone mark, then Devanagari "ksha" joined by a virama
+    const wxString accented = wxString::FromUTF8( "e\xCC\x81" );
+    const wxString thai = wxString::FromUTF8( "\xE0\xB8\x81\xE0\xB9\x88" );
+    const wxString ksha = wxString::FromUTF8( "\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB7" );
+
+    const std::vector<wxString> expected = { wxS( "a" ), accented, thai, ksha };
+    const std::vector<wxString> clusters = SplitGraphemeClusters( wxS( "a" ) + accented + thai + ksha );
+
+    BOOST_TEST( clusters == expected, boost::test_tools::per_element() );
 }
 
 

@@ -33,6 +33,7 @@
 
 
 class wxHyperlinkCtrl;
+class wxStaticText;
 
 
 enum
@@ -81,6 +82,9 @@ public:
      * In overlay mode the infobar is drawn on top of its parent and does not take space from
      * it, so a drawing canvas parent keeps its size and does not have to repaint.  Otherwise
      * the infobar is laid out by the parent's sizer.
+     *
+     * Where the platform cannot draw a child over a canvas, an overlay infobar is hosted in a
+     * window of its own and aParent is not its direct parent.
      *
      * @param aParent is the parent
      * @param aWinId is the ID for this infobar object
@@ -210,6 +214,12 @@ public:
      */
     void FixSize();
 
+    /**
+     * Lay out the infobar, keeping the links and buttons level with the first line of a
+     * multi-line message.
+     */
+    bool Layout() override;
+
 protected:
     /**
      * Event handler for showing the infobar using a wxCommandEvent of the type
@@ -258,9 +268,12 @@ protected:
     int           m_showTime;       ///< The time to show the infobar. 0 = don't auto hide
     bool          m_updateLock;     ///< True if this infobar requested the UI update
     bool          m_overlay;        ///< True if this infobar is drawn on top of its parent
+    wxWindow*     m_anchor;         ///< The window this infobar spans, its parent unless hosted
     wxTimer*      m_showTimer;      ///< The timer counting the autoclose period
     MESSAGE_TYPE  m_type;           ///< The type of message being displayed
     wxString      m_message;        ///< The original message without wrapping
+    wxBoxSizer*   m_buttonArea;     ///< The links and buttons, laid out apart from the message
+    wxStaticText* m_messageText;    ///< The message control, which wxInfoBarGeneric keeps private
 
     std::optional<std::function<void(void)>> m_callback;   ///< Optional callback made when closing infobar
 

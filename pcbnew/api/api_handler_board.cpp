@@ -38,8 +38,11 @@
 #include <pcb_group.h>
 #include <tools/generator_tool.h>
 #include <pcb_track.h>
+#include <board_tables/generated_table_refresh.h>
+#include <pcb_generated_table.h>
 #include <pcb_table.h>
 #include <pcb_tablecell.h>
+#include <pcb_3d_body.h>
 
 #include <layer_ids.h>
 #include <project.h>
@@ -129,8 +132,14 @@ BOARD_ITEM_CONTAINER* API_HANDLER_BOARD::getDefaultContainer()
 void API_HANDLER_BOARD::pushCurrentCommit( const std::string& aClientName,
                                             const wxString& aMessage )
 {
+    // A request whose every item was refused leaves an empty commit, which must not dirty the board
+    auto       it = m_commits.find( aClientName );
+    const bool changed = it != m_commits.end() && !it->second.second->Empty();
+
     API_HANDLER_EDITOR::pushCurrentCommit( aClientName, aMessage );
-    onModified();
+
+    if( changed )
+        onModified();
 }
 
 
@@ -190,7 +199,7 @@ HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>> API_HANDLER_BOARD::createItemForType
             PCB_FIELD_T, PCB_BARCODE_T, PCB_TEXT_T, PCB_TEXTBOX_T, PCB_SHAPE_T,
             PCB_REFERENCE_IMAGE_T, PCB_TABLE_T, PCB_PAD_T, PCB_ZONE_T, PCB_GROUP_T,
             PCB_CONSTRAINT_T, PCB_POINT_T, PCB_DIM_ALIGNED_T, PCB_DIM_LEADER_T,
-            PCB_DIM_CENTER_T, PCB_DIM_RADIAL_T, PCB_DIM_ORTHOGONAL_T
+            PCB_DIM_CENTER_T, PCB_DIM_RADIAL_T, PCB_DIM_ORTHOGONAL_T, PCB_3D_BODY_T
         };
 
         if( !s_footprintItemTypes.contains( aType ) )
@@ -236,6 +245,13 @@ void API_HANDLER_BOARD::deleteItemsInternal( std::map<KIID, ItemDeletionStatus>&
                 continue;
             }
 
+            // A generated table writes its own cells, so there is nothing a client could clear
+            if( IsGeneratedTableCell( item ) )
+            {
+                aItemsToDelete[pair.first] = ItemDeletionStatus::IDS_IMMUTABLE;
+                continue;
+            }
+
             validatedItems.push_back( item );
             aItemsToDelete[pair.first] = ItemDeletionStatus::IDS_OK;
         }
@@ -251,10 +267,7 @@ void API_HANDLER_BOARD::deleteItemsInternal( std::map<KIID, ItemDeletionStatus>&
         if( item->Type() == PCB_TABLECELL_T )
         {
             // Cells are owned by their table; the commit removal path doesn't handle them.
-            // Match the GUI delete: clear the cell contents (generated-table cells have no user text).
-            if( IsGeneratedTableCell( item ) )
-                continue;
-
+            // Match the GUI delete: clear the cell contents.
             commit->Modify( item );
             static_cast<PCB_TABLECELL*>( item )->SetText( wxEmptyString );
         }
@@ -410,7 +423,14 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
         if( type == PCB_DIMENSION_T )
         {
             board::types::Dimension dimension;
-            anyItem.UnpackTo( &dimension );
+
+            if( !anyItem.UnpackTo( &dimension ) )
+            {
+                status.set_code( ItemStatusCode::ISC_INVALID_TYPE );
+                status.set_error_message( "Failed to unpack dimension" );
+                aItemHandler( status, anyItem );
+                continue;
+            }
 
             switch( dimension.dimension_style_case() )
             {
@@ -426,7 +446,14 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
         if( *type == PCB_SHAPE_T )
         {
             board::types::BoardGraphicShape shape;
-            anyItem.UnpackTo( &shape );
+
+            if(! anyItem.UnpackTo( &shape ) )
+            {
+                status.set_code( ItemStatusCode::ISC_INVALID_TYPE );
+                status.set_error_message( "Failed to unpack shape" );
+                aItemHandler( status, anyItem );
+                continue;
+            }
 
             if( shape.has_pad_custom_shape_options() )
             {
@@ -506,6 +533,11 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
             return tl::unexpected( e );
         }
 
+        // The message's cells were written under its old metadata, so they must be regenerated to match the new.
+        // An update only carries settings, which are applied to the live table below
+        if( aCreate && IsGeneratedTableType( item->Type() ) )
+            static_cast<PCB_GENERATED_TABLE*>( item.get() )->RebuildCells( *board );
+
         if( std::vector<wxString> removed = item->RemoveConflictingCustomProperties(); !removed.empty() )
         {
             auto as_str =
@@ -554,6 +586,18 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
             continue;
         }
 
+        // A generated table rewrites its cells from the board, and a new cell would be a row with no key
+        if( item->Type() == PCB_TABLECELL_T
+            && ( aCreate ? IsGeneratedTableType( container->Type() ) : IsGeneratedTableCell( *optItem ) ) )
+        {
+            status.set_code( ItemStatusCode::ISC_IMMUTABLE );
+            status.set_error_message( fmt::format( "cells of generated table {} cannot be modified",
+                                                   ( aCreate ? container->m_Uuid : ( *optItem )->GetParent()->m_Uuid )
+                                                           .AsStdString() ) );
+            aItemHandler( status, anyItem );
+            continue;
+        }
+
         if( aCreate
             && !item->FitsEnabledLayers( board->GetEnabledLayers(), board->GetCopperLayerCount() ) )
         {
@@ -590,7 +634,7 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
             }
             else
             {
-                if( item->Type() == PCB_FOOTPRINT_T || item->Type() == PCB_TABLE_T )
+                if( item->Type() == PCB_FOOTPRINT_T || BaseType( item->Type() ) == PCB_TABLE_T )
                 {
                     // Ensure children have unique identifiers; in case the API client created
                     // this new item by cloning an existing one and only changing the parent UUID.
@@ -631,6 +675,18 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
                     regenerateGenerators( genTool, commit, { static_cast<PCB_GENERATOR*>( boardItem ) }, {} );
 
                 boardItem->Serialize( newItem );
+            }
+
+            // A client cannot format generated cells, so the live cells hold the only formatting and a copy would
+            // drop it. The message's settings are applied to the live table instead
+            else if( IsGeneratedTableType( boardItem->Type() ) )
+            {
+                PCB_GENERATED_TABLE* table = static_cast<PCB_GENERATED_TABLE*>( boardItem );
+
+                commit->Modify( table );
+                table->ApplySettings( *static_cast<PCB_GENERATED_TABLE*>( item.get() ) );
+                table->RebuildCells( *board );
+                table->Serialize( newItem );
             }
 
             // Footprints can't be modified by CopyFrom at the moment because the commit system
@@ -726,15 +782,15 @@ HANDLER_RESULT<RunActionResponse> API_HANDLER_BOARD::handleRunAction(
 HANDLER_RESULT<GetItemsResponse> API_HANDLER_BOARD::handleGetItemsById(
         const HANDLER_CONTEXT<GetItemsById>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_UNHANDLED );
         return tl::unexpected( e );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     GetItemsResponse response;
 
@@ -817,9 +873,6 @@ HANDLER_RESULT<Empty> API_HANDLER_BOARD::handleClearSelection(
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "ClearSelection" ) )
         return tl::unexpected( *headless );
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
@@ -827,6 +880,9 @@ HANDLER_RESULT<Empty> API_HANDLER_BOARD::handleClearSelection(
         e.set_status( ApiStatusCode::AS_UNHANDLED );
         return tl::unexpected( e );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     TOOL_MANAGER* mgr = toolManager();
     mgr->RunAction( ACTIONS::selectionClear );
@@ -842,9 +898,6 @@ HANDLER_RESULT<SelectionResponse> API_HANDLER_BOARD::handleAddToSelection(
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "AddToSelection" ) )
         return tl::unexpected( *headless );
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
@@ -852,6 +905,9 @@ HANDLER_RESULT<SelectionResponse> API_HANDLER_BOARD::handleAddToSelection(
         e.set_status( ApiStatusCode::AS_UNHANDLED );
         return tl::unexpected( e );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     TOOL_MANAGER* mgr = toolManager();
     PCB_SELECTION_TOOL* selectionTool = mgr->GetTool<PCB_SELECTION_TOOL>();
@@ -931,9 +987,6 @@ HANDLER_RESULT<SelectionResponse> API_HANDLER_BOARD::handleRemoveFromSelection(
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "RemoveFromSelection" ) )
         return tl::unexpected( *headless );
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
@@ -941,6 +994,9 @@ HANDLER_RESULT<SelectionResponse> API_HANDLER_BOARD::handleRemoveFromSelection(
         e.set_status( ApiStatusCode::AS_UNHANDLED );
         return tl::unexpected( e );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     TOOL_MANAGER* mgr = toolManager();
     PCB_SELECTION_TOOL* selectionTool = mgr->GetTool<PCB_SELECTION_TOOL>();
@@ -1053,9 +1109,6 @@ HANDLER_RESULT<GraphicsDefaultsResponse> API_HANDLER_BOARD::handleGetGraphicsDef
 HANDLER_RESULT<GetBoundingBoxResponse> API_HANDLER_BOARD::handleGetBoundingBox(
         const HANDLER_CONTEXT<GetBoundingBox>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     if( !validateItemHeaderDocument( aCtx.Request.header() ) )
     {
         ApiResponseStatus e;
@@ -1063,6 +1116,9 @@ HANDLER_RESULT<GetBoundingBoxResponse> API_HANDLER_BOARD::handleGetBoundingBox(
         e.set_status( ApiStatusCode::AS_UNHANDLED );
         return tl::unexpected( e );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     GetBoundingBoxResponse response;
     bool includeText = aCtx.Request.mode() == BoundingBoxMode::BBM_ITEM_AND_CHILD_TEXT;
@@ -1265,13 +1321,13 @@ HANDLER_RESULT<Empty> API_HANDLER_BOARD::handleInteractiveMoveItems(
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "InteractiveMoveItems" ) )
         return tl::unexpected( *headless );
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
 
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     TOOL_MANAGER* mgr = toolManager();
     std::vector<EDA_ITEM*> toSelect;
@@ -1307,9 +1363,6 @@ HANDLER_RESULT<Empty> API_HANDLER_BOARD::handleInteractiveMoveItems(
 HANDLER_RESULT<FlipItemsResponse> API_HANDLER_BOARD::handleFlipItems(
         const HANDLER_CONTEXT<FlipItems>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     auto containerResult = validateItemHeaderDocument( aCtx.Request.header() );
 
     if( !containerResult && containerResult.error().status() == ApiStatusCode::AS_UNHANDLED )
@@ -1323,6 +1376,9 @@ HANDLER_RESULT<FlipItemsResponse> API_HANDLER_BOARD::handleFlipItems(
     {
         return tl::unexpected( containerResult.error() );
     }
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     FLIP_DIRECTION flipDirection = FromProtoEnum<FLIP_DIRECTION, BoardFlipDirection>(
             aCtx.Request.direction() );
@@ -1360,6 +1416,9 @@ HANDLER_RESULT<FlipItemsResponse> API_HANDLER_BOARD::handleFlipItems(
             PCB_TEXT_T,
             PCB_TEXTBOX_T,
             PCB_TABLE_T,
+            PCB_DRILL_CHART_T,
+            PCB_STACKUP_TABLE_T,
+            PCB_DRILL_MAP_T,
             PCB_TRACE_T,
             PCB_VIA_T,
             PCB_ARC_T,
@@ -1444,6 +1503,8 @@ HANDLER_RESULT<SavedSelectionResponse> API_HANDLER_BOARD::handleSaveSelectionToS
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "SaveSelectionToString" ) )
         return tl::unexpected( *headless );
 
+    RefreshGeneratedTables( *board() );
+
     SavedSelectionResponse response;
 
     TOOL_MANAGER* mgr = toolManager();
@@ -1467,21 +1528,20 @@ HANDLER_RESULT<SavedSelectionResponse> API_HANDLER_BOARD::handleSaveSelectionToS
 HANDLER_RESULT<CreateItemsResponse> API_HANDLER_BOARD::handleParseAndCreateItemsFromString(
         const HANDLER_CONTEXT<ParseAndCreateItemsFromString>& aCtx )
 {
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
 
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     CreateItemsResponse response;
     return response;
 }
 
 
-HANDLER_RESULT<BoardLayers> API_HANDLER_BOARD::handleGetVisibleLayers(
-        const HANDLER_CONTEXT<GetVisibleLayers>& aCtx )
+HANDLER_RESULT<BoardLayers> API_HANDLER_BOARD::handleGetVisibleLayers( const HANDLER_CONTEXT<GetVisibleLayers>& aCtx )
 {
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "GetVisibleLayers" ) )
         return tl::unexpected( *headless );
@@ -1493,26 +1553,25 @@ HANDLER_RESULT<BoardLayers> API_HANDLER_BOARD::handleGetVisibleLayers(
 
     BoardLayers response;
 
-    for( PCB_LAYER_ID layer : board()->GetVisibleLayers() )
+    for( PCB_LAYER_ID layer : LSET( board()->GetEnabledLayers() & board()->GetVisibleLayers() ) )
         response.add_layers( ToProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( layer ) );
 
     return response;
 }
 
 
-HANDLER_RESULT<Empty> API_HANDLER_BOARD::handleSetVisibleLayers(
-        const HANDLER_CONTEXT<SetVisibleLayers>& aCtx )
+HANDLER_RESULT<Empty> API_HANDLER_BOARD::handleSetVisibleLayers( const HANDLER_CONTEXT<SetVisibleLayers>& aCtx )
 {
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "SetVisibleLayers" ) )
         return tl::unexpected( *headless );
-
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
 
     HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
 
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     LSET visible;
     LSET enabled = board()->GetEnabledLayers();
@@ -1563,13 +1622,13 @@ HANDLER_RESULT<Empty> API_HANDLER_BOARD::handleSetActiveLayer(
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "SetActiveLayer" ) )
         return tl::unexpected( *headless );
 
-    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
-        return tl::unexpected( *busy );
-
     HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
 
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
 
     PCB_LAYER_ID layer = FromProtoEnum<PCB_LAYER_ID>( aCtx.Request.layer() );
 

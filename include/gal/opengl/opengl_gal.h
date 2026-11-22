@@ -47,9 +47,6 @@
 #define CALLBACK
 #endif
 
-/// The default number of points for circle approximation
-#define SEG_PER_CIRCLE_COUNT  64
-
 class GLUtesselator;
 class wxImage;
 
@@ -98,6 +95,8 @@ public:
     static wxString CheckFeatures( GAL_DISPLAY_OPTIONS& aOptions );
 
     bool IsOpenGlEngine() override { return true; }
+
+    bool UsesPolygonTriangulationCache() const override { return true; }
 
     /// @copydoc GAL::IsInitialized()
     bool IsInitialized() const override
@@ -572,11 +571,6 @@ private:
     void drawGridSources();
 
     /**
-     * Fill a source's coverage region into the current color/stencil state.
-     */
-    void drawGridCoverageShape( const GRID_SOURCE& aSrc );
-
-    /**
      * Compute a size of text drawn using bitmap font with current text setting applied.
      *
      * @param aText is the text to be drawn.
@@ -625,15 +619,6 @@ private:
      * @return An unique group number that is not used by any other group.
      */
     unsigned int getNewGroupNumber();
-
-    /**
-     * Compute the angle step when drawing arcs/circles approximated with lines.
-     */
-    double calcAngleStep( double aRadius ) const
-    {
-        // Bigger arcs need smaller alpha increment to make them look smooth
-        return std::min( 1e6 / aRadius, 2.0 * M_PI / SEG_PER_CIRCLE_COUNT );
-    }
 
     double getWorldPixelSize() const;
 

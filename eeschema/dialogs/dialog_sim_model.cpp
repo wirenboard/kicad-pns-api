@@ -19,6 +19,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <bitmaps.h>
 #include <dialog_ibis_parser_reporter.h>
 #include <dialog_sim_model.h>
 #include <sim/sim_property.h>
@@ -85,28 +86,23 @@ DIALOG_SIM_MODEL<T>::DIALOG_SIM_MODEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame
     {
         SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( &aSymbol );
         m_filesStack.push_back( symbol->Schematic()->GetEmbeddedFiles() );
+
+        if( symbol->GetLibSymbolRef() )
+            symbol->GetLibSymbolRef()->AppendParentEmbeddedFiles( m_filesStack );
+    }
+    else if constexpr (std::is_same_v<T, LIB_SYMBOL>)
+    {
+        LIB_SYMBOL* symbol = static_cast<LIB_SYMBOL*>( &aSymbol );
+        symbol->AppendParentEmbeddedFiles( m_filesStack );
     }
 
     if( EMBEDDED_FILES* symbolEmbeddedFiles = aSymbol.GetEmbeddedFiles() )
-    {
         m_filesStack.push_back( symbolEmbeddedFiles );
-
-        if constexpr (std::is_same_v<T, SCH_SYMBOL>)
-        {
-            SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( &aSymbol );
-            symbol->GetLibSymbolRef()->AppendParentEmbeddedFiles( m_filesStack );
-        }
-        else if constexpr (std::is_same_v<T, LIB_SYMBOL>)
-        {
-            LIB_SYMBOL* symbol = static_cast<LIB_SYMBOL*>( &aSymbol );
-            symbol->AppendParentEmbeddedFiles( m_filesStack );
-        }
-    }
 
     m_libraryModelsMgr.SetFilesStack( m_filesStack );
     m_builtinModelsMgr.SetFilesStack( m_filesStack );
 
-    for( SCH_PIN* pin : aSymbol.GetPins() )
+    for( SCH_PIN* pin : aSymbol.GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES ) )
     {
         // Body styles (including De Morgan variants) are equivalences, not additional items to simulate
         if( !pin->GetParentSymbol()->IsMultiBodyStyle() || pin->GetBodyStyle() < 2 )
@@ -117,7 +113,7 @@ DIALOG_SIM_MODEL<T>::DIALOG_SIM_MODEL( wxWindow* aParent, EDA_BASE_FRAME* aFrame
                []( const SCH_PIN* lhs, const SCH_PIN* rhs )
                {
                    // We sort by StrNumCmp because SIM_MODEL_BASE sorts with it too.
-                   return StrNumCmp( lhs->GetNumber(), rhs->GetNumber(), true ) < 0;
+                   return StrNumCmp( lhs->GetNumber(), rhs->GetNumber(), CMP_T::IGNORE_CASE ) < 0;
                } );
 
     m_waveformChoice->Clear();
@@ -1169,7 +1165,7 @@ wxPGProperty* DIALOG_SIM_MODEL<T>::newParamProperty( SIM_MODEL* aModel, int aPar
                 inductors.Sort(
                         []( const wxString& a, const wxString& b ) -> int
                         {
-                            return StrNumCmp( a, b, true );
+                            return StrNumCmp( a, b, CMP_T::IGNORE_CASE );
                         } );
             }
 
@@ -1411,7 +1407,7 @@ void DIALOG_SIM_MODEL<T>::onBrowseButtonClick( wxCommandEvent& aEvent )
 
     if( customize.GetEmbed() )
     {
-        EMBEDDED_FILES::EMBEDDED_FILE* result = m_filesStack[0]->AddFile( fn, false );
+        EMBEDDED_FILES::EMBEDDED_FILE* result = m_filesStack.back()->AddFile( fn, false );
         path = result->GetLink();
     }
     else if( fn.MakeRelativeTo( Prj().GetProjectPath() ) && !fn.GetFullPath().StartsWith( wxS( ".." ) ) )

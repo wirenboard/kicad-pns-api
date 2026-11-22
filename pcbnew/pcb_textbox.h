@@ -78,6 +78,14 @@ public:
 
     std::vector<VECTOR2I> GetCorners() const override;
 
+    /*
+     * @return a PCB_SHAPE type POLYGON of the box of the TEXTBOX, according to the box shape
+     * and the textbox rotation
+     * The base PCB_SHAPE of a textbox is a RECTANGLE, so creating some issues when orientation
+     * is not 0 is some draw functions
+     */
+    PCB_SHAPE GetPolygonalBoxShape() const;
+
     std::vector<VECTOR2I> GetCornersInSequence( EDA_ANGLE angle ) const override;
 
     // Keep the lib shape as RECTANGLE even if a runtime polygon conversion happens.
@@ -95,7 +103,7 @@ public:
     void SetRight( int aVal ) override;
     void SetBottom( int aVal ) override;
 
-    void StyleFromSettings( const BOARD_DESIGN_SETTINGS& settings, bool aCheckSide ) override;
+    void StyleFromSettings( const BOARD_DESIGN_SETTINGS& aSettings, bool aCheckSide ) override;
 
     int GetLegacyTextMargin() const;
 
@@ -131,6 +139,8 @@ public:
     void Rotate( const VECTOR2I& aRotCentre, const EDA_ANGLE& aAngle ) override;
 
     void Mirror( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection ) override;
+
+    void Mirror( const SEG& aAxis ) override;
 
     void Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection ) override;
 

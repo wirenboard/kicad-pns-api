@@ -18,6 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <bitmaps/bitmaps_list.h>
 #include <connectivity/conn_presentation.h>
 #include <netclass.h>
 #include <sch_draw_panel.h>
@@ -78,7 +79,9 @@ void SCH_JUNCTION::Serialize( google::protobuf::Any& aContainer ) const
                                     : types::LockedState::LS_UNLOCKED );
 
     kiapi::common::PackCustomProperties( junction.mutable_custom_properties(), *this );
-    aContainer.PackFrom( junction );
+
+    if( !aContainer.PackFrom( junction ) )
+        wxFAIL_MSG( wxT( "Failed to pack SCH_JUNCTION" ) );
 }
 
 

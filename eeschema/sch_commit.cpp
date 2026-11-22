@@ -53,6 +53,14 @@ SCH_COMMIT::SCH_COMMIT( TOOL_MANAGER* aToolMgr ) :
 }
 
 
+SCH_COMMIT::SCH_COMMIT( TOOL_MANAGER* aToolMgr, bool aIsLibEditor ) :
+        COMMIT(),
+        m_toolMgr( aToolMgr ),
+        m_isLibEditor( aIsLibEditor )
+{
+}
+
+
 SCH_COMMIT::SCH_COMMIT( SCH_TOOL_BASE<SCH_BASE_FRAME>* aTool )
 {
     m_toolMgr = aTool->GetManager();
@@ -198,6 +206,7 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
     bool                dirtyConnectivity = false;
     bool                refreshConnectivity = false;
     bool                refreshHierarchy = false;
+    bool                refSuffixChanged = false;
     SCH_CLEANUP_FLAGS   connectivityCleanUp = NO_CLEANUP;
 
     if( Empty() )
@@ -258,8 +267,8 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
             };
 
     // We don't know that anything will be added to the entered group, but it does no harm to
-    // add it to the commit anyway.
-    if( enteredGroup && frame )
+    // add it to the commit anyway (well, as long as we're not trying to remove it).
+    if( enteredGroup && GetStatus( enteredGroup ) == 0 )
         Modify( enteredGroup, frame->GetScreen() );
 
 
@@ -411,6 +420,11 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
                 if( selTool )
                     selTool->RemoveItemFromSel( schItem, true /* quiet mode */ );
 
+                // In an undo we're going to re-create from the item, not the image.  That seems wrong, but
+                // it would be a big risky change to make it use the image, so let's just reset the selection
+                // flag for now (so that on undo it comes back selected).
+                schItem->SetFlags( SELECTED );
+
                 itemsDeselected = true;
             }
 
@@ -457,10 +471,17 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
 
             if( schItem->Type() == SCH_SHEET_T )
             {
-                const auto* modifiedSheet = static_cast<const SCH_SHEET*>( schItem );
-                const auto* originalSheet = static_cast<const SCH_SHEET*>( itemCopy );
-                const bool hierarchyChanged = originalSheet->HasHierarchyChanges( *modifiedSheet );
+                const SCH_SHEET* modifiedSheet = static_cast<const SCH_SHEET*>( schItem );
+                const SCH_SHEET* originalSheet = static_cast<const SCH_SHEET*>( itemCopy );
+                const bool       hierarchyChanged = originalSheet->HasHierarchyChanges( *modifiedSheet );
+
                 refreshHierarchy |= hierarchyChanged;
+
+                if( hierarchyChanged && originalSheet->HasRefSuffixChanges( *modifiedSheet ) )
+                {
+                    static_cast<SCH_SHEET*>( schItem )->SetDescendantsModified();
+                    refSuffixChanged = true;
+                }
 
                 // Stable ports are invalidated through their containing screen, including shared instances
                 fullSheetUpdate = !ADVANCED_CFG::GetCfg().m_ConnectivityEngine
@@ -484,7 +505,7 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
                 const SCH_SYMBOL* origSymbol = static_cast<const SCH_SYMBOL*>( itemCopy );
                 const SCH_SYMBOL* modSymbol = static_cast<const SCH_SYMBOL*>( schItem );
 
-                if( origSymbol->GetPins().size() != modSymbol->GetPins().size() )
+                if( origSymbol->GetPins( &currentSheet ).size() != modSymbol->GetPins( &currentSheet ).size() )
                     connectivityCleanUp = GLOBAL_CLEANUP;
 
                 if( origSymbol->GetSchSymbolLibraryName() != modSymbol->GetSchSymbolLibraryName() )
@@ -579,6 +600,10 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
     if( refreshHierarchy && frame )
         frame->UpdateHierarchyNavigator();
 
+    // An API edit can change a suffix while one of its child sheets is on screen
+    if( refSuffixChanged && frame )
+        frame->RefreshComposedReferences();
+
     m_toolMgr->PostEvent( { TC_MESSAGE, TA_MODEL_CHANGE, AS_GLOBAL } );
 
     if( itemsDeselected )
@@ -617,7 +642,13 @@ EDA_ITEM* SCH_COMMIT::undoLevelItem( EDA_ITEM* aItem ) const
     EDA_ITEM* parent = aItem->GetParent();
 
     if( m_isLibEditor )
-        return static_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() )->GetCurSymbol();
+    {
+        // Headless commits operate directly on the staged item
+        if( SYMBOL_EDIT_FRAME* frame = static_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() ) )
+            return frame->GetCurSymbol();
+
+        return aItem;
+    }
 
     if( parent && parent->IsType( { SCH_SYMBOL_T, SCH_TABLE_T, SCH_SHEET_T, SCH_LABEL_LOCATE_ANY_T } ) )
         return parent;
@@ -631,26 +662,30 @@ EDA_ITEM* SCH_COMMIT::makeImage( EDA_ITEM* aItem ) const
     if( m_isLibEditor )
     {
         SYMBOL_EDIT_FRAME* frame = static_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
-        LIB_SYMBOL*        symbol = frame->GetCurSymbol();
-        std::vector<KIID>  selected;
 
-        // Cloning will clear the selected flags, but we want to keep them.
-        for( const SCH_ITEM& item : symbol->GetDrawItems() )
+        if( frame && frame->GetCurSymbol() )
         {
-            if( item.IsSelected() )
-                selected.push_back( item.m_Uuid );
+            LIB_SYMBOL*        symbol = frame->GetCurSymbol();
+            std::vector<KIID>  selected;
+
+            // Cloning will clear the selected flags, but we want to keep them.
+            for( const SCH_ITEM& item : symbol->GetDrawItems() )
+            {
+                if( item.IsSelected() )
+                    selected.push_back( item.m_Uuid );
+            }
+
+            symbol = new LIB_SYMBOL( *symbol );
+
+            // Restore selected flags.
+            for( SCH_ITEM& item : symbol->GetDrawItems() )
+            {
+                if( alg::contains( selected, item.m_Uuid ) )
+                    item.SetSelected();
+            }
+
+            return symbol;
         }
-
-        symbol = new LIB_SYMBOL( *symbol );
-
-        // Restore selected flags.
-        for( SCH_ITEM& item : symbol->GetDrawItems() )
-        {
-            if( alg::contains( selected, item.m_Uuid ) )
-                item.SetSelected();
-        }
-
-        return symbol;
     }
 
     return aItem->Clone();
@@ -706,6 +741,18 @@ void SCH_COMMIT::RevertToCheckpoint( int aCheckpoint )
     std::vector<SCH_ITEM*> bulkAddedItems;
     std::vector<SCH_ITEM*> bulkRemovedItems;
     std::vector<SCH_ITEM*> itemsChanged;
+
+    // Detach added groups before restoring any saved group memberships.
+    for( int ii = aCheckpoint; ii < (int) m_entries.size(); ++ii )
+    {
+        COMMIT_LINE& entry = m_entries[ii];
+
+        if( ( entry.m_type & CHT_TYPE ) == CHT_ADD )
+        {
+            if( SCH_GROUP* group = dynamic_cast<SCH_GROUP*>( entry.m_item ) )
+                group->RemoveAll();
+        }
+    }
 
     for( int ii = aCheckpoint; ii < (int) m_entries.size(); ++ii )
     {
@@ -806,7 +853,13 @@ void SCH_COMMIT::RevertToCheckpoint( int aCheckpoint )
 
                 graph->RemoveItem( symbolCopy );
 
-                for( SCH_PIN* pin : symbolCopy->GetPins() )
+                // Lazy eval of sheet list; this is expensive even when unsorted
+                if( sheets.empty() )
+                    sheets = schematic->Hierarchy();
+
+                SCH_SHEET_PATH sheet = sheets.FindSheetForScreen( screen );
+
+                for( SCH_PIN* pin : symbolCopy->GetPins( &sheet ) )
                     graph->RemoveItem( pin );
             }
 
@@ -815,6 +868,7 @@ void SCH_COMMIT::RevertToCheckpoint( int aCheckpoint )
             if( view )
                 view->Add( item );
 
+            itemsChanged.push_back( item );
             break;
         }
 
@@ -845,7 +899,7 @@ void SCH_COMMIT::RevertToCheckpoint( int aCheckpoint )
     if( frame )
         frame->RecalculateConnections( nullptr, NO_CLEANUP );
 
-    m_entries.erase( m_entries.begin() + aCheckpoint, m_entries.end() );
+    dropEntriesAfter( aCheckpoint );
 }
 
 

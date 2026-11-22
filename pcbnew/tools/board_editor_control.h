@@ -50,6 +50,7 @@ public:
     int New( const TOOL_EVENT& aEvent );
     int Open( const TOOL_EVENT& aEvent );
     int Save( const TOOL_EVENT& aEvent );
+    int ExportForOlderVersion( const TOOL_EVENT& aEvent );
     int SaveAs( const TOOL_EVENT& aEvent );
     int SaveCopy( const TOOL_EVENT& aEvent );
     int Revert( const TOOL_EVENT& aEvent );
@@ -65,6 +66,7 @@ public:
     int FindByProperties( const TOOL_EVENT& aEvent );
 
     int BoardSetup( const TOOL_EVENT& aEvent );
+    int DesignRules( const TOOL_EVENT& aEvent );
     int ImportNetlist( const TOOL_EVENT& aEvent );
     int ImportSpecctraSession( const TOOL_EVENT& aEvent );
     int ExportSpecctraDSN( const TOOL_EVENT& aEvent );
@@ -93,6 +95,7 @@ public:
     int ToggleLayersManager( const TOOL_EVENT& aEvent );
     int ToggleProperties( const TOOL_EVENT& aEvent );
     int ToggleNetInspector( const TOOL_EVENT& aEvent );
+    int ToggleGitCommitPane( const TOOL_EVENT& aEvent );
     int ToggleSearch( const TOOL_EVENT& aEvent );
     int ToggleConstraintsPanel( const TOOL_EVENT& aEvent );
     int ToggleLibraryTree( const TOOL_EVENT& aEvent );

@@ -30,6 +30,7 @@
 #include "../3d_placeholder_utils.h"
 #include <board.h>
 #include <footprint.h>
+#include <pcb_3d_body.h>
 #include <kicad_gl/gl_context_mgr.h>
 #include <3d_math.h>
 #include <glm/geometric.hpp>
@@ -63,10 +64,10 @@ RENDER_3D_OPENGL::RENDER_3D_OPENGL( EDA_3D_CANVAS* aCanvas, BOARD_ADAPTER& aAdap
     m_offboardPadsFront = nullptr;
     m_offboardPadsBack = nullptr;
 
-    m_outerThroughHoles = nullptr;
+    m_frontOuterThroughHoles = nullptr;
+    m_backOuterThroughHoles = nullptr;
     m_outerThroughHoleRings = nullptr;
-    m_outerViaThroughHoles = nullptr;
-    m_microviaHoles = nullptr;
+    m_complexPlatedHoles = nullptr;
     m_padHoles = nullptr;
     m_viaFrontCover = nullptr;
     m_viaBackCover = nullptr;
@@ -236,6 +237,21 @@ void RENDER_3D_OPENGL::setupMaterials()
     m_materials.m_Paste.m_Shininess = 0.1f * 128.0f;
     m_materials.m_Paste.m_Emissive = SFVEC3F( 0.0f, 0.0f, 0.0f );
 
+    m_materials.m_Adhesive.m_Ambient = SFVEC3F( m_boardAdapter.m_AdhesiveColor.r,
+                                                m_boardAdapter.m_AdhesiveColor.g,
+                                                m_boardAdapter.m_AdhesiveColor.b );
+
+    m_materials.m_Adhesive.m_Specular = SFVEC3F( m_boardAdapter.m_AdhesiveColor.r *
+                                                 m_boardAdapter.m_AdhesiveColor.r,
+                                                 m_boardAdapter.m_AdhesiveColor.g *
+                                                 m_boardAdapter.m_AdhesiveColor.g,
+                                                 m_boardAdapter.m_AdhesiveColor.b *
+                                                 m_boardAdapter.m_AdhesiveColor.b );
+
+    m_materials.m_Adhesive.m_Shininess = 0.1f * 128.0f;
+    m_materials.m_Adhesive.m_Emissive = SFVEC3F( 0.0f, 0.0f, 0.0f );
+
+
     // Silk screen material mixed with silk screen color
     m_materials.m_SilkSTop.m_Ambient = SFVEC3F( m_boardAdapter.m_SilkScreenColorTop.r,
                                                 m_boardAdapter.m_SilkScreenColorTop.g,
@@ -331,6 +347,10 @@ void RENDER_3D_OPENGL::setLayerMaterial( PCB_LAYER_ID aLayerID )
 
     case B_Adhes:
     case F_Adhes:
+        m_materials.m_Adhesive.m_Diffuse = m_boardAdapter.m_AdhesiveColor;
+        OglSetMaterial( m_materials.m_Adhesive, 1.0f );
+        break;
+
     case Dwgs_User:
     case Cmts_User:
     case Eco1_User:
@@ -628,16 +648,16 @@ bool RENDER_3D_OPENGL::Redraw( bool aIsMoving )
 
     bool skipThickness = aIsMoving && cfg.opengl_thickness_disableOnMove;
     bool skipRenderHoles = aIsMoving && cfg.opengl_holes_disableOnMove;
-    bool skipRenderMicroVias = aIsMoving && cfg.opengl_microvias_disableOnMove;
+    bool skipRenderComplexHoles = aIsMoving && cfg.opengl_microvias_disableOnMove;
     bool showThickness = !skipThickness;
 
     std::bitset<LAYER_3D_END> layerFlags = m_boardAdapter.GetVisibleLayers();
 
     setLayerMaterial( B_Cu );
 
-    if( !( skipRenderMicroVias || skipRenderHoles ) && m_microviaHoles )
+    if( !( skipRenderComplexHoles || skipRenderHoles ) && m_complexPlatedHoles )
     {
-        if( std::shared_ptr<OPENGL_RENDER_LIST> ogl_disp_list = m_microviaHoles->MakeOrGet() )
+        if( std::shared_ptr<OPENGL_RENDER_LIST> ogl_disp_list = m_complexPlatedHoles->MakeOrGet() )
             ogl_disp_list->DrawAll();
     }
 
@@ -692,7 +712,11 @@ bool RENDER_3D_OPENGL::Redraw( bool aIsMoving )
 
             if( !skipRenderHoles )
             {
-                outerTH = m_outerThroughHoles ? m_outerThroughHoles->MakeOrGet() : nullptr;
+                if( IsFrontLayer( layer ) )
+                    outerTH = m_frontOuterThroughHoles ? m_frontOuterThroughHoles->MakeOrGet() : nullptr;
+                else
+                    outerTH = m_backOuterThroughHoles ? m_backOuterThroughHoles->MakeOrGet() : nullptr;
+
                 viaHoles = m_outerLayerHoles[layer] ? m_outerLayerHoles[layer]->MakeOrGet() : nullptr;
             }
 
@@ -752,8 +776,10 @@ bool RENDER_3D_OPENGL::Redraw( bool aIsMoving )
             {
                 if( isSilkLayer && cfg.clip_silk_on_via_annuli )
                     throughHolesOuter = m_outerThroughHoleRings ? m_outerThroughHoleRings->MakeOrGet() : nullptr;
+                else if( IsFrontLayer( layer ) )
+                    throughHolesOuter = m_frontOuterThroughHoles ? m_frontOuterThroughHoles->MakeOrGet() : nullptr;
                 else
-                    throughHolesOuter = m_outerThroughHoles ? m_outerThroughHoles->MakeOrGet() : nullptr;
+                    throughHolesOuter = m_backOuterThroughHoles ? m_backOuterThroughHoles->MakeOrGet() : nullptr;
             }
 
             if( isSilkLayer && cfg.show_off_board_silk )
@@ -1064,11 +1090,11 @@ void RENDER_3D_OPENGL::freeAllLists()
     DELETE_AND_FREE( m_postMachinePlugs )
     DELETE_AND_FREE( m_antiBoard )
 
-    DELETE_AND_FREE( m_outerThroughHoles )
-    DELETE_AND_FREE( m_outerViaThroughHoles )
+    DELETE_AND_FREE( m_frontOuterThroughHoles )
+    DELETE_AND_FREE( m_backOuterThroughHoles )
     DELETE_AND_FREE( m_outerThroughHoleRings )
 
-    DELETE_AND_FREE( m_microviaHoles )
+    DELETE_AND_FREE( m_complexPlatedHoles )
     DELETE_AND_FREE( m_padHoles )
     DELETE_AND_FREE( m_viaFrontCover )
     DELETE_AND_FREE( m_viaBackCover )
@@ -1099,10 +1125,17 @@ void RENDER_3D_OPENGL::renderSolderMaskLayer( PCB_LAYER_ID aLayerID, float aZPos
     if( m_board )
     {
         std::shared_ptr<OPENGL_RENDER_LIST> board_list = m_board->MakeOrGet();
-        std::shared_ptr<OPENGL_RENDER_LIST> solder_mask =
-                m_layers[aLayerID] ? m_layers[aLayerID]->MakeOrGet() : nullptr;
-        std::shared_ptr<OPENGL_RENDER_LIST> via_holes =
-                !aSkipRenderHoles && m_outerThroughHoles ? m_outerThroughHoles->MakeOrGet() : nullptr;
+        std::shared_ptr<OPENGL_RENDER_LIST> solder_mask = m_layers[aLayerID] ? m_layers[aLayerID]->MakeOrGet()
+                                                                             : nullptr;
+        std::shared_ptr<OPENGL_RENDER_LIST> via_holes;
+
+        if( !aSkipRenderHoles )
+        {
+            if( IsFrontLayer( aLayerID ) )
+                via_holes = m_frontOuterThroughHoles ? m_frontOuterThroughHoles->MakeOrGet() : nullptr;
+            else
+                via_holes = m_backOuterThroughHoles ? m_backOuterThroughHoles->MakeOrGet() : nullptr;
+        }
 
         if( via_holes )
             via_holes->ApplyScalePosition( aZPos, m_boardAdapter.GetNonCopperLayerThickness() );
@@ -1161,18 +1194,14 @@ void RENDER_3D_OPENGL::get3dModelsSelected( std::list<MODELTORENDER> &aDstRender
                 continue;
         }
 
-        bool hasModels = !fp->Models().empty();
-        bool showMissing = m_boardAdapter.m_Cfg->m_Render.show_missing_models;
-
-        if( hasModels || showMissing )
+        if( !fp->Models().empty() || m_boardAdapter.ShowMissingModels() )
         {
             if( m_boardAdapter.IsFootprintShown( fp ) )
             {
                 const bool isFlipped = fp->IsFlipped();
 
                 if( aGetTop == !isFlipped || aGetBot == isFlipped )
-                    get3dModelsFromFootprint( aDstRenderList, fp, aRenderTransparentOnly,
-                                              highlight );
+                    get3dModelsFromFootprint( aDstRenderList, fp, aRenderTransparentOnly, highlight );
             }
         }
     }
@@ -1270,7 +1299,7 @@ void RENDER_3D_OPENGL::renderPlaceholderForFootprint( std::list<MODELTORENDER>& 
                                                       const glm::mat4& aFpMatrix, const FOOTPRINT* aFootprint,
                                                       bool aRenderTransparentOnly, bool aIsSelected, float aOpacity )
 {
-    if( !m_boardAdapter.m_Cfg->m_Render.show_missing_models || !m_placeholderModel )
+    if( !m_boardAdapter.ShowMissingModels() || !m_placeholderModel )
         return;
 
     // Suppress placeholder if a valid extruded body was built
@@ -1360,7 +1389,7 @@ void RENDER_3D_OPENGL::renderExtrudedBodies( bool aTransparentPass )
 
     for( auto& [fp, renderListDef] : m_extrudedBodyLists )
     {
-        const EXTRUDED_3D_BODY* body = fp->GetExtrudedBody();
+        const EXTRUDED_3D_BODY* body = fp->GetBody() ? fp->GetBody()->GetExtruded() : nullptr;
 
         if( !body )
             continue;

@@ -32,6 +32,9 @@
 #include <kiid.h>
 #include <hotkeys_basic.h>
 #include <lib_id.h>
+#include <tool/arc_draw_mode.h>
+
+#include <set>
 
 struct EDA_SEARCH_DATA;
 struct PLUGIN_ACTION;
@@ -48,6 +51,7 @@ class SEARCH_PANE;
 class HOTKEY_CYCLE_POPUP;
 class PROPERTIES_PANEL;
 class NET_INSPECTOR_PANEL;
+class GIT_COMMIT_PANE;
 enum class BITMAP_TYPE;
 class FILEDLG_HOOK_NEW_LIBRARY;
 
@@ -249,6 +253,11 @@ public:
     void OnUpdateSelectZoom( wxUpdateUIEvent& aEvent );
 
     /**
+     * Show the current zoom in the zoom wxchoice, as a preset or as its own entry.
+     */
+    void SyncZoomSelectBox();
+
+    /**
      * Rebuild the grid combobox to respond to any changes in the GUI (units, user
      * grid changes, etc.)
      */
@@ -427,6 +436,16 @@ public:
 
     static const wxString NetInspectorPanelName() { return wxS( "NetInspector" ); }
 
+
+    void ToggleGitCommitPane();
+
+    /// Attach the git session if needed and refresh the version-control pane, when it is shown.
+    /// Editors call this after a save so the pane reflects the change without waiting for a git
+    /// operation to broadcast a refresh.
+    void RefreshGitCommitPane();
+
+    bool IsGitCommitPaneShown();
+
     static const wxString DesignBlocksPaneName() { return wxS( "DesignBlocks" ); }
 
     static const wxString RemoteSymbolPaneName() { return wxS( "RemoteSymbol" ); }
@@ -452,9 +471,11 @@ public:
     virtual void SwitchCanvas( EDA_DRAW_PANEL_GAL::GAL_TYPE aCanvasType );
 
     /**
-     * Keep every frame on the fallback canvas for this session without changing the saved preference.
+     * Keep every frame off a canvas for this session without changing the saved preference.
      */
-    static void SetOpenGLFailureOccurred() { m_openGLFailureOccured = true; }
+    static void SetCanvasFailed( EDA_DRAW_PANEL_GAL::GAL_TYPE aCanvas ) { m_failedCanvases.insert( aCanvas ); }
+
+    static bool CanvasFailed( EDA_DRAW_PANEL_GAL::GAL_TYPE aCanvas ) { return m_failedCanvases.contains( aCanvas ); }
 
     /**
      * Return a pointer to GAL-based canvas of given EDA draw frame.
@@ -534,6 +555,14 @@ public:
                                                                       APP_SETTINGS_BASE* aCfg );
 
     /**
+     * Append actions from API plugins to the given menu.
+     *
+     * @param aMenu is the menu to add the plugin actions to
+     * @return the number of actions added to the menu
+     */
+    size_t AddApiPluginMenuItems( ACTION_MENU* aMenu );
+
+    /**
      * Append actions from API plugins to the given toolbar.
      *
      * @param aToolbar is the toolbar to add the plugins to
@@ -550,6 +579,19 @@ protected:
     void unitsChangeRefresh() override;
 
     void setupUIConditions() override;
+
+    /// The action that starts the arc tool in @a aMode, or nullptr in a frame without an arc tool.
+    virtual const TOOL_ACTION* drawArcAction( ARC_DRAW_MODE aMode ) const { return nullptr; }
+
+    /**
+     * Check each arc mode's tool action while the arc tool runs in that mode.
+     *
+     * @param aDrawArc is the arc tool action without a mode; its name must begin every arc tool action's name.
+     * @param aEnable enables the arc tool actions.
+     */
+    void setArcModeConditions( const TOOL_ACTION& aDrawArc, const std::function<bool( const SELECTION& )>& aEnable );
+
+    void syncToolbarSelections() override;
 
     void setupUnits( APP_SETTINGS_BASE* aCfg );
 
@@ -609,14 +651,15 @@ protected:
     SEARCH_PANE*         m_searchPane;
     PROPERTIES_PANEL*    m_propertiesPanel;
     NET_INSPECTOR_PANEL* m_netInspectorPanel;
+    GIT_COMMIT_PANE*     m_gitCommitPane;
 
     HOTKEY_CYCLE_POPUP* m_hotkeyPopup;
 
     /// The current canvas type.
     EDA_DRAW_PANEL_GAL::GAL_TYPE    m_canvasType;
 
-    static bool m_openGLFailureOccured; ///< Has any failure occurred when switching to OpenGL in
-                                        ///< any EDA_DRAW_FRAME?
+    /** The canvases that have failed in any EDA_DRAW_FRAME this session */
+    static std::set<EDA_DRAW_PANEL_GAL::GAL_TYPE> m_failedCanvases;
 
 private:
     BASE_SCREEN*                m_currentScreen;      ///< current used SCREEN

@@ -32,7 +32,7 @@
 #include <confirm.h>
 #include <dialog_shim.h>
 #include <grid_tricks.h>
-#include <kiface_ids.h>
+#include <kiface_services.h>
 #include <kiplatform/ui.h>
 #include <kiway.h>
 #include <kiway_holder.h>
@@ -515,16 +515,17 @@ void PANEL_SYMBOL_PIN_MAP::applyColumnFootprint( int aCol, const wxString& aFoot
     if( mapName.IsEmpty() )
         return;
 
-    auto currentFootprint = [&]() -> wxString
-    {
-        for( const ASSOCIATED_FOOTPRINT& a : m_associations )
-        {
-            if( a.m_MapName == mapName )
-                return a.m_FootprintLibId.GetUniStringLibId();
-        }
+    auto currentFootprint =
+            [&]() -> wxString
+            {
+                for( const ASSOCIATED_FOOTPRINT& assoc : m_associations )
+                {
+                    if( assoc.m_MapName == mapName )
+                        return assoc.m_FootprintLibId.GetUniStringLibId();
+                }
 
-        return wxEmptyString;
-    };
+                return wxEmptyString;
+            };
 
     wxString fpid = aFootprintId;
     fpid.Trim().Trim( false );
@@ -532,16 +533,16 @@ void PANEL_SYMBOL_PIN_MAP::applyColumnFootprint( int aCol, const wxString& aFoot
     LIB_ID fpId;
     fpId.Parse( fpid );
 
-    if( !fpId.IsValid() )
+    if( !fpid.IsEmpty() && !fpId.IsValid() )
     {
         wxMessageBox( _( "Invalid footprint identifier." ), _( "Assign Footprint" ), wxOK | wxICON_ERROR, this );
         m_grid->SetCellValue( 0, aCol, currentFootprint() );
         return;
     }
 
-    for( const ASSOCIATED_FOOTPRINT& a : m_associations )
+    for( const ASSOCIATED_FOOTPRINT& assoc : m_associations )
     {
-        if( a.m_MapName != mapName && a.m_FootprintLibId == fpId && !fpid.IsEmpty() )
+        if( assoc.m_MapName != mapName && assoc.m_FootprintLibId == fpId && !fpid.IsEmpty() )
         {
             wxMessageBox( _( "That footprint is already assigned to another pin map." ), _( "Assign Footprint" ),
                           wxOK | wxICON_INFORMATION, this );
@@ -551,9 +552,10 @@ void PANEL_SYMBOL_PIN_MAP::applyColumnFootprint( int aCol, const wxString& aFoot
     }
 
     m_associations.erase( std::remove_if( m_associations.begin(), m_associations.end(),
-                                          [&]( const ASSOCIATED_FOOTPRINT& a )
+                                          [&]( const ASSOCIATED_FOOTPRINT& assoc )
                                           {
-                                              return a.m_MapName == mapName;
+                                              return assoc.m_MapName == mapName
+                                                    && ( !fpid.IsEmpty() || assoc.m_FootprintLibId == fpId );
                                           } ),
                           m_associations.end() );
 
@@ -663,9 +665,10 @@ const std::set<wxString>& PANEL_SYMBOL_PIN_MAP::padNumbersFor( const wxString& a
     {
         if( KIFACE* cvpcb = holder->Kiway().KiFACE( KIWAY::FACE_CVPCB ) )
         {
-            typedef void ( *PAD_NUMBERS_FN_PTR )( const wxString&, PROJECT*, std::set<wxString>& );
+            KIFACE_FOOTPRINT_PAD_NUMBERS_SERVICE::Type fetch =
+                    GetKifaceService<KIFACE_FOOTPRINT_PAD_NUMBERS_SERVICE>( cvpcb );
 
-            if( auto fetch = (PAD_NUMBERS_FN_PTR) cvpcb->IfaceOrAddress( KIFACE_FOOTPRINT_PAD_NUMBERS ) )
+            if( fetch )
                 fetch( aFootprintId, &holder->Prj(), pads );
         }
     }

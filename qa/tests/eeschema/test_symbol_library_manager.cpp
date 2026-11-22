@@ -34,6 +34,7 @@
 #include <sch_io/sch_io_mgr.h>
 #include <richio.h>
 
+#include <wx/ffile.h>
 #include <wx/filename.h>
 
 class SYMBOL_LIBRARY_MANAGER_TEST_FIXTURE
@@ -224,6 +225,35 @@ BOOST_AUTO_TEST_CASE( NewSymbolCreation )
 
 
 /**
+ * A power symbol's Value field is its net name, and the symbol properties dialog no longer
+ * forces that field to match the symbol name. Creation is the only place left that fills it
+ * in, so a new power symbol arriving with an empty Value would place an unnamed net.
+ */
+BOOST_AUTO_TEST_CASE( NewPowerSymbolSeedsValueFromName )
+{
+    NEW_SYMBOL_PROPERTIES props;
+
+    props.name = wxS( "+5V" );
+    props.reference = wxS( "#PWR" );
+    props.unitCount = 1;
+    props.pinNameInside = false;
+    props.pinTextPosition = 0;
+    props.powerSymbol = true;
+    props.showPinNumber = false;
+    props.showPinName = false;
+    props.unitsInterchangeable = true;
+    props.includeInBom = false;
+    props.includeOnBoard = false;
+    props.alternateBodyStyle = false;
+
+    std::unique_ptr<LIB_SYMBOL> symbol = LIB_SYMBOL_LIBRARY_MANAGER::CreateSymbol( props, nullptr );
+
+    BOOST_REQUIRE( symbol->IsGlobalPower() );
+    BOOST_CHECK_EQUAL( symbol->GetValueField().GetText(), props.name );
+}
+
+
+/**
  * Test that LIB_BUFFER correctly deletes symbols from the library file when saved.
  *
  * This test verifies the fix for the bug where deleting a derived symbol from the symbol
@@ -334,7 +364,7 @@ BOOST_AUTO_TEST_CASE( DeletedSymbolsAreRemovedFromFile )
         }
 
         plugin->SaveLibrary( libPath );
-        libBuffer.ClearDeletedBuffer();
+        libBuffer.ClearAddedAndDeletedBufferLists();
     }
 
     // Step 5: Reload the library and verify the derived symbol is gone
@@ -707,6 +737,328 @@ BOOST_AUTO_TEST_CASE( DerivedSymbolNamesExcludeRootFromNameCycle )
     BOOST_REQUIRE( bufferA != nullptr );
     BOOST_CHECK( libBuffer.DeleteBuffer( *bufferA ) );
     BOOST_CHECK( libBuffer.GetBuffers().empty() );
+}
+
+namespace
+{
+
+wxString makeTempLibrary( const std::vector<wxString>& aNames, wxString& aDir )
+{
+    aDir = wxFileName::CreateTempFileName( wxS( "kicad_test_" ) );
+    wxRemoveFile( aDir );
+    wxFileName::Mkdir( aDir );
+
+    wxString            path = wxFileName( aDir, wxS( "lib.kicad_sym" ) ).GetFullPath();
+    IO_RELEASER<SCH_IO> plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+
+    plugin->CreateLibrary( path );
+
+    for( const wxString& name : aNames )
+        plugin->SaveSymbol( path, std::make_unique<LIB_SYMBOL>( name ) );
+
+    plugin->SaveLibrary( path );
+    return path;
+}
+
+
+void bufferSymbols( LIB_BUFFER& aBuffer, const wxString& aPath, const std::vector<wxString>& aNames )
+{
+    IO_RELEASER<SCH_IO> plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+
+    for( const wxString& name : aNames )
+    {
+        LIB_SYMBOL* loaded = plugin->LoadSymbol( aPath, name );
+        BOOST_REQUIRE( loaded );
+        aBuffer.CreateBuffer( std::make_unique<LIB_SYMBOL>( *loaded ), std::make_unique<SCH_SCREEN>() );
+    }
+}
+
+
+void renameBuffer( LIB_BUFFER& aBuffer, SYMBOL_BUFFER& aSymbolBuf, const wxString& aNewName )
+{
+    LIB_SYMBOL renamed( aSymbolBuf.GetSymbol() );
+    renamed.SetName( aNewName );
+    aBuffer.UpdateBuffer( aSymbolBuf, renamed );
+}
+
+
+void saveLibrary( LIB_BUFFER& aBuffer, const wxString& aPath )
+{
+    IO_RELEASER<SCH_IO> plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+
+    for( const std::shared_ptr<SYMBOL_BUFFER>& buf : aBuffer.GetBuffers() )
+        aBuffer.SaveBuffer( *buf, aPath, &*plugin, true );
+
+    plugin->SaveLibrary( aPath );
+}
+
+
+bool inLibrary( const wxString& aPath, const wxString& aName )
+{
+    IO_RELEASER<SCH_IO> plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+    return plugin->LoadSymbol( aPath, aName ) != nullptr;
+}
+
+} // namespace
+
+
+/**
+ * Two symbols that trade names must both survive the save.
+ */
+BOOST_AUTO_TEST_CASE( SwappedSymbolNamesSurviveSave )
+{
+    wxString dir;
+    wxString path = makeTempLibrary( { wxS( "A" ), wxS( "B" ) }, dir );
+
+    LIB_BUFFER libBuffer( wxS( "TestLibrary" ) );
+    bufferSymbols( libBuffer, path, { wxS( "A" ), wxS( "B" ) } );
+
+    // Both buffers must be found before either is renamed, or the second lookup returns the
+    // buffer the first rename just moved onto that name
+    std::shared_ptr<SYMBOL_BUFFER> bufA = libBuffer.GetBuffer( wxS( "A" ) );
+    std::shared_ptr<SYMBOL_BUFFER> bufB = libBuffer.GetBuffer( wxS( "B" ) );
+
+    BOOST_REQUIRE( bufA );
+    BOOST_REQUIRE( bufB );
+
+    renameBuffer( libBuffer, *bufA, wxS( "B" ) );
+    renameBuffer( libBuffer, *bufB, wxS( "A" ) );
+    saveLibrary( libBuffer, path );
+
+    BOOST_CHECK( inLibrary( path, wxS( "A" ) ) );
+    BOOST_CHECK( inLibrary( path, wxS( "B" ) ) );
+
+    wxFileName::Rmdir( dir, wxPATH_RMDIR_RECURSIVE );
+}
+
+
+/**
+ * An ordinary rename must still drop the old name, which is what the delete exists for.
+ */
+BOOST_AUTO_TEST_CASE( RenamedSymbolLosesItsOldName )
+{
+    wxString dir;
+    wxString path = makeTempLibrary( { wxS( "Old" ) }, dir );
+
+    LIB_BUFFER libBuffer( wxS( "TestLibrary" ) );
+    bufferSymbols( libBuffer, path, { wxS( "Old" ) } );
+
+    std::shared_ptr<SYMBOL_BUFFER> buf = libBuffer.GetBuffer( wxS( "Old" ) );
+
+    BOOST_REQUIRE( buf );
+
+    renameBuffer( libBuffer, *buf, wxS( "New" ) );
+    saveLibrary( libBuffer, path );
+
+    BOOST_CHECK( inLibrary( path, wxS( "New" ) ) );
+    BOOST_CHECK( !inLibrary( path, wxS( "Old" ) ) );
+
+    wxFileName::Rmdir( dir, wxPATH_RMDIR_RECURSIVE );
+}
+
+
+/*
+ * A pull can change a library under the editor's buffers. Saving one edited symbol must keep what the
+ * file now holds for the others, and leave its derived symbols derived.
+ */
+BOOST_AUTO_TEST_CASE( SaveKeepsChangesMadeUnderTheBuffer )
+{
+    wxString tempDir = wxFileName::CreateTempFileName( wxS( "kicad_test_" ) );
+    wxRemoveFile( tempDir );
+    wxFileName::Mkdir( tempDir );
+    wxString libPath = wxFileName( tempDir, wxS( "4xxx.kicad_sym" ) ).GetFullPath();
+
+    BOOST_REQUIRE( wxCopyFile( KI_TEST::GetEeschemaTestDataDir() + "/libs/4xxx.kicad_sym", libPath ) );
+
+    LIB_BUFFER libBuffer( wxS( "4xxx" ) );
+
+    {
+        IO_RELEASER<SCH_IO>      plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+        std::vector<LIB_SYMBOL*> originals;
+        plugin->EnumerateSymbolLib( originals, libPath );
+
+        for( LIB_SYMBOL* symbol : originals )
+        {
+            if( libBuffer.GetSymbol( symbol->GetName() ) )
+                continue;
+
+            auto copy = std::make_unique<LIB_SYMBOL>( *symbol );
+
+            if( symbol->IsDerived() )
+            {
+                LIB_SYMBOL* parent = libBuffer.GetSymbol( symbol->GetParent().lock()->GetName() );
+
+                if( !parent )
+                {
+                    auto newParent = std::make_unique<LIB_SYMBOL>( *symbol->GetParent().lock() );
+                    parent = newParent.get();
+                    libBuffer.CreateBuffer( std::move( newParent ), std::make_unique<SCH_SCREEN>() );
+                }
+
+                copy->SetParent( parent );
+            }
+
+            libBuffer.CreateBuffer( std::move( copy ), std::make_unique<SCH_SCREEN>() );
+        }
+    }
+
+    {
+        wxFFile     file( libPath, wxS( "rb" ) );
+        std::string text( static_cast<size_t>( file.Length() ), '\0' );
+        BOOST_REQUIRE( file.Read( text.data(), text.size() ) == text.size() );
+        file.Close();
+
+        size_t description = text.find( "Dual D  FlipFlop, Set & reset" );
+        BOOST_REQUIRE( description != std::string::npos );
+        text.replace( description, 29, "Dual D flip-flop, pulled" );
+
+        wxFFile out( libPath, wxS( "wb" ) );
+        BOOST_REQUIRE( out.Write( text.data(), text.size() ) == text.size() );
+    }
+
+    std::shared_ptr<SYMBOL_BUFFER> edited = libBuffer.GetBuffer( wxS( "4016" ) );
+    BOOST_REQUIRE( edited );
+    edited->GetSymbol().GetDescriptionField().SetText( wxS( "Quad bilateral switch, edited" ) );
+    edited->GetScreen()->SetContentModified();
+
+    // The second save has nothing modified and must leave the file whole
+    for( int ii = 0; ii < 2; ++ii )
+    {
+        IO_RELEASER<SCH_IO> plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+        BOOST_CHECK( libBuffer.SaveModifiedBuffers( libPath, &*plugin ) );
+        plugin->SaveLibrary( libPath );
+        edited->GetScreen()->SetContentModified( false );
+    }
+
+    IO_RELEASER<SCH_IO> plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+    LIB_SYMBOL*         pulled = plugin->LoadSymbol( libPath, wxS( "4013" ) );
+    LIB_SYMBOL*         parent = plugin->LoadSymbol( libPath, wxS( "4016" ) );
+    LIB_SYMBOL*         derived = plugin->LoadSymbol( libPath, wxS( "4066" ) );
+
+    BOOST_REQUIRE( pulled && parent && derived );
+    BOOST_CHECK_EQUAL( pulled->GetDescription(), wxS( "Dual D flip-flop, pulled" ) );
+    BOOST_CHECK_EQUAL( parent->GetDescription(), wxS( "Quad bilateral switch, edited" ) );
+    BOOST_CHECK( derived->IsDerived() );
+
+    wxFileName::Rmdir( tempDir, wxPATH_RMDIR_RECURSIVE );
+}
+
+
+/// Fill a buffer from the acme power library the way SYMBOL_LIBRARY_MANAGER does
+static void loadAcmePower( LIB_BUFFER& aBuffer, const wxString& aPath )
+{
+    IO_RELEASER<SCH_IO>      plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+    std::vector<LIB_SYMBOL*> originals;
+    plugin->EnumerateSymbolLib( originals, aPath );
+
+    for( LIB_SYMBOL* symbol : originals )
+        aBuffer.CreateBuffer( std::make_unique<LIB_SYMBOL>( *symbol ), std::make_unique<SCH_SCREEN>() );
+
+    BOOST_REQUIRE_EQUAL( aBuffer.GetBuffers().size(), 4 );
+}
+
+
+static wxString acmePowerPath()
+{
+    return wxFileName( KI_TEST::GetEeschemaTestDataDir(), wxS( "acme_power.kicad_sym" ) ).GetFullPath();
+}
+
+
+// Reverting a symbol that was never saved left it in the library tree
+BOOST_AUTO_TEST_CASE( RevertDropsNeverSavedSymbol )
+{
+    LIB_BUFFER libBuffer( wxS( "acme-power" ) );
+    loadAcmePower( libBuffer, acmePowerPath() );
+
+    auto parent = std::make_unique<LIB_SYMBOL>( wxS( "TPS7A2033" ) );
+    auto child = std::make_unique<LIB_SYMBOL>( wxS( "TPS7A2033_ALT" ) );
+    child->SetParent( parent.get() );
+
+    libBuffer.CreateBuffer( std::move( parent ), std::make_unique<SCH_SCREEN>(), true );
+    libBuffer.CreateBuffer( std::move( child ), std::make_unique<SCH_SCREEN>(), true );
+
+    std::shared_ptr<SYMBOL_BUFFER> saved = libBuffer.GetBuffer( wxS( "GND" ) );
+    std::shared_ptr<SYMBOL_BUFFER> added = libBuffer.GetBuffer( wxS( "TPS7A2033" ) );
+    std::shared_ptr<SYMBOL_BUFFER> derived = libBuffer.GetBuffer( wxS( "TPS7A2033_ALT" ) );
+    BOOST_REQUIRE( saved && added && derived );
+
+    BOOST_CHECK_EQUAL( libBuffer.RevertBuffer( *saved, true ), wxS( "GND" ) );
+
+    // A never-saved parent stays while a symbol derives from it
+    BOOST_CHECK_EQUAL( libBuffer.RevertBuffer( *added, true ), wxS( "TPS7A2033" ) );
+    BOOST_CHECK( libBuffer.RevertBuffer( *derived, true ).IsEmpty() );
+    BOOST_CHECK( libBuffer.RevertBuffer( *added, true ).IsEmpty() );
+
+    BOOST_CHECK_EQUAL( libBuffer.GetBuffers().size(), 4 );
+    BOOST_CHECK( libBuffer.GetSymbol( wxS( "GND" ) ) );
+    BOOST_CHECK( !libBuffer.GetSymbol( wxS( "TPS7A2033" ) ) );
+}
+
+
+// Discarding a tab's edits must keep a pasted or new symbol, and keep it for the next save
+BOOST_AUTO_TEST_CASE( DiscardKeepsNeverSavedSymbol )
+{
+    wxString tempDir = wxFileName::CreateTempFileName( wxS( "kicad_test_" ) );
+    wxRemoveFile( tempDir );
+    wxFileName::Mkdir( tempDir );
+    wxString libPath = wxFileName( tempDir, wxS( "acme_power.kicad_sym" ) ).GetFullPath();
+
+    BOOST_REQUIRE( wxCopyFile( acmePowerPath(), libPath ) );
+
+    LIB_BUFFER libBuffer( wxS( "acme-power" ) );
+    loadAcmePower( libBuffer, libPath );
+
+    auto newScreen = std::make_unique<SCH_SCREEN>();
+    newScreen->SetContentModified();
+    libBuffer.CreateBuffer( std::make_unique<LIB_SYMBOL>( wxS( "TPS7A2033" ) ), std::move( newScreen ), true );
+
+    std::shared_ptr<SYMBOL_BUFFER> added = libBuffer.GetBuffer( wxS( "TPS7A2033" ) );
+    BOOST_REQUIRE( added );
+
+    BOOST_CHECK_EQUAL( libBuffer.RevertBuffer( *added, false ), wxS( "TPS7A2033" ) );
+    BOOST_CHECK( libBuffer.GetSymbol( wxS( "TPS7A2033" ) ) );
+    BOOST_CHECK( added->IsModified() );
+
+    {
+        IO_RELEASER<SCH_IO> plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+        BOOST_REQUIRE( libBuffer.SaveModifiedBuffers( libPath, &*plugin ) );
+        plugin->SaveLibrary( libPath );
+    }
+
+    IO_RELEASER<SCH_IO> plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+    BOOST_CHECK( plugin->LoadSymbol( libPath, wxS( "TPS7A2033" ) ) );
+
+    wxFileName::Rmdir( tempDir, wxPATH_RMDIR_RECURSIVE );
+}
+
+
+// A symbol already written to the file must survive Revert even if the rest of its library save failed
+BOOST_AUTO_TEST_CASE( RevertKeepsWrittenSymbol )
+{
+    wxString tempDir = wxFileName::CreateTempFileName( wxS( "kicad_test_" ) );
+    wxRemoveFile( tempDir );
+    wxFileName::Mkdir( tempDir );
+    wxString libPath = wxFileName( tempDir, wxS( "acme_power.kicad_sym" ) ).GetFullPath();
+
+    BOOST_REQUIRE( wxCopyFile( acmePowerPath(), libPath ) );
+
+    LIB_BUFFER libBuffer( wxS( "acme-power" ) );
+    loadAcmePower( libBuffer, libPath );
+
+    auto newScreen = std::make_unique<SCH_SCREEN>();
+    newScreen->SetContentModified();
+    libBuffer.CreateBuffer( std::make_unique<LIB_SYMBOL>( wxS( "TPS7A2033" ) ), std::move( newScreen ), true );
+
+    std::shared_ptr<SYMBOL_BUFFER> added = libBuffer.GetBuffer( wxS( "TPS7A2033" ) );
+    BOOST_REQUIRE( added );
+
+    IO_RELEASER<SCH_IO> plugin( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+    BOOST_REQUIRE( libBuffer.SaveModifiedBuffers( libPath, &*plugin ) );
+
+    BOOST_CHECK_EQUAL( libBuffer.RevertBuffer( *added, true ), wxS( "TPS7A2033" ) );
+    BOOST_CHECK( libBuffer.GetSymbol( wxS( "TPS7A2033" ) ) );
+
+    wxFileName::Rmdir( tempDir, wxPATH_RMDIR_RECURSIVE );
 }
 
 

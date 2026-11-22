@@ -20,6 +20,19 @@
 namespace KIGIT
 {
 /**
+ * Holds libgit2 initialized while it lives, for a helper that can run before any git backend exists.
+ * Declare it before the libgit2 objects it guards, so they are freed first.
+ */
+struct LIBGIT2_SCOPE
+{
+    LIBGIT2_SCOPE() { git_libgit2_init(); }
+    ~LIBGIT2_SCOPE() { git_libgit2_shutdown(); }
+
+    LIBGIT2_SCOPE( const LIBGIT2_SCOPE& ) = delete;
+    LIBGIT2_SCOPE& operator=( const LIBGIT2_SCOPE& ) = delete;
+};
+
+/**
 * @brief A unique pointer for git_repository objects with automatic cleanup.
 */
 using GitRepositoryPtr = std::unique_ptr<git_repository,
@@ -89,6 +102,22 @@ using GitDiffPtr = std::unique_ptr<git_diff,
                                       decltype([](git_diff* aDiff) {
                                           git_diff_free(aDiff);
                                       })>;
+
+/**
+* @brief A unique pointer for git_patch objects with automatic cleanup.
+*/
+using GitPatchPtr = std::unique_ptr<git_patch,
+                                       decltype([](git_patch* aPatch) {
+                                           git_patch_free(aPatch);
+                                       })>;
+
+/**
+* @brief A unique pointer for git_reference_iterator objects with automatic cleanup.
+*/
+using GitReferenceIteratorPtr = std::unique_ptr<git_reference_iterator,
+                                                   decltype([](git_reference_iterator* aIter) {
+                                                       git_reference_iterator_free(aIter);
+                                                   })>;
 
 /**
 * @brief A unique pointer for git_signature objects with automatic cleanup.
@@ -249,6 +278,14 @@ using GitIndexConflictIteratorPtr = std::unique_ptr<git_index_conflict_iterator,
                                                        decltype([](git_index_conflict_iterator* aIterator) {
                                                            git_index_conflict_iterator_free(aIterator);
                                                        })>;
+
+/**
+* @brief A unique pointer for git_tree_entry objects with automatic cleanup.
+*/
+using GitTreeEntryPtr = std::unique_ptr<git_tree_entry,
+                                           decltype([](git_tree_entry* aEntry) {
+                                               git_tree_entry_free(aEntry);
+                                           })>;
 
 /**
 * @brief A unique pointer for git_status_list objects with automatic cleanup.

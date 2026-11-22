@@ -54,8 +54,6 @@ enum FRAME_T
 
     FRAME_PL_EDITOR,
 
-    FRAME_BM2CMP,
-
     FRAME_CALC,
 
     /// Top-level host for the 3-way merge resolution dialog. Lives in the
@@ -106,6 +104,7 @@ enum FRAME_T
     PANEL_PCB_TOOLBARS,
     PANEL_PCB_ACTION_PLUGINS,
     PANEL_PCB_ORIGINS_AXES,
+    PANEL_PCB_PROJECT_DEFAULTS,
 
     PANEL_3DV_DISPLAY_OPTIONS,
     PANEL_3DV_OPENGL,

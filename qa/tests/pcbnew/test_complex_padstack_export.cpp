@@ -33,6 +33,7 @@
 #include <exporters/export_hyperlynx.h>
 #include <locale_io.h>
 #include <pcbnew_utils/board_file_utils.h>
+#include <qa_utils/file_utils.h>
 #include <specctra_import_export/specctra.h>
 
 #include <wx/filename.h>
@@ -63,7 +64,7 @@ public:
     }
 
     const std::filesystem::path& Path() const { return m_path; }
-    wxString                     WxStr() const { return wxString::FromUTF8( m_path.string() ); }
+    wxString                     WxStr() const { return KI_TEST::ToWxPath( m_path ); }
 
 private:
     std::filesystem::path m_path;
@@ -86,10 +87,7 @@ std::unique_ptr<BOARD> loadBoard( const char* aName )
 
     BOOST_REQUIRE( std::filesystem::exists( boardPath ) );
 
-    std::unique_ptr<BOARD> board = KI_TEST::ReadBoardFromFileOrStream( boardPath.string() );
-    BOOST_REQUIRE( board );
-
-    return board;
+    return KI_TEST::RequireBoardFromPcbnewQAData( aName );
 }
 
 

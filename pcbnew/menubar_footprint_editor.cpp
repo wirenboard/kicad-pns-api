@@ -22,7 +22,10 @@
 
 #include "footprint_edit_frame.h"
 #include "pcbnew_id.h"
+
 #include <bitmaps.h>
+#include <pgm_base.h>
+#include <settings/common_settings.h>
 #include <tool/actions.h>
 #include <tool/action_menu.h>
 #include <tool/tool_manager.h>
@@ -72,6 +75,7 @@ void FOOTPRINT_EDIT_FRAME::doReCreateMenuBar()
 
     submenuExport->Add( PCB_ACTIONS::exportFootprint, ACTION_MENU::NORMAL, _( "Footprint..." ) );
     submenuExport->Add( PCB_ACTIONS::exportFootprintAsSVG, ACTION_MENU::NORMAL, _( "Footprint as &SVG..." ) );
+    submenuExport->Add( ACTIONS::exportForOlderVersion, ACTION_MENU::NORMAL, _( "For Older KiCad Version..." ) );
     submenuExport->Add( _( "View as &PNG..." ),
                         _( "Create a PNG file from the current view" ),
                         ID_FPEDIT_SAVE_PNG,
@@ -119,9 +123,9 @@ void FOOTPRINT_EDIT_FRAME::doReCreateMenuBar()
 
     editMenu->AppendSeparator();
     editMenu->Add( PCB_ACTIONS::editTextAndGraphics );
+    editMenu->Add( PCB_ACTIONS::mirrorInteractive );
     editMenu->Add( PCB_ACTIONS::showLibFootprintFieldsTable );
     editMenu->Add( PCB_ACTIONS::padTable );
-    editMenu->Add( PCB_ACTIONS::defaultPadProperties );
     editMenu->Add( PCB_ACTIONS::extendGraphic );
     editMenu->Add( PCB_ACTIONS::trimGraphic );
     editMenu->Add( PCB_ACTIONS::enumeratePads );
@@ -224,6 +228,7 @@ void FOOTPRINT_EDIT_FRAME::doReCreateMenuBar()
 
     inspectMenu->AppendSeparator();
     inspectMenu->Add( PCB_ACTIONS::checkFootprint );
+    inspectMenu->Add( PCB_ACTIONS::showFootprintUsers );
 
     inspectMenu->AppendSeparator();
     inspectMenu->Add( PCB_ACTIONS::showDatasheet );
@@ -240,6 +245,18 @@ void FOOTPRINT_EDIT_FRAME::doReCreateMenuBar()
     toolsMenu->Add( PCB_ACTIONS::cleanupGraphics );
     toolsMenu->Add( PCB_ACTIONS::repairFootprint );
 
+    ACTION_MENU* submenuActionPlugins = new ACTION_MENU( false, selTool );
+    submenuActionPlugins->SetTitle( _( "External Plugins" ) );
+    submenuActionPlugins->SetIcon( BITMAPS::puzzle_piece );
+
+    if( Pgm().GetCommonSettings()->m_Api.enable_server && AddApiPluginMenuItems( submenuActionPlugins ) > 0 )
+        submenuActionPlugins->AppendSeparator();
+
+    submenuActionPlugins->Add( ACTIONS::pluginsReload );
+    submenuActionPlugins->Add( ACTIONS::pluginsShowFolder );
+
+    toolsMenu->AppendSeparator();
+    toolsMenu->Add( submenuActionPlugins );
 
     //-- Preferences menu -------------------------------------------------
     //

@@ -34,6 +34,7 @@
 #include <embedded_files.h>
 #include <footprint.h>
 #include <pcb_barcode.h>
+#include <pcb_3d_body.h>
 #include <pcb_dimension.h>
 #include <pcb_drill_chart.h>
 #include <pcb_drill_map.h>
@@ -204,6 +205,32 @@ BOOST_AUTO_TEST_CASE( FootprintExcludeFromSimulationRoundTrip )
 }
 
 
+BOOST_AUTO_TEST_CASE( FootprintNetTieEscapedPadRoundTrip )
+{
+    BOARD     board;
+    FOOTPRINT footprint( &board );
+
+    // The file format escapes a comma inside a pad number with a backslash
+    footprint.AddNetTiePadGroup( wxS( "A\\,B, C" ) );
+
+    kiapi::board::types::Footprint proto;
+    footprint.SerializeDefinition( &proto );
+
+    BOOST_REQUIRE_EQUAL( proto.net_ties_size(), 1 );
+    BOOST_REQUIRE_EQUAL( proto.net_ties( 0 ).pad_number_size(), 2 );
+    BOOST_CHECK_EQUAL( proto.net_ties( 0 ).pad_number( 0 ), "A,B" );
+    BOOST_CHECK_EQUAL( proto.net_ties( 0 ).pad_number( 1 ), "C" );
+
+    FOOTPRINT restored( &board );
+    BOOST_REQUIRE( restored.DeserializeDefinition( proto ) );
+
+    std::map<wxString, int> groups = restored.MapPadNumbersToNetTieGroups();
+
+    BOOST_CHECK( groups.contains( wxS( "A,B" ) ) && groups[wxS( "A,B" )] == 0 );
+    BOOST_CHECK( groups.contains( wxS( "C" ) ) && groups[wxS( "C" )] == 0 );
+}
+
+
 BOOST_FIXTURE_TEST_CASE( DrillChartColumnWidths, PROTO_TEST_FIXTURE )
 {
     KI_TEST::LoadBoard( m_settingsManager, "api_kitchen_sink", m_board );
@@ -231,7 +258,7 @@ BOOST_FIXTURE_TEST_CASE( DrillChartColumnWidths, PROTO_TEST_FIXTURE )
     for( int64_t width : { int64_t( 0 ), int64_t( GENERATED_TABLE_MAX_COLUMN_WIDTH ) } )
     {
         proto.mutable_columns( 0 )->mutable_width()->set_value_nm( width );
-        any.PackFrom( proto );
+        (void) any.PackFrom( proto );
         PCB_DRILL_CHART restored( m_board.get() );
         BOOST_REQUIRE( restored.Deserialize( any ) );
         BOOST_CHECK_EQUAL( restored.Columns().front().m_Width, width );
@@ -241,7 +268,7 @@ BOOST_FIXTURE_TEST_CASE( DrillChartColumnWidths, PROTO_TEST_FIXTURE )
                           std::numeric_limits<int64_t>::max() } )
     {
         proto.mutable_columns( 0 )->mutable_width()->set_value_nm( width );
-        any.PackFrom( proto );
+        (void) any.PackFrom( proto );
         PCB_DRILL_CHART restored( m_board.get() );
         BOOST_REQUIRE( restored.Deserialize( any ) );
         BOOST_CHECK_EQUAL( restored.Columns().front().m_Width,
@@ -418,6 +445,74 @@ BOOST_AUTO_TEST_CASE( GridItems )
 }
 
 
+BOOST_AUTO_TEST_CASE( Body3D )
+{
+    const auto makeBody =
+            []()
+            {
+                return std::make_unique<PCB_3D_BODY>();
+            };
+
+    // Populated body, including both layer sentinels
+    PCB_3D_BODY populated;
+    EXTRUDED_3D_BODY& extruded = *populated.MutableExtruded();
+    extruded.m_height = pcbIUScale.mmToIU( 2.5 );
+    extruded.m_standoff = pcbIUScale.mmToIU( 0.1 );
+    extruded.m_layer = F_CrtYd;
+    extruded.m_material = EXTRUSION_MATERIAL::METAL;
+    extruded.m_color = KIGFX::COLOR4D( 0.8, 0.4, 0.0, 0.9 );
+    extruded.m_offset = VECTOR3D( 1.0, -0.5, 0.2 );
+    extruded.m_scale = VECTOR3D( 1.5, 0.8, 2.0 );
+    extruded.m_rotation = VECTOR3D( 10.0, 20.0, 45.0 );
+    extruded.m_show = false;
+
+    testProtoFromKiCadObject<kiapi::board::types::Body3D>( &populated, makeBody );
+
+    PCB_3D_BODY autoLayer;
+    autoLayer.MutableExtruded()->m_layer = UNDEFINED_LAYER;
+
+    testProtoFromKiCadObject<kiapi::board::types::Body3D>( &autoLayer, makeBody );
+
+    PCB_3D_BODY padBBox;
+    padBBox.MutableExtruded()->m_layer = UNSELECTED_LAYER;
+
+    testProtoFromKiCadObject<kiapi::board::types::Body3D>( &padBBox, makeBody );
+
+    // No color set: the optional must stay absent across the round trip
+    google::protobuf::Any any;
+    autoLayer.Serialize( any );
+
+    kiapi::board::types::Body3D msg;
+    BOOST_REQUIRE( any.UnpackTo( &msg ) );
+    BOOST_CHECK( !msg.extruded().has_color() );
+
+    // A model-kind body is reserved and must be rejected on deserialize
+    msg.set_kind( kiapi::board::types::BDK_MODEL );
+    BOOST_REQUIRE( any.PackFrom( msg ) );
+
+    std::unique_ptr<PCB_3D_BODY> modelBody = makeBody();
+    BOOST_CHECK( !modelBody->Deserialize( any ) );
+
+    // A body whose parent names a different footprint is still imported as a child
+    BOARD    board;
+    FOOTPRINT target( &board );
+
+    kiapi::board::types::Footprint definition;
+
+    msg.Clear();
+    msg.set_kind( kiapi::board::types::BDK_EXTRUDED );
+    msg.mutable_id()->set_value( KIID().AsStdString() );
+    msg.mutable_parent()->set_value( "00000000-0000-0000-0000-000000000001" );
+    msg.mutable_extruded()->mutable_height()->set_value_nm( pcbIUScale.mmToIU( 2 ) );
+    BOOST_REQUIRE( any.PackFrom( msg ) );
+    *definition.add_items() = any;
+
+    BOOST_CHECK( target.DeserializeDefinition( definition ) );
+    BOOST_CHECK( target.HasBody() );
+    BOOST_CHECK_EQUAL( target.GetBody()->GetParentFootprint(), &target );
+
+}
+
 BOOST_AUTO_TEST_CASE( PadCustomShapeProxyItems )
 {
     BOARD     board;
@@ -466,7 +561,7 @@ BOOST_AUTO_TEST_CASE( PadCustomShapeProxyItems )
     mismatchedProto.mutable_shape()->mutable_rectangle()->mutable_top_left()->set_y_nm( 0 );
     mismatchedProto.mutable_shape()->mutable_rectangle()->mutable_bottom_right()->set_x_nm( 1 );
     mismatchedProto.mutable_shape()->mutable_rectangle()->mutable_bottom_right()->set_y_nm( 1 );
-    mismatchedAny.PackFrom( mismatchedProto );
+    BOOST_REQUIRE( mismatchedAny.PackFrom( mismatchedProto ) );
 
     PCB_SHAPE mismatched( &pad, SHAPE_T::RECTANGLE );
     BOOST_REQUIRE( mismatched.Deserialize( mismatchedAny ) );

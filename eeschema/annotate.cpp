@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <set>
+#include <unordered_set>
 
 #include <confirm.h>
 #include <project/project_file.h>
@@ -37,7 +38,7 @@
 void SCH_EDIT_FRAME::mapExistingAnnotation( std::map<wxString, wxString>& aMap )
 {
     SCH_REFERENCE_LIST references;
-    Schematic().Hierarchy().GetSymbols( references, SYMBOL_FILTER_ALL );
+    Schematic().Hierarchy().GetSymbols( references, SYMBOL_FILTER_NON_POWER );
 
     for( size_t i = 0; i < references.GetCount(); i++ )
     {
@@ -52,6 +53,52 @@ void SCH_EDIT_FRAME::mapExistingAnnotation( std::map<wxString, wxString>& aMap )
         if( symbol->IsAnnotated( curr_sheetpath ) )
             aMap[ curr_full_uuid.AsString() ] = ref;
     }
+}
+
+
+std::unordered_set<SCH_SYMBOL*> getInferredSymbols( const SCH_SELECTION& aSelection )
+{
+    std::unordered_set<SCH_SYMBOL*> symbols;
+
+    for( EDA_ITEM* item : aSelection )
+    {
+        switch( item->Type() )
+        {
+        case SCH_FIELD_T:
+            {
+                SCH_FIELD*  field = static_cast<SCH_FIELD*>( item );
+
+                if( field->GetId() == FIELD_T::REFERENCE && field->GetParent()->Type() == SCH_SYMBOL_T )
+                    symbols.insert( static_cast<SCH_SYMBOL*>( field->GetParent() ) );
+
+                break;
+            }
+
+        case SCH_SYMBOL_T:
+            symbols.insert( static_cast<SCH_SYMBOL*>( item ) );
+            break;
+
+        case SCH_GROUP_T:
+            {
+                SCH_GROUP* group = static_cast<SCH_GROUP*>( item );
+
+                group->RunOnChildren(
+                        [&symbols]( SCH_ITEM* aChild )
+                        {
+                            if( aChild->Type() == SCH_SYMBOL_T )
+                                symbols.insert( static_cast<SCH_SYMBOL*>( aChild ) );
+                        },
+                        RECURSE_MODE::RECURSE );
+
+                break;
+            }
+
+        default:
+            break;
+        }
+    }
+
+    return symbols;
 }
 
 
@@ -140,11 +187,11 @@ void SCH_EDIT_FRAME::DeleteAnnotation( ANNOTATE_SCOPE_T aAnnotateScope, bool aRe
         SCH_SELECTION&      selection = selTool->RequestSelection();
         SCH_SHEET_LIST      selectedSheets;
 
+        for( SCH_SYMBOL* symbol : getInferredSymbols( selection ) )
+            clearSymbolAnnotation( symbol, screen, &currentSheet, false );
+
         for( EDA_ITEM* item : selection.Items() )
         {
-            if( item->Type() == SCH_SYMBOL_T )
-                clearSymbolAnnotation( item, screen, &currentSheet, false );
-
             if( item->Type() == SCH_SHEET_T && aRecursive )
             {
                 SCH_SHEET_PATH subSheetPath = currentSheet;
@@ -176,56 +223,10 @@ void SCH_EDIT_FRAME::DeleteAnnotation( ANNOTATE_SCOPE_T aAnnotateScope, bool aRe
 }
 
 
-std::unordered_set<SCH_SYMBOL*> getInferredSymbols( const SCH_SELECTION& aSelection )
-{
-    std::unordered_set<SCH_SYMBOL*> symbols;
-
-    for( EDA_ITEM* item : aSelection )
-    {
-        switch( item->Type() )
-        {
-        case SCH_FIELD_T:
-        {
-            SCH_FIELD*  field = static_cast<SCH_FIELD*>( item );
-
-            if( field->GetId() == FIELD_T::REFERENCE && field->GetParent()->Type() == SCH_SYMBOL_T )
-                symbols.insert( static_cast<SCH_SYMBOL*>( field->GetParent() ) );
-
-            break;
-        }
-
-        case SCH_SYMBOL_T:
-            symbols.insert( static_cast<SCH_SYMBOL*>( item ) );
-            break;
-
-        case SCH_GROUP_T:
-        {
-            SCH_GROUP* group = static_cast<SCH_GROUP*>( item );
-
-            group->RunOnChildren(
-                    [&symbols]( SCH_ITEM* aChild )
-                    {
-                        if( aChild->Type() == SCH_SYMBOL_T )
-                            symbols.insert( static_cast<SCH_SYMBOL*>( aChild ) );
-                    },
-                    RECURSE_MODE::RECURSE );
-
-            break;
-        }
-
-        default:
-            break;
-        }
-    }
-
-    return symbols;
-}
-
-
 void SCH_EDIT_FRAME::AnnotateSymbols( SCH_COMMIT* aCommit, ANNOTATE_SCOPE_T aAnnotateScope,
                                       ANNOTATE_ORDER_T aSortOption, ANNOTATE_ALGO_T aAlgoOption, bool aRecursive,
                                       int aStartNumber, bool aResetAnnotation, bool aRegroupUnits,
-                                      bool aRepairTimestamps, REPORTER& aReporter, SYMBOL_FILTER aSymbolFilter )
+                                      bool aRepairTimestamps, REPORTER& aReporter )
 {
     SCH_SELECTION_TOOL* selTool = m_toolManager->GetTool<SCH_SELECTION_TOOL>();
     SCH_SELECTION&      selection = selTool->GetSelection();
@@ -239,15 +240,25 @@ void SCH_EDIT_FRAME::AnnotateSymbols( SCH_COMMIT* aCommit, ANNOTATE_SCOPE_T aAnn
     // Store the selected sheets relative to the full hierarchy so we get the correct sheet numbers
     SCH_SHEET_LIST selectedSheets;
 
+    auto addSelectedSheet =
+            [&]( EDA_ITEM* aItem )
+            {
+                if( aItem->Type() == SCH_SHEET_T )
+                {
+                    SCH_SHEET_PATH subSheetPath = currentSheet;
+                    subSheetPath.push_back( static_cast<SCH_SHEET*>( aItem ) );
+
+                    sheets.GetSheetsWithinPath( selectedSheets, subSheetPath );
+                }
+            };
+
     for( EDA_ITEM* item : selection )
     {
-        if( item->Type() == SCH_SHEET_T )
-        {
-            SCH_SHEET_PATH subSheetPath = currentSheet;
-            subSheetPath.push_back( static_cast<SCH_SHEET*>( item ) );
+        addSelectedSheet( item );
 
-            sheets.GetSheetsWithinPath( selectedSheets, subSheetPath );
-        }
+        // A selected group selects its sheets, as getInferredSymbols does its symbols
+        if( item->Type() == SCH_GROUP_T )
+            static_cast<SCH_GROUP*>( item )->RunOnChildren( addSelectedSheet, RECURSE_MODE::RECURSE );
     }
 
 
@@ -301,55 +312,25 @@ void SCH_EDIT_FRAME::AnnotateSymbols( SCH_COMMIT* aCommit, ANNOTATE_SCOPE_T aAnn
         switch( aAnnotateScope )
         {
         case ANNOTATE_ALL:
-            sheets.GetMultiUnitSymbols( lockedSymbols, aSymbolFilter );
+            sheets.GetMultiUnitSymbols( lockedSymbols, SYMBOL_FILTER_NON_POWER );
             break;
 
         case ANNOTATE_CURRENT_SHEET:
-            currentSheet.GetMultiUnitSymbols( lockedSymbols, aSymbolFilter );
+            currentSheet.GetMultiUnitSymbols( lockedSymbols, SYMBOL_FILTER_NON_POWER );
 
             if( aRecursive )
-                subSheets.GetMultiUnitSymbols( lockedSymbols, aSymbolFilter );
+                subSheets.GetMultiUnitSymbols( lockedSymbols, SYMBOL_FILTER_NON_POWER );
 
             break;
 
         case ANNOTATE_SELECTION:
             for( SCH_SYMBOL* symbol : selectedSymbols )
-                currentSheet.AppendMultiUnitSymbol( lockedSymbols, symbol, aSymbolFilter );
+                currentSheet.AppendMultiUnitSymbol( lockedSymbols, symbol, SYMBOL_FILTER_NON_POWER );
 
             if( aRecursive )
-                selectedSheets.GetMultiUnitSymbols( lockedSymbols, aSymbolFilter );
+                selectedSheets.GetMultiUnitSymbols( lockedSymbols, SYMBOL_FILTER_NON_POWER );
 
             break;
-        }
-
-        // When resetting annotations, check for and remove groups with unit conflicts (duplicate
-        // units within the same reference designator). These will get fresh assignments.
-        if( aResetAnnotation )
-        {
-            std::vector<wxString> conflictingRefs;
-
-            for( auto& [refBase, refList] : lockedSymbols )
-            {
-                std::set<int> seenUnits;
-                bool hasConflict = false;
-
-                for( const SCH_REFERENCE& ref : refList )
-                {
-                    if( seenUnits.count( ref.GetUnit() ) )
-                    {
-                        hasConflict = true;
-                        break;
-                    }
-
-                    seenUnits.insert( ref.GetUnit() );
-                }
-
-                if( hasConflict )
-                    conflictingRefs.push_back( refBase );
-            }
-
-            for( const wxString& ref : conflictingRefs )
-                lockedSymbols.erase( ref );
         }
     }
 
@@ -363,58 +344,48 @@ void SCH_EDIT_FRAME::AnnotateSymbols( SCH_COMMIT* aCommit, ANNOTATE_SCOPE_T aAnn
     switch( aAnnotateScope )
     {
     case ANNOTATE_ALL:
-        sheets.GetSymbols( references, aSymbolFilter );
+        sheets.GetSymbols( references, SYMBOL_FILTER_NON_POWER );
         break;
 
     case ANNOTATE_CURRENT_SHEET:
-        currentSheet.GetSymbols( references, aSymbolFilter );
+        currentSheet.GetSymbols( references, SYMBOL_FILTER_NON_POWER );
 
         if( aRecursive )
-            subSheets.GetSymbolsWithinPath( references, currentSheet, aSymbolFilter );
+            subSheets.GetSymbolsWithinPath( references, currentSheet, SYMBOL_FILTER_NON_POWER );
 
         break;
 
     case ANNOTATE_SELECTION:
         for( SCH_SYMBOL* symbol : selectedSymbols )
-            currentSheet.AppendSymbol( references, symbol, aSymbolFilter );
+            currentSheet.AppendSymbol( references, symbol, SYMBOL_FILTER_NON_POWER );
 
         if( aRecursive )
-            selectedSheets.GetSymbolsWithinPath( references, currentSheet, aSymbolFilter );
+            selectedSheets.GetSymbolsWithinPath( references, currentSheet, SYMBOL_FILTER_NON_POWER );
 
         break;
     }
 
-    // Remove annotation only updates the "new" flag to indicate to the algorithm
-    // that these references must be reannotated, but keeps the original reference
-    // so that we can reannotate multi-unit symbols together.
-    if( aResetAnnotation )
-        references.RemoveAnnotation();
-
-    // Build additional list of references to be used during reannotation
-    // to avoid duplicate designators (no additional references when annotating
-    // the full schematic)
-    SCH_REFERENCE_LIST additionalRefs;
-
-    if( aAnnotateScope != ANNOTATE_ALL )
+    if( std::optional<std::pair<SCH_SHEET_PATH, SCH_SHEET_PATH>> collision =
+                FindRefSuffixCollision( references, Schematic() ) )
     {
-        SCH_REFERENCE_LIST allRefs;
-        sheets.GetSymbols( allRefs, aSymbolFilter );
+        const auto& [path, first] = *collision;
 
-        for( size_t i = 0; i < allRefs.GetCount(); i++ )
-        {
-            if( !references.Contains( allRefs[i] ) )
-                additionalRefs.AddItem( allRefs[i] );
-        }
+        aReporter.ReportTail( wxString::Format( _( "Sheets %s and %s use %s with the same reference suffix. "
+                                                   "Give each sheet a distinct suffix before annotating." ),
+                                                first.PathHumanReadable( false, true ),
+                                                path.PathHumanReadable( false, true ),
+                                                path.LastScreen()->GetFileName() ),
+                              RPT_SEVERITY_ERROR );
+        return;
     }
 
-    references.SetRefDesTracker( Schematic().Settings().m_refDesTracker );
-
-    // Break full symbol reference into name (prefix) and number:
-    // example: IC1 become IC, and 1
-    references.SplitReferences();
-
-    // Annotate all of the references we've collected by our options
-    references.AnnotateByOptions( aSortOption, aAlgoOption, aStartNumber, lockedSymbols, additionalRefs, false );
+    const std::set<const SCH_SCREEN*> sharedScreens =
+            AnnotateReferences( references, std::move( lockedSymbols ), Schematic(), aAnnotateScope, aSortOption,
+                                aAlgoOption, aStartNumber, aResetAnnotation,
+                                [&]( SCH_REFERENCE& aRef )
+                                {
+                                    aCommit->Modify( aRef.GetSymbol(), aRef.GetSheetPath().LastScreen() );
+                                } );
 
     for( size_t i = 0; i < references.GetCount(); i++ )
     {
@@ -422,17 +393,11 @@ void SCH_EDIT_FRAME::AnnotateSymbols( SCH_COMMIT* aCommit, ANNOTATE_SCOPE_T aAnn
         SCH_SYMBOL*     symbol = ref.GetSymbol();
         SCH_SHEET_PATH* sheet = &ref.GetSheetPath();
 
-        aCommit->Modify( symbol, sheet->LastScreen() );
-        ref.Annotate();
-
         KIID_PATH full_uuid = sheet->Path();
         full_uuid.push_back( symbol->m_Uuid );
 
         wxString  prevRef = previousAnnotation[ full_uuid.AsString() ];
-        wxString  newRef  = symbol->GetRef( sheet );
-
-        if( symbol->GetUnitCount() > 1 )
-            newRef << symbol->SubReference( symbol->GetUnitSelection( sheet ) );
+        wxString  newRef  = symbol->GetRef( sheet, true );
 
         wxString msg;
 
@@ -477,13 +442,20 @@ void SCH_EDIT_FRAME::AnnotateSymbols( SCH_COMMIT* aCommit, ANNOTATE_SCOPE_T aAnn
         aReporter.Report( msg, RPT_SEVERITY_ACTION );
     }
 
+    for( const SCH_SCREEN* screen : sharedScreens )
+    {
+        aReporter.Report( wxString::Format( _( "References in %s apply to every sheet that uses it." ),
+                                            screen->GetFileName() ),
+                          RPT_SEVERITY_ACTION );
+    }
+
     // Final control (just in case ... ).
     if( !CheckAnnotate(
                 [&aReporter]( ERCE_T, const wxString& aMsg, SCH_REFERENCE*, SCH_REFERENCE* )
                 {
                     aReporter.Report( aMsg, RPT_SEVERITY_ERROR );
                 },
-                aAnnotateScope, aRecursive, aSymbolFilter ) )
+                aAnnotateScope, aRecursive ) )
     {
         aReporter.ReportTail( _( "Annotation complete." ), RPT_SEVERITY_ACTION );
     }
@@ -507,7 +479,7 @@ void SCH_EDIT_FRAME::AnnotateSymbols( SCH_COMMIT* aCommit, ANNOTATE_SCOPE_T aAnn
 
 
 int SCH_EDIT_FRAME::CheckAnnotate( ANNOTATION_ERROR_HANDLER aErrorHandler, ANNOTATE_SCOPE_T aAnnotateScope,
-                                   bool aRecursive, SYMBOL_FILTER aSymbolFilter )
+                                   bool aRecursive )
 {
     SCH_REFERENCE_LIST  referenceList;
     SCH_SHEET_LIST      sheets = Schematic().Hierarchy();
@@ -517,11 +489,11 @@ int SCH_EDIT_FRAME::CheckAnnotate( ANNOTATION_ERROR_HANDLER aErrorHandler, ANNOT
     switch( aAnnotateScope )
     {
     case ANNOTATE_ALL:
-        sheets.GetSymbols( referenceList, aSymbolFilter, true );
+        sheets.GetSymbols( referenceList, SYMBOL_FILTER_NON_POWER, true );
         break;
 
     case ANNOTATE_CURRENT_SHEET:
-        GetCurrentSheet().GetSymbols( referenceList, aSymbolFilter, true );
+        GetCurrentSheet().GetSymbols( referenceList, SYMBOL_FILTER_NON_POWER, true );
 
         if( aRecursive )
         {
@@ -539,7 +511,7 @@ int SCH_EDIT_FRAME::CheckAnnotate( ANNOTATION_ERROR_HANDLER aErrorHandler, ANNOT
             }
 
             for( const SCH_SHEET_PATH& sheet : subSheets )
-                sheet.GetSymbols( referenceList, aSymbolFilter, true );
+                sheet.GetSymbols( referenceList, SYMBOL_FILTER_NON_POWER, true );
         }
 
         break;
@@ -549,7 +521,7 @@ int SCH_EDIT_FRAME::CheckAnnotate( ANNOTATION_ERROR_HANDLER aErrorHandler, ANNOT
         SCH_SELECTION&      selection = selTool->RequestSelection();
 
         for( SCH_SYMBOL* symbol : getInferredSymbols( selection ) )
-            GetCurrentSheet().AppendSymbol( referenceList, symbol, aSymbolFilter, true );
+            GetCurrentSheet().AppendSymbol( referenceList, symbol, SYMBOL_FILTER_NON_POWER, true );
 
         if( aRecursive )
         {
@@ -567,7 +539,7 @@ int SCH_EDIT_FRAME::CheckAnnotate( ANNOTATION_ERROR_HANDLER aErrorHandler, ANNOT
             }
 
             for( SCH_SHEET_PATH sheet : selectedSheets )
-                sheet.GetSymbols( referenceList, aSymbolFilter, true );
+                sheet.GetSymbols( referenceList, SYMBOL_FILTER_NON_POWER, true );
         }
 
         break;

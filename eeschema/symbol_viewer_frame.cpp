@@ -363,7 +363,7 @@ LIB_SYMBOL* SYMBOL_VIEWER_FRAME::GetSelectedSymbol() const
         {
             symbol = PROJECT_SCH::SymbolLibAdapter( &Prj() )->LoadSymbol( m_currentSymbol );
         }
-        catch( const IO_ERROR& ioe )
+        catch( const IO_ERROR& )
         {
             // best efforts
         }
@@ -491,10 +491,10 @@ void SYMBOL_VIEWER_FRAME::updateBodyStyleChoice()
 }
 
 
-bool SYMBOL_VIEWER_FRAME::ReCreateLibList()
+void SYMBOL_VIEWER_FRAME::ReCreateLibList()
 {
     if( !m_libList )
-        return false;
+        return;
 
     m_libList->Clear();
 
@@ -532,10 +532,7 @@ bool SYMBOL_VIEWER_FRAME::ReCreateLibList()
                 // Remove libs which have no power symbols, if this filter is activated
                 if( m_listPowerOnly )
                 {
-                    std::vector<wxString> symbolNames = adapter->GetSymbolNames(
-                            aLib, SYMBOL_LIBRARY_ADAPTER::SYMBOL_TYPE::POWER_ONLY );
-
-                    if( symbolNames.empty() )
+                    if( adapter->GetSymbolNames( aLib, SYMBOL_LIBRARY_ADAPTER::SYMBOL_TYPE::POWER_ONLY ).empty() )
                         return;
                 }
 
@@ -602,7 +599,6 @@ bool SYMBOL_VIEWER_FRAME::ReCreateLibList()
 
     // Search for a previous selection:
     int  index = m_libList->FindString( UnescapeString( m_currentSymbol.GetUniStringLibNickname() ) );
-    bool selChanged = false;
 
     if( index != wxNOT_FOUND )
     {
@@ -610,103 +606,92 @@ bool SYMBOL_VIEWER_FRAME::ReCreateLibList()
     }
     else
     {
-        // If not found, clear current library selection because it can be deleted after a
-        // config change.
+        // If not found, clear current library selection because it can be deleted after a config change.
         m_currentSymbol.SetLibNickname( m_libList->GetCount() > 0 ? m_libList->GetBaseString( 0 )
                                                                   : wxString( wxEmptyString ) );
         m_currentSymbol.SetLibItemName( wxEmptyString );
         m_unit = 1;
         m_bodyStyle = BODY_STYLE::BASE;
-        selChanged = true;
     }
 
-    selChanged |= ReCreateSymbolList();
-    DisplayLibInfos();
-    GetCanvas()->Refresh();
-
-    return selChanged;
+    ReCreateSymbolList();
 }
 
 
-bool SYMBOL_VIEWER_FRAME::ReCreateSymbolList()
+void SYMBOL_VIEWER_FRAME::ReCreateSymbolList()
 {
     if( m_symbolList == nullptr )
-        return false;
+        return;
 
     m_symbolList->Clear();
 
     wxString libName = m_currentSymbol.GetUniStringLibNickname();
 
-    if( libName.IsEmpty() )
-        return false;
-
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &Prj() );
-    std::vector<LIB_SYMBOL*> symbols = adapter->GetSymbols( libName );
-
-    std::sort( symbols.begin(), symbols.end(),
-            []( LIB_SYMBOL* a, LIB_SYMBOL* b ) -> bool
-            {
-                return StrNumCmp( b->GetName(), a->GetName(), true ) > 0;
-            } );
-
-    std::set<wxString> excludes;
-
-    if( !m_symbolFilter->GetValue().IsEmpty() )
+    if( !libName.IsEmpty() )
     {
-        wxStringTokenizer tokenizer( m_symbolFilter->GetValue(), " \t\r\n", wxTOKEN_STRTOK );
+        SYMBOL_LIBRARY_ADAPTER*  adapter = PROJECT_SCH::SymbolLibAdapter( &Prj() );
+        std::vector<LIB_SYMBOL*> symbols = adapter->GetSymbols( libName );
 
-        while( tokenizer.HasMoreTokens() )
+        std::sort( symbols.begin(), symbols.end(),
+                   []( LIB_SYMBOL* a, LIB_SYMBOL* b ) -> bool
+                   {
+                       return StrNumCmp( b->GetName(), a->GetName(), CMP_T::IGNORE_CASE ) > 0;
+                   } );
+
+        std::set<wxString> excludes;
+
+        if( !m_symbolFilter->GetValue().IsEmpty() )
         {
-            const wxString       filterTerm = tokenizer.GetNextToken().Lower();
-            EDA_COMBINED_MATCHER matcher( filterTerm, CTX_LIBITEM );
+            wxStringTokenizer tokenizer( m_symbolFilter->GetValue(), " \t\r\n", wxTOKEN_STRTOK );
 
-            for( LIB_SYMBOL* symbol : symbols )
+            while( tokenizer.HasMoreTokens() )
             {
-                int matched = matcher.ScoreTerms( symbol->GetSearchTerms() );
+                const wxString       filterTerm = tokenizer.GetNextToken().Lower();
+                EDA_COMBINED_MATCHER matcher( filterTerm, CTX_LIBITEM );
 
-                if( filterTerm.IsNumber() && wxAtoi( filterTerm ) == (int)symbol->GetPinCount() )
-                    matched++;
+                for( LIB_SYMBOL* symbol : symbols )
+                {
+                    int matched = matcher.ScoreTerms( symbol->GetSearchTerms() );
 
-                if( !matched )
-                    excludes.insert( symbol->GetName() );
+                    if( filterTerm.IsNumber() && wxAtoi( filterTerm ) == (int)symbol->GetPinCount() )
+                        matched++;
+
+                    if( !matched )
+                        excludes.insert( symbol->GetName() );
+                }
             }
         }
-    }
 
-    wxString subLib = m_currentSymbol.GetSubLibraryName();
+        wxString subLib = m_currentSymbol.GetSubLibraryName();
 
-    for( const LIB_SYMBOL* symbol : symbols )
-    {
-        if( adapter->SupportsSubLibraries( libName )
-            && !subLib.IsSameAs( symbol->GetLibId().GetSubLibraryName() ) )
+        for( const LIB_SYMBOL* symbol : symbols )
         {
-            continue;
+            if( adapter->SupportsSubLibraries( libName ) && !subLib.IsSameAs( symbol->GetLibId().GetSubLibraryName() ) )
+                continue;
+
+            if( !excludes.count( symbol->GetName() ) )
+                m_symbolList->Append( UnescapeString( symbol->GetName() ) );
         }
 
-        if( !excludes.count( symbol->GetName() ) )
-            m_symbolList->Append( UnescapeString( symbol->GetName() ) );
+        int  index = m_symbolList->FindString( UnescapeString( m_currentSymbol.GetUniStringLibItemName() ) );
+
+        if( index != wxNOT_FOUND )
+        {
+            m_symbolList->SetSelection( index, true );
+        }
+        else
+        {
+            // Select the first library entry (if available) when the previous entry name no longer exists.
+            m_symbolList->SetSelection( m_symbolList->IsEmpty() ? -1 : 0, true );
+            m_currentSymbol.SetLibItemName( EscapeString( m_symbolList->GetStringSelection(), CTX_LIBID ) );
+            m_bodyStyle = BODY_STYLE::BASE;
+            m_unit      = 1;
+        }
     }
 
-    int  index = m_symbolList->FindString( UnescapeString( m_currentSymbol.GetUniStringLibItemName() ) );
-    bool selChanged = false;
-
-    if( index == wxNOT_FOUND )
-    {
-        // Clear out the current selection so that we don't match same-named symbols between
-        // libraries.
-        SetSelectedSymbol( wxEmptyString );
-
-        // Select the first library entry (if available) when the previous entry name no
-        // longer exists.
-        index       = m_symbolList->IsEmpty() ? -1 : 0;
-        m_bodyStyle = BODY_STYLE::BASE;
-        m_unit      = 1;
-        selChanged  = true;
-    }
-
-    m_symbolList->SetSelection( index, true );
-
-    return selChanged;
+    updatePreviewSymbol();
+    DisplayLibInfos();
+    GetCanvas()->Refresh();
 }
 
 
@@ -887,7 +872,7 @@ void SYMBOL_VIEWER_FRAME::CommonSettingsChanged( int aFlags )
     GetCanvas()->GetGAL()->DrawGrid();
     GetCanvas()->ForceRefresh();
 
-    if( aFlags && ENVVARS_CHANGED )
+    if( aFlags & ENVVARS_CHANGED )
         ReCreateLibList();
 }
 
@@ -895,16 +880,7 @@ void SYMBOL_VIEWER_FRAME::CommonSettingsChanged( int aFlags )
 void SYMBOL_VIEWER_FRAME::OnActivate( wxActivateEvent& event )
 {
     if( event.GetActive() )
-    {
-        bool changed = m_libList ? ReCreateLibList() : false;
-
-        if (changed)
-            m_selection_changed = true;
-
-        updatePreviewSymbol();
-
-        DisplayLibInfos();
-    }
+        ReCreateLibList();
 
     event.Skip();    // required under wxMAC
 }
@@ -1103,11 +1079,16 @@ void SYMBOL_VIEWER_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
 
     case MAIL_REFRESH_SYMBOL:
     {
-        LIB_SYMBOL* symbol = GetSelectedSymbol();
-        wxCHECK2( symbol, break );
+        // A library reload can invalidate the LIB_SYMBOL borrowed from the adapter.
+        const LIB_ID symbolId = m_currentSymbol;
+
+        if( !symbolId.IsValid() )
+            break;
 
         SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &Prj() );
-        LIBRARY_TABLE_ROW*      row = adapter->GetRow( symbol->GetLibId().GetLibNickname() ).value_or( nullptr );
+        wxCHECK2( adapter, break );
+
+        LIBRARY_TABLE_ROW* row = adapter->GetRow( symbolId.GetLibNickname() ).value_or( nullptr );
 
         if( !row )
             return;
@@ -1119,7 +1100,7 @@ void SYMBOL_VIEWER_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
 
         if( lib == libfullname )
         {
-            wxLogTrace( traceLibWatch, "Refreshing symbol %s", symbol->GetName() );
+            wxLogTrace( traceLibWatch, "Refreshing symbol %s", symbolId.GetLibItemName().wx_str() );
             updatePreviewSymbol();
             GetCanvas()->GetView()->UpdateAllItems( KIGFX::ALL );
         }

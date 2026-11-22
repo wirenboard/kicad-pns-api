@@ -348,6 +348,14 @@ public:
     bool PruneUnusedLibSymbol( const wxString& aName );
 
     /**
+     * Include the alternate symbols that \a aSymbol's variants select in the library symbols.
+     *
+     * Alternates already present are kept unless \a aRefresh is set, in which case they are
+     * reloaded from the symbol libraries.  Alternates that no library can supply are left alone.
+     */
+    void IncludeVariantSymbols( const SCH_SYMBOL& aSymbol, bool aRefresh = false );
+
+    /**
      * Remove \a aItem from the linked list and deletes the object.
      *
      * If \a aItem is a schematic sheet label, it is removed from the screen associated with
@@ -910,6 +918,18 @@ public:
      * @return the number of symbol library nicknames that were changed.
      */
     int ChangeSymbolLibNickname( const wxString& aFrom, const wxString& aTo );
+
+    /**
+     * Find the placed symbols whose embedded library symbol differs from the library copy.
+     *
+     * Symbols without an embedded copy or whose library symbol cannot be loaded are skipped.  Each returned
+     * symbol is a screen item, so one entry stands for every instance of a reused sheet.
+     *
+     * @param aLibraries provides the library copies.
+     * @param aCompareFlags are the #SCH_ITEM::COMPARE_FLAGS used to compare the flattened copies.
+     * @return the outdated symbols.
+     */
+    std::vector<SCH_SYMBOL*> OutdatedSymbols( SYMBOL_LIBRARY_ADAPTER& aLibraries, int aCompareFlags );
 
     /**
      * Check if one of the schematics in the list of screens is \a aSchematicFileName.
