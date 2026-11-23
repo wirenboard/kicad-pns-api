@@ -502,3 +502,5 @@ va-driver-all
 vdpau-driver-all
 xdg-desktop-portal
 xdg-desktop-portal-gtk
+glslang-tools
+spirv-tools

@@ -26,6 +26,10 @@ All commands are in `api/proto/board/board_commands.proto`. Each one commits as 
 The commands need a board editor frame, so pcbnew runs as a GUI process on a virtual X display
 (Xvfb). No real display is needed. They do not work in `kicad-cli`.
 
+**Upstream base:** KiCad master `4cf93977` of 21.11.2026, merged into this branch (it was based on
+master of 28.09.2026 before). Upstream KiCad changes are brought in by merging master; the branch
+history is never rewritten.
+
 Two smaller router changes are on this branch too:
 - diff-pair length tuning recognises the pair gap it observes;
 - a build fix for older glm.
@@ -33,7 +37,11 @@ Two smaller router changes are on this branch too:
 ## Building
 
 This is a normal KiCad build. See [KiCad's build docs](https://dev-docs.kicad.org/en/build/linux/)
-for the dependency list. The agents only use `pcbnew`:
+for the dependency list. Since the November 2026 upstream base, the build also needs the Vulkan
+shader tools `glslangValidator` and `spirv-opt` (Debian: `glslang-tools`, `spirv-tools`) and SQLite3.
+The agents only use `pcbnew`, but build the default target: `pcbnew` alone does not produce
+`resources/images.tar.gz` and `schemas/`, and without them pcbnew stops at start-up on an error
+dialog.
 
 ```bash
 cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -56,6 +64,18 @@ xargs -a deps_list.txt ./add_pkg.sh   # apt-get download + dpkg -x into $KPNS_DE
 source env.sh && ninja -C "$KPNS_BUILD"
 ```
 
+On a host that is not Debian 13, run these steps in
+the container of `host/Dockerfile.trixie`. It adds CMake 3.31, the shader tools and the runtime
+libraries the unpacked toolchain loads from `/usr`; mount the source, build and `$KPNS_DEPS`
+directories at the same paths as on the host. The resulting `pcbnew` runs on the host as described
+below. What we actually ran for the November 2026 base: an existing `$KPNS_DEPS` tree from the
+earlier build, its dangling `.so` links repointed to the image's libraries from inside the container
+(the last step of `add_pkg.sh`), then `configure.sh` and `ninja`. `add_pkg.sh` itself has not been
+run in this image (it needs apt lists and `apt-get download`). The unpacked `wx-config` reports `/usr` as its prefix, which sends CMake to a
+`/usr/include/wx-3.2` the container does not have. Replace `$KPNS_DEPS/usr/bin/wx-config` with a
+wrapper script:
+`exec $KPNS_DEPS/usr/lib/x86_64-linux-gnu/wx/config/gtk3-unicode-3.2 --prefix=$KPNS_DEPS/usr "$@"`.
+
 `host/paths.sh` documents every location variable (`KPNS_SRC`, `KPNS_BUILD`, `KPNS_DEPS`,
 `KPNS_STATE`, ...). By default the source is this repository and the build goes to `./build`.
 
@@ -66,7 +86,10 @@ Notes:
 - **Board files are saved in the 10.99 format.** Stock KiCad 10.0 and its `kicad-cli` cannot open
   them. `tools/k10.py` and `tools/transplant.py` put the fork's copper back into a 10.0 file.
 - **Running ninja re-runs CMake if the CMake files changed.** It then needs the same CMake modules
-  as the configure step.
+  as the configure step, so run ninja in the same environment (container) as the configure.
+- **The board file format moves with upstream.** A build of a newer base saves boards with a newer
+  version number (20261031 for the November 2026 base); an older build of this fork cannot open
+  them.
 
 ## Running headless
 
