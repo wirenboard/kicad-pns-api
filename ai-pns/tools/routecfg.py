@@ -117,7 +117,12 @@ def floats(s, n=None):
 
 
 def tmpdir():
-    return tempfile.mkdtemp(prefix='kpns_tool_')
+    """private scratch directory, removed when the process exits"""
+    import atexit
+    import shutil
+    d = tempfile.mkdtemp(prefix='kpns_tool_')
+    atexit.register(shutil.rmtree, d, ignore_errors=True)
+    return d
 
 
 # ---- geometry keys -------------------------------------------------------------------------------
