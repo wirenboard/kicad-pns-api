@@ -19,6 +19,9 @@ An attempt = snapshot, delete the chain's segments, RouteTrack (mitered 45, fini
 route complete, the net does not open, no new fork DRC violation of the net near the chain; save, copy the
 fork copper into the current stock board (k10.py) and run gate.py CUR NEW NET. Pass: OUTDIR/accNN.kicad_pcb
 becomes current. Fail: rollback (verified against the snapshot geometry). Ends when no target is left.
+If the fork stops answering (PNS can spin on a hard shove; the API call times out after 10 min), the
+tool prints FORK TIMEOUT with the last accepted board and exits 3: restart the instance from that board
+and rerun, with the offending net in --skip-nets.
 """
 import argparse
 import ast
@@ -43,12 +46,14 @@ g.add_argument('--socket', help='API socket, ipc://...')
 g.add_argument('--instance', type=int, help='hoststart_n.sh instance number')
 rc.add_config_arg(ap)
 ap.add_argument('--nets', default='', help='only targets of these nets')
+ap.add_argument('--skip-nets', default='', help='never touch these nets (added to pnsfix.skip_nets)')
 ap.add_argument('--allow-delete', action='store_true', help='try deleting chains of pnsfix.delete_only_nets')
 ap.add_argument('--box-margin', type=float, default=1.5, help='new fork violations count within this of the chain')
 A = ap.parse_args()
 
 import rt  # noqa: E402
 import pns  # noqa: E402
+from kipy.errors import ConnectionError as ApiTimeout  # noqa: E402
 
 cfg = rc.Config(A.config, 'pnsfix')
 CUR, OUT = A.cur, A.outdir
@@ -56,7 +61,7 @@ FILT = set(rc.csv(A.nets))
 os.makedirs(OUT, exist_ok=True)
 STOCK_PY = os.environ.get('KPNS_STOCK_PY', 'python3')
 KEEPW = cfg.nets('keep_width_nets')
-SKIP = cfg.nets('skip_nets')
+SKIP = cfg.nets('skip_nets') | set(rc.csv(A.skip_nets))
 DELNETS = cfg.nets('delete_only_nets')
 NODEL = [tuple(p) for p in cfg.get('nodelete_points', [])]
 R = rt.R(A.socket if A.socket else A.instance)
@@ -201,7 +206,11 @@ while True:
         for pts, segs, sv in variants(c):
             for mode in (('walkaround', 'shove') if pts else ('none',)):
                 tag = f'{sv} w{w:.4f} {mode}'
-                r = attempt(c, pts, segs, w, mode, cur, tag)
+                try:
+                    r = attempt(c, pts, segs, w, mode, cur, tag)
+                except (ApiTimeout, ConnectionError) as e:
+                    print('FORK TIMEOUT', c['net'], c['layer'], tag, e, '- last accepted board:', cur, flush=True)
+                    sys.exit(3)
                 if r:
                     nacc += 1; acc = f'{OUT}/acc{nacc:02d}.kicad_pcb'; os.replace(r, acc); cur = acc
                     print('ACCEPT', nacc, c['net'], c['layer'], tag, '->', acc, flush=True); done = True
