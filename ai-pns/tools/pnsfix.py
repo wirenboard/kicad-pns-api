@@ -21,7 +21,7 @@ fork copper into the current stock board (k10.py) and run gate.py CUR NEW NET. P
 becomes current. Fail: rollback (verified against the snapshot geometry). Ends when no target is left.
 If the fork stops answering (PNS can spin on a hard shove; the API call times out after 10 min), the
 tool prints FORK TIMEOUT with the last accepted board and exits 3: restart the instance from that board
-and rerun, with the offending net in --skip-nets.
+and rerun, with the offending net in --skip-nets. Exit 4: gate.py or k10.py itself failed (GATE ERROR).
 """
 import argparse
 import ast
@@ -91,6 +91,10 @@ def targets(cur):
 def gate(old, new, net):
     r = subprocess.run([STOCK_PY, os.path.join(TOOLS, 'gate.py'), old, new, net] + CFGARGS, capture_output=True, text=True)
     lines = [ln for ln in r.stdout.splitlines() if ln.startswith(('FAIL', 'RULE5', 'CHANGED', 'PASS', 'REJECT'))]
+    if r.returncode not in (0, 1) or not any(ln.startswith(('PASS', 'REJECT')) for ln in lines):
+        tail = (r.stdout + r.stderr).strip().splitlines()[-6:]
+        print('GATE ERROR (rc %d):' % r.returncode, *tail, sep='\n    ', flush=True)
+        sys.exit(4)   # a broken gate (config, kicad-cli) would reject everything: stop instead
     return r.returncode == 0, lines
 
 
@@ -122,7 +126,10 @@ def restore(before):
 
 def to_stock(cur):
     R.save(OUT + '/fork.kicad_pcb'); new = OUT + '/cand.kicad_pcb'
-    subprocess.run([sys.executable, os.path.join(TOOLS, 'k10.py'), cur, OUT + '/fork.kicad_pcb', new], capture_output=True)
+    r = subprocess.run([sys.executable, os.path.join(TOOLS, 'k10.py'), cur, OUT + '/fork.kicad_pcb', new], capture_output=True, text=True)
+    if r.returncode:
+        print('k10.py failed:', (r.stderr or r.stdout).strip()[-300:], flush=True)
+        sys.exit(4)
     return new
 
 
@@ -144,6 +151,8 @@ def attempt(c, pts, segs, w, mode, cur, tag):
         try:
             r = pns.route_track(R.c, R.doc, (pts[0][0], -pts[0][1]), [(p[0], -p[1]) for p in pts[1:]], layer=L, mode=mode, width=w,
                                 finish=True, corner='mitered45', point_layers=[L] * (len(pts) - 1))
+        except ApiTimeout:
+            raise   # the fork does not answer: no rollback attempt (it would wait for another timeout)
         except Exception as e:
             print('   ', tag, 'route ERROR', e); restore(before); return False
         R.refresh()
