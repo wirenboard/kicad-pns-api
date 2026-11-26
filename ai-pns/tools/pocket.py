@@ -5,10 +5,12 @@
      orientation in degrees. Escape chains of its pads (tracks from the pad centre up to and including the
      first via) move with it on plane nets (the via lands at the new place); on other nets they are deleted
      and the net joins the pocket (--keep-via keeps the escape via and re-stitches pad -> via). Copper of
-     other nets under a moved pad is ripped and its net joins the pocket (never plane/protected/--freeze
+     other nets under a moved pad is ripped and its net joins the pocket (never plane/protected/frozen/--freeze
      nets; --no-rip turns this off). Legality: moved pads keep the track-pad clearance to other-net copper
      (holes: config pocket.move_hole_clearance), the edge clearance, the same-side courtyard overlap must not
-     grow, and the moved plane copper must add no clearance finding. Illegal -> "ILLEGAL ..." and exit 2.
+     grow, and the moved plane copper must add no clearance finding. Illegal -> "ILLEGAL ...", PREFIX_illegal.kicad_pcb, exit 3.
+     With a rotation the plane-net escapes get the part's whole rigid move (rotation about the
+     footprint origin plus translation), so they still start on their pads.
   2. strip: every non-reserved track/via of the pocket nets whose ends all lie inside --box is deleted
      (--strip-reserved also strips reserved copper).
   3. route: the open pocket nets are connected directly (fr A*, window = --box grown by --grow, widths from
@@ -19,10 +21,12 @@
 --forbid L:x0,x1,y0,y1 (repeatable) keeps all pocket routes out of a rectangle on layer L, to steer a
 hand-guided order (with --orders 1). --legal-only stops after the legality check.
 
-Board knowledge from --config (see routecfg.py): plane_nets, protected_nets, reservations, pad_exits,
+Exit codes: 0 done (best board written), 2 bad arguments (unknown or frozen net, unknown part), 3 illegal move.
+Board knowledge from --config (see routecfg.py): plane_nets, protected_nets, frozen_nets, reservations, pad_exits,
 pairs, width_rules (section "pocket" overrides), window.
 """
 import argparse
+import math
 import os
 import random
 import sys
@@ -62,6 +66,7 @@ MOVES = [(a.split(':')[0], rc.floats(a.split(':')[1])) for a in A.move]
 RES = rc.reservations(cfg)
 PLANE = cfg.nets('plane_nets')
 B = fr.Brd(A.inp)
+rc.check_nets(B, NETS, cfg.nets('frozen_nets'))
 rc.apply_pad_exits(cfg, B, lib2)
 G = A.grow
 W0 = rc.window(cfg, B)
@@ -131,30 +136,44 @@ for ref, mvv in MOVES:
     dx, dy = mvv[:2]
     f = B.b.FindFootprintByReference(ref)
     if f is None:
-        raise SystemExit(f'--move: no footprint {ref}')
-    for p in f.Pads():
+        print(f'--move: no footprint {ref}', file=sys.stderr); sys.exit(2)
+    pads = [(p, fr.P(p.GetPosition())) for p in f.Pads()]
+    o = fr.P(f.GetPosition()); rot0 = f.GetOrientationDegrees()
+    f.SetPosition(fr.V(o[0] + dx, o[1] + dy))
+    if len(mvv) > 2:
+        f.SetOrientationDegrees(mvv[2])
+    da = math.radians(f.GetOrientationDegrees() - rot0)
+    o2 = (o[0] + dx, o[1] + dy)
+
+    def T(q, sg):
+        """the footprint's rigid move applied to a point: translation, plus rotation about its origin"""
+        if abs(da) < 1e-12:
+            return (q[0] + dx, q[1] + dy)
+        c, s_ = math.cos(sg * da), math.sin(sg * da); u, v = q[0] - o[0], q[1] - o[1]
+        return (o2[0] + c * u - s_ * v, o2[1] + s_ * u + c * v)
+    # rotation sense of the board: the one that maps every old pad centre onto its new one
+    sg = next((g for g in (1, -1) if all(math.dist(T(q, g), fr.P(p.GetPosition())) < 1e-3 for p, q in pads)), None)
+    if sg is None:
+        print(f'--move {ref}: pad positions do not follow a rigid move', file=sys.stderr); sys.exit(2)
+    for p, q in pads:
         net = p.GetNetname()
         if not net:
             continue
-        ch = chain(fr.P(p.GetPosition()), net)
-        if net in PLANE:
+        ch = chain(q, net)
+        if net in PLANE:   # escape chains of plane nets move with the part
             for t in ch:
                 if t.GetClass() == 'PCB_VIA':
-                    t.SetPosition(fr.V(fr.P(t.GetPosition())[0] + dx, fr.P(t.GetPosition())[1] + dy))
+                    t.SetPosition(fr.V(*T(fr.P(t.GetPosition()), sg)))
                 else:
-                    s, e = fr.P(t.GetStart()), fr.P(t.GetEnd())
-                    t.SetStart(fr.V(s[0] + dx, s[1] + dy)); t.SetEnd(fr.V(e[0] + dx, e[1] + dy))
+                    t.SetStart(fr.V(*T(fr.P(t.GetStart()), sg))); t.SetEnd(fr.V(*T(fr.P(t.GetEnd()), sg)))
         else:
             for t in ch:
                 if A.keep_via and t.GetClass() == 'PCB_VIA':
                     continue
                 B.b.Delete(t)
             moved_nets.add(net)
-    x, y = fr.P(f.GetPosition()); f.SetPosition(fr.V(x + dx, y + dy))
-    if len(mvv) > 2:
-        f.SetOrientationDegrees(mvv[2])
 B.load_geom()
-PROTN = PLANE | cfg.nets('protected_nets') | set(rc.csv(A.freeze))
+PROTN = PLANE | cfg.nets('protected_nets') | cfg.nets('frozen_nets') | set(rc.csv(A.freeze))
 ripped = 0
 if not A.no_rip:
     for ref, _ in MOVES:
@@ -208,7 +227,8 @@ if MOVES:
         gb0 = set(b for b in B0.check([pn]) if 'edge' not in b)
         bad += [pn + ' ' + b for b in B.check([pn]) if 'edge' not in b and b not in gb0]
     if bad:
-        print('ILLEGAL', A.move, bad[:8], flush=True); sys.exit(2)
+        B.save(A.out + '_illegal.kicad_pcb')   # the moved board, for a look at the conflicts
+        print('ILLEGAL', A.move, bad[:8], flush=True); sys.exit(3)
     if A.legal_only:
         print('LEGAL', A.move, flush=True); sys.exit(0)
 op0 = rc.opens(cfg, B, lib2, NETS)

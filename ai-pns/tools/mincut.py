@@ -14,8 +14,10 @@ For each open net of --nets, in order:
 --nperm attempts per net vary PEN over --pen-schedule. Accepted nets are frozen for the following nets
 and rounds; --rounds repeats the net list while anything improves (--all-open adds every open net).
 Writes OUT (the last accepted board; OUT.cand.kicad_pcb is the latest candidate); prints one line per
-attempt and ACCEPT lines. Exit 0 also when nothing improved (OUT is then not written).
+attempt and ACCEPT lines. Exit codes: 0 = OUT written (something improved), 1 = nothing improved (OUT
+not written), 2 = bad arguments (unknown or frozen net in --nets, bad config).
 
+Never ripped: plane_nets, protected_nets, frozen_nets and --freeze.
 Board knowledge comes from --config (see routecfg.py): plane_nets, protected_nets, high_cost_nets,
 reservations, pad_exits, via_forbid_rects, width_rules (section "mincut" overrides), window.
 """
@@ -62,7 +64,7 @@ from shapely.strtree import STRtree  # noqa: E402
 cfg = rc.Config(A.config, 'mincut')
 cfg.apply_fr(fr)
 IN, OUT, NETS = A.inp, A.out, rc.csv(A.nets)
-PROT = cfg.nets('plane_nets') | cfg.nets('protected_nets') | set(rc.csv(A.freeze))
+PROT = cfg.nets('plane_nets') | cfg.nets('protected_nets') | cfg.nets('frozen_nets') | set(rc.csv(A.freeze))
 HIGH = cfg.nets('high_cost_nets')
 SCHED = [float(x) for x in A.pen_schedule.split(',')]
 PEN = SCHED[0]
@@ -101,7 +103,7 @@ def direct(B, net, ef):
                            viacost=VIACOST)
 
 
-LIB = ctypes.CDLL(os.path.join(rc.GRID, 'libastar.so'))
+LIB = ctypes.CDLL(fr.ASTAR)
 LIB.astar2.restype = ctypes.c_int
 
 
@@ -243,6 +245,7 @@ def attempt(B, net, ef, frozen, depth, top=False):
 
 cur = IN
 B = fr.Brd(cur)
+rc.check_nets(B, NETS, cfg.nets('frozen_nets'))
 rc.apply_pad_exits(cfg, B, lib2)
 WIN = rc.window(cfg, B, rc.floats(A.window, 4) if A.window else None)
 ef = rc.via_forbid(cfg, B, fr)
@@ -256,7 +259,7 @@ for rnd in range(A.rounds):
         for k in range(A.nperm):
             B = fr.Brd(cur)
             if k:
-                random.seed(1000 * rnd + k)
+                random.seed(1000 * rnd + k + 1000000 * (A.seed - 1))   # --seed 1 keeps the historic sequence
             PEN = SCHED[k % len(SCHED)]
             rn = attempt(B, net, ef, {net} | CLOSED, A.depth, top=True)
             o2 = rc.opens(cfg, B, lib2); t2 = sum(o2.values())
@@ -273,3 +276,6 @@ for rnd in range(A.rounds):
     if not improved:
         break
 print('end total open', tot, {n: v for n, v in op.items() if v}, flush=True)
+if cur == IN:
+    print('no improvement: OUT not written', flush=True)
+    sys.exit(1)
