@@ -36,8 +36,27 @@ check pocket_zero has pocket '^ZERO 0'
 check pocket_move "$PY" "$T/pocket.py" "$B" --box 141,159,-120,-104 --nets '/D-' --move D22:0,-0.25 --legal-only --config "$CFG" --out "$W/pkm"
 check pocket_move_legal has pocket_move '^LEGAL'
 "$PY" "$T/pocket.py" "$B" --box 141,159,-120,-104 --nets '/D+' --move C14:0.25,0 --legal-only --config "$CFG" --out "$W/pki" > "$W/pocket_illegal_out.log" 2>&1
-check pocket_illegal_rc test $? = 2
+check pocket_illegal_rc test $? = 3   # $? = exit code of the pocket.py line above (3 = illegal move)
 check pocket_illegal has pocket_illegal_out '^ILLEGAL'
+
+# rotated move: C28 turned to 90 deg (illegal here); its GND escape must still end on the turned GND pad
+"$PY" "$T/pocket.py" "$B" --box 141,159,-120,-104 --nets 'Net-(U2-CAP)' --move C28:0,0,90 --config "$CFG" --out "$W/pkr" > "$W/pocket_rot_out.log" 2>&1
+check pocket_rot_rc test $? = 3   # $? = exit code of the pocket.py line above
+check pocket_rot_escape "$PY" - "$W/pkr_illegal.kicad_pcb" <<'EOF'
+import sys, pcbnew as K
+b = K.LoadBoard(sys.argv[1]); f = b.FindFootprintByReference('C28')
+q = [p for p in f.Pads() if p.GetNetname() == 'GND'][0].GetPosition()
+n = sum(1 for t in b.GetTracks() if t.GetNetname() == 'GND' and t.GetClass() == 'PCB_TRACK' and q in (t.GetStart(), t.GetEnd()))
+sys.exit(0 if f.GetOrientationDegrees() == 90 and n == 2 else 1)
+EOF
+
+# unknown and frozen nets are refused with exit 2
+"$PY" "$T/pocket.py" "$B" --box 141,159,-120,-104 --nets 'NOSUCH' --config "$CFG" --out "$W/pkn" > "$W/nosuch_out.log" 2>&1
+check pocket_nosuch_rc test $? = 2   # $? = exit code of the pocket.py line above
+"$PY" "$T/mincut.py" "$B" "$W/x.kicad_pcb" --nets 'NOSUCH' --config "$CFG" > "$W/nosuch2_out.log" 2>&1
+check mincut_nosuch_rc test $? = 2   # $? = exit code of the mincut.py line above
+"$PY" "$T/pocket.py" "$B" --box 141,159,-120,-104 --nets 'VIN' --config "$CFG" --out "$W/pkf" > "$W/frozen_out.log" 2>&1
+check pocket_frozen_rc test $? = 2   # $? = exit code of the pocket.py line above
 
 # mincut: open /D- (delete its copper south of the connector cap) and close it again
 "$PY" - "$B" "$W/open.kicad_pcb" <<'EOF' 2>&1 | quiet
@@ -72,11 +91,11 @@ check gate_pass "$PY" "$T/gate.py" "$B" "$W/pf.kicad_pcb" "$NET" --config "$CFG"
 # ... a width change of a frozen net is rejected
 read -r A0 < <("$PY" -c "
 import pcbnew as K
-t = [t for t in K.LoadBoard('$B').GetTracks() if t.GetNetname() == 'Net-(J1-Pin_1)' and t.GetClass() == 'PCB_TRACK' and t.GetLayer() == K.B_Cu][0]
+t = [t for t in K.LoadBoard('$B').GetTracks() if t.GetNetname() == 'VIN' and t.GetClass() == 'PCB_TRACK' and t.GetLayer() == K.B_Cu][0]
 s, e = t.GetStart(), t.GetEnd(); print('%.6f,%.6f;%.6f,%.6f' % (K.ToMM(s.x), -K.ToMM(s.y), K.ToMM(e.x), -K.ToMM(e.y)))" 2>/dev/null)
-"$PY" "$T/polyfix.py" "$B" "$W/frozen.kicad_pcb" --net 'Net-(J1-Pin_1)' --layer B --old "$A0" --new "$A0" --width 0.2 > "$W/frozen_edit.log" 2>&1
+"$PY" "$T/polyfix.py" "$B" "$W/frozen.kicad_pcb" --net VIN --layer B --old "$A0" --new "$A0" --width 0.25 > "$W/frozen_edit.log" 2>&1
 "$PY" "$T/gate.py" "$B" "$W/frozen.kicad_pcb" --config "$CFG" > "$W/gate_reject_out.log" 2>&1
-rc=$?
+rc=$?   # exit code of gate.py (1 = reject)
 check gate_reject_rc test $rc = 1
 check gate_reject_reason has gate_reject_out 'frozen net changed'
 
