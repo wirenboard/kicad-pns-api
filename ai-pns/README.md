@@ -34,7 +34,77 @@ Two smaller router changes are on this branch too:
 - diff-pair length tuning recognises the pair gap it observes;
 - a build fix for older glm.
 
-## Building
+## Installing a release build
+
+Linux x86_64 builds are attached to the
+[GitHub releases](https://github.com/wirenboard/kicad-pns-api/releases) of this repository. Every
+CI run also keeps the same package as a workflow artifact for 30 days (Actions tab, "Build
+binaries"). A package holds `pcbnew` only, built on Debian 13 (trixie). It is tested on Debian 13
+and Ubuntu 24.04; other distributions need glibc 2.38+ and GTK 3.
+
+**Host packages** (Debian 13 / Ubuntu 24.04 names; most desktops have them already):
+
+```bash
+sudo apt install libgtk-3-0t64 libsecret-1-0 libgl1 libegl1 libopengl0 libglx-mesa0 \
+  libgl1-mesa-dri xvfb python3-venv
+```
+
+Everything else (wxWidgets, OpenCascade, protobuf, nng, libgit2, Boost, ...) is bundled in `lib/`.
+
+**Install:**
+
+```bash
+V=v1.0.0   # the release tag
+F=kicad-pns-$V-linux-x86_64.tar.xz
+curl -LO https://github.com/wirenboard/kicad-pns-api/releases/download/$V/$F
+curl -LO https://github.com/wirenboard/kicad-pns-api/releases/download/$V/$F.sha256
+sha256sum -c $F.sha256
+tar -xJf $F                                    # anywhere; the package is relocatable
+cd kicad-pns-$V-linux-x86_64
+python3 -m venv venv && venv/bin/pip install -r ai-pns/requirements.txt
+KPNS_PY=$PWD/venv/bin/python ai-pns/ci/smoke.sh   # self-test on a private Xvfb :97
+```
+
+**Package layout:**
+
+| path | what |
+|---|---|
+| `bin/kicad-pns-pcbnew` | launcher: creates `$KICAD_CONFIG_HOME` (default `~/.config/kicad-pns`) with the API server enabled and no setup wizard, then runs pcbnew |
+| `pcbnew/`, `plugins/3d/`, `resources/images.tar.gz`, `schemas/` | KiCad, in the layout of a build tree, so it finds its data next to itself |
+| `lib/` | KiCad's own and bundled libraries; the binaries find them through a relative RUNPATH |
+| `ai-pns/` | this directory: Python client, host scripts, tools; `ai-pns/requirements.txt` for the client |
+| `share/demo-stickhub/` | KiCad's StickHub demo board, used by the self-test |
+| `BUILDINFO` | source commit, build OS, required glibc, list of bundled libraries |
+
+**Running.** The host scripts work from the unpacked package unchanged: `ai-pns/host/paths.sh`
+detects the package and uses it as `$KPNS_BUILD`.
+
+```bash
+export KPNS_PY=$PWD/venv/bin/python
+ai-pns/host/hoststart_n.sh 1 board.kicad_pcb board.kicad_pro   # Xvfb :91, socket /tmp/kpns1/kicad/api.sock
+```
+
+Or run the launcher yourself, on any X display:
+
+```bash
+TMPDIR=/tmp/kp1 DISPLAY=:97 bin/kicad-pns-pcbnew board.kicad_pcb   # API socket ipc:///tmp/kp1/kicad/api.sock
+```
+
+Stock footprint and symbol libraries are not included; the API works on the board as it is.
+
+**CI.** `.github/workflows/kicad-pns-build.yml` builds the package in the image of
+`ai-pns/ci/Dockerfile` (`ai-pns/ci/build.sh`, with ccache), packs it (`ai-pns/ci/package.sh`) and
+runs the self-test in clean Debian 13 and Ubuntu 24.04 containers (`ai-pns/ci/test-clean.sh`). A
+tag `v*` publishes the package and its `.sha256` as a release. The same scripts run locally:
+
+```bash
+docker build -t kpns-ci ai-pns/ci
+docker run --rm -u $(id -u):$(id -g) -v "$PWD:$PWD" -w "$PWD" -e JOBS=8 kpns-ci ai-pns/ci/build.sh
+docker run --rm -u $(id -u):$(id -g) -v "$PWD:$PWD" -w "$PWD" kpns-ci ai-pns/ci/package.sh dist
+ai-pns/ci/test-clean.sh ubuntu:24.04 dist/kicad-pns-*-linux-x86_64.tar.xz
+```
+
+## Building from source
 
 This is a normal KiCad build. See [KiCad's build docs](https://dev-docs.kicad.org/en/build/linux/)
 for the dependency list. Since the November 2026 upstream base, the build also needs the Vulkan
@@ -100,7 +170,7 @@ working copy of the board and its own API socket.
 - `Xvfb`, `xdotool`, and a Python with `protobuf` 5.29 and `pynng`:
 
   ```bash
-  python3 -m venv venv && venv/bin/pip install 'protobuf==5.29.*' pynng
+  python3 -m venv venv && venv/bin/pip install -r ai-pns/requirements.txt
   export KPNS_PY=$PWD/venv/bin/python
   ```
 
@@ -141,9 +211,11 @@ ai-pns/host/hoststop_n.sh 1 --xvfb                              # stop instance 
 - **Private config.** `KICAD_CONFIG_HOME` points to a private directory whose
   `10.99/kicad_common.json` has `"api": {"enable_server": true}`. The scripts create it if it is
   missing.
-- **First-run dialogs.** The first start shows the setup wizard. The scripts click through it with
-  `xdotool`, using fixed positions for a 1920x1080 screen without a window manager. They also
-  answer "Rescue" for items on undefined layers.
+- **First-run dialogs.** A new private config is created with the first-run prompts answered and
+  empty library tables, so the setup wizard does not appear. If it does (a config made by an older
+  version of the scripts), the scripts click through it with `xdotool`, using fixed positions for a
+  1920x1080 screen without a window manager. They also answer "Rescue" for items on undefined
+  layers.
   - If an instance hangs at start, look at its display: `xwd -root -display :9N`.
   - Quit gracefully once after the first run so the config is written.
 - **No real display.** `WAYLAND_DISPLAY` is unset so nothing opens on your desktop.

@@ -1,0 +1,30 @@
+#!/bin/bash
+# kicad-pns-pcbnew [pcbnew args] : run the packaged fork's pcbnew with the IPC API server enabled.
+#   KICAD_CONFIG_HOME  config dir (default: ${XDG_CONFIG_HOME:-~/.config}/kicad-pns). Created on the
+#                      first start with "api.enable_server": true, the first-run prompts answered and
+#                      empty global library tables, so no setup wizard appears.
+#   TMPDIR             the API socket is $TMPDIR/kicad/api.sock (default /tmp); keep the path below
+#                      108 characters. Use a separate TMPDIR per instance to run several at once.
+# Libraries are found through the RUNPATH of the binaries; LD_LIBRARY_PATH is not set on purpose
+# (bundled copies of image libraries on it would be loaded into the host's GTK image loaders).
+set -e
+R=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+V=$(sed -E 's/^([0-9]+\.[0-9]+).*/\1/' "$R/share/kicad_build_version.txt" 2>/dev/null || echo 10.99)
+export KICAD_CONFIG_HOME=${KICAD_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/kicad-pns}
+C=$KICAD_CONFIG_HOME/$V
+if [ ! -f "$C/kicad_common.json" ]; then
+  mkdir -p "$C"
+  cat > "$C/kicad_common.json" <<'EOF'
+{
+  "api": { "enable_server": true },
+  "do_not_show_again": { "update_check_prompt": true, "data_collection_prompt": true }
+}
+EOF
+fi
+for t in fp_lib_table sym_lib_table design_block_lib_table; do
+  f=$C/${t//_/-}
+  [ -f "$f" ] || printf '(%s\n\t(version 7)\n)\n' "$t" > "$f"
+done
+export KICAD_RUN_FROM_BUILD_DIR=1
+mkdir -p "${TMPDIR:-/tmp}/kicad"
+exec "$R/pcbnew/pcbnew" "$@"
