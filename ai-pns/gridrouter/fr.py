@@ -32,9 +32,10 @@ Board-specific settings live in a config (dict or JSON file; also read from $FR_
                                    via is allowed: maps() offers its sites too, commit()/via() place the default via
                                    wherever it fits exactly (fits()) and the smaller one only where it does not
   hole_margin             0.03     drill holes are modelled as the hole + this margin (copper ring, chord error)
+  hole_check_extra        0.0      check(): extra distance required from copper to drill holes
   npth_pad_buffer         0.0      NPTH pad copper grown by this much (polygon chord error of round pads)
   hole_to_hole_edge       null     check(): minimum hole edge-to-edge distance of two vias of one net
-                                   (null: via_hole_to_hole centre distance instead)
+                                   (null: via_hole_to_hole centre distance instead, in check() and fits())
   footprint_rule_areas    false    rule areas inside footprints are keep-outs too (board rule areas always are)
   check_keepouts          false    check() also reports vias / tracks inside keep-out rule areas
   via_connect_radius      null     lib2: radius of a via in island connectivity (null: the via's own radius)
@@ -47,7 +48,8 @@ from scipy.ndimage import distance_transform_edt
 from PIL import Image, ImageDraw
 
 D = os.path.dirname(os.path.abspath(__file__))
-lib = ctypes.CDLL(os.path.join(D, 'libastar.so'))
+ASTAR = os.environ.get('FR_ASTAR_LIB') or os.path.join(D, 'libastar.so')   # FR_ASTAR_LIB: a build elsewhere
+lib = ctypes.CDLL(ASTAR)
 lib.astar.restype = ctypes.c_int
 mm = K.ToMM
 
@@ -55,7 +57,7 @@ DEFAULTS = dict(layers=[['F', 'F.Cu'], ['B', 'B.Cu']],
                 clearance_track_track=0.2032, clearance_track_pad=0.2286, clearance_edge=0.254, clearance_hole=0.25,
                 via_diameter=0.7, via_drill=0.3, via_hole_to_hole=0.55, power_nets=[], power_width=0.4064,
                 gap_zone_skip_refs=[], gap_zone_skip_prefixes=[], forbid_rects=[], via_forbid_rects=[],
-                keepout_circles=[], keepout_footprint_pads=[], alt_vias=[], hole_margin=0.03, npth_pad_buffer=0.0,
+                keepout_circles=[], keepout_footprint_pads=[], alt_vias=[], hole_margin=0.03, hole_check_extra=0.0, npth_pad_buffer=0.0,
                 hole_to_hole_edge=None, footprint_rule_areas=False, check_keepouts=False, via_connect_radius=None)
 CFG = {}
 ALLOW_FORBIDDEN_VIAS = False   # True: ignore via_forbid_rects (e.g. tented vias allowed there)
@@ -378,7 +380,6 @@ class Brd:
     def fits(self, net, x, y, vd, vh):
         """exact check of a through via (diameter vd, drill vh) at (x,y) for net against present copper, holes, edge"""
         c = Point(x, y); r = vd / 2; hm = CFG['hole_margin']; hh = CFG['hole_to_hole_edge']
-        hh = CFG['clearance_hole'] if hh is None else hh
         for (L, n, k, g, ref, smd) in self.items:
             if k == 'hole':   # g = hole + hole_margin
                 if g.distance(c) + hm < CFG['clearance_hole'] + vh / 2 - 1e-4: return False
@@ -386,7 +387,9 @@ class Brd:
             if k == 'via':
                 dd = Point(P(ref.GetPosition())).distance(c)
                 if dd < 1e-6: continue
-                if dd - mm(ref.GetDrillValue()) / 2 - vh / 2 < hh - 1e-4: return False
+                if hh is None:
+                    if dd < CFG['via_hole_to_hole'] - 1e-4: return False
+                elif dd - mm(ref.GetDrillValue()) / 2 - vh / 2 < hh - 1e-4: return False
                 if n == net: continue
             if n == net and not (k == 'pad' and smd): continue
             if g.distance(c) < r + CTP - 1e-4: return False
@@ -459,7 +462,7 @@ class Brd:
                 need = CTT if (k == 'trk' and k2 == 'trk') else (CFG['clearance_hole'] if k2 == 'hole' else CTP)
                 if n2 == n and k2 == 'pad': need = CTP
                 if k2 == 'hole' and n2 == n: continue
-                dd = g.distance(g2) + (0.03 if k2 == 'hole' else 0)   # hole items carry hole_margin (default 0.03)
+                dd = g.distance(g2) + (CFG['hole_margin'] - CFG['hole_check_extra'] if k2 == 'hole' else 0)   # hole items carry hole_margin
                 if dd < need - 2e-5:
                     bad.append(f'{L} {dd:.3f}<{need} {n} {k} {desc(ref)} | {n2} {k2} {desc(ref2)}')
                     self.offend.append((n, ref, n2, ref2))
