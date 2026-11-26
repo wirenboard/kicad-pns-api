@@ -324,7 +324,8 @@ What we learned using them:
 - Accept on the **whole-board** open count, not on the target net: a rip-up that closes one net
   and opens two elsewhere looks like progress locally.
 - Keep the plane net, RF and matched nets protected; give power trunks a high crossing cost
-  rather than making them walls.
+  rather than making them walls. List differential pairs and length-matched nets in
+  `pnsfix.skip_nets`: pnsfix straightens one net at a time and would break the coupling.
 - Every tool run is deterministic for a given seed, so a result can be reproduced from its
   command line.
 - PNS can stop a little short of the end pad and still report success, and a failed shove can

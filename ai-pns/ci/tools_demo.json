@@ -17,5 +17,6 @@
     {"power": true, "widths": [0.3, 0.2]},
     {"default": true, "widths": [0.15]}
   ],
-  "frozen_nets": ["Net-(J1-Pin_1)"]
+  "frozen_nets": ["Net-(J1-Pin_1)"],
+  "pnsfix": {"skip_nets": ["/D+", "/D-", "/U1D+", "/U1D-", "/U2D+", "/U2D-", "/U3D+", "/U3D-", "/U4D+", "/U4D-", "/U5D+", "/U5D-", "/U6D+", "/U6D-", "/U7D+", "/U7D-"]}
 }
