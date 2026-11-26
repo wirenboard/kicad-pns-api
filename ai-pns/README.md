@@ -262,7 +262,7 @@ docstring.
 
 | file | what |
 |---|---|
-| `tools/lock.py SOCKET --nets A,B` | Locks all copper except these nets, so shove can only move your own copper. `--unlock` and `--status` also exist. |
+| `tools/lock.py SOCKET --nets A,B` | Locks all copper except these nets, so shove can only move your own copper. `--frozen A,B [--vias]` locks only these nets (and all vias). `--unlock` and `--status` also exist. |
 | `tools/save.py SOCKET OUT` | Checkpoints the open board via `SaveDocumentToString`, written atomically. |
 | `tools/baseline_drc.py SOCKET [OUT.tsv] [--refill] [--diff BASE.tsv]` | Dumps DRC as TSV, or prints only the violations that are not in a baseline. |
 | `tools/drcsum.py N\|SOCKET` | DRC counts per type and unconnected items per net. |
@@ -274,9 +274,67 @@ docstring.
 | `tools/transplant.py BASE10 TRACKS.json OUT` | Puts tracks dumped by `drive.py --save` into a stock 10.0 board. Needs stock `pcbnew`. |
 | `tools/k10.py BASE10 FORK OUT` | Text-level copy of the fork board's copper into a 10.0 board. |
 | `tools/cdrc.sh FORK TAG BASE10` | `k10.py` plus stock `kicad-cli pcb drc --refill-zones`, with a summary. |
-| `tools/fancheck.py BOARD10` | Geometry checks: 45-degree angles, ends on pad centres, pad exits along the pad axis. Needs stock `pcbnew`. |
+| `tools/fancheck.py BOARD10` | Geometry checks: 45-degree angles, ends on pad centres, pad exits along the pad axis, hairpins, zigzag jogs and detours. Needs stock `pcbnew`. |
 | `gridrouter/fr.py`, `lib2.py`, `astar.c` | A multi-layer grid A* finisher on a stock 10.0 board, for nets the PNS router cannot reach. Board-specific keep-outs go in a config: see the docstring and `fr_config.example.json`. Build with `cc -O2 -shared -fPIC -o libastar.so astar.c -lm`. |
 | `examples/rules.example.kicad_dru` | Custom rules: a track and clearance minimum, a relaxed "neck" area for fine-pitch parts, and a power via check. |
+
+### Board-editing tools: rip-up, pockets, chain repair
+
+These tools edit an already routed board to close the last open nets or to clean up jogs and
+detours. They work on stock KiCad 10 files with the grid router (`gridrouter/`) and stock `pcbnew`
+(numpy, scipy, shapely, pillow); `pnsfix.py` also drives a fork instance. Each one prints its full
+usage with `--help`.
+
+All board knowledge goes into one JSON (or YAML) file passed with `--config`: plane and protected
+nets, frozen nets, a reservation board, forced pad exits, via-forbidden rectangles, width rules
+per net or prefix, and per-tool sections. The `fr` key holds the grid-router config (see
+`gridrouter/fr_config.example.json`), or `$FR_CONFIG` is used. `tools/routecfg.py` documents every
+key. `ci/tools_demo.json` is a working example for the StickHub demo board.
+
+| file | what |
+|---|---|
+| `tools/mincut.py IN OUT --nets A,B` | Min-crossing rip-up. Plans each open net on a cost grid where rippable foreign copper costs a penalty per cell instead of being a wall, rips exactly the pieces the path crosses, routes the net, re-routes the ripped nets (recursively, in several orders), and accepts only when the whole-board open count drops (`--eq`: stays equal with the target closed). |
+| `tools/pocket.py IN --box x0,x1,y0,y1 --nets A,B` | Strips the nets' copper inside a window and re-routes them in many orders and seeds; keeps the best order. `--move REF:dx,dy[,rot]` first moves small parts, carrying plane-net escapes with the part, with a legality check (clearances, edge, courtyard overlap). `--forbid L:rect` steers a hand-guided order. |
+| `tools/pnsfix.py CUR OUTDIR --instance N` | Straightens jogs and detours one chain at a time with the PNS router (walkaround, then shove), in a running fork instance holding CUR. Each result goes through `gate.py`; a rejected attempt is rolled back and the rollback is verified. |
+| `tools/polyfix.py IN OUT --net N --layer L --old PTS --new PTS` | Replaces one track chain by a given polyline, snapping onto existing vertices; optional via move (`--via-move`) and T split (`--split`). |
+| `tools/gate.py OLD NEW [NETS]` | Acceptance gate for one edit: kicad-cli DRC, grid-router clearance check with a safety margin on new copper, pad-exit direction, no new free track ends, config zones, rule-5 counts strictly down, frozen nets byte-identical, vias and widths unchanged. Exit 0 = pass. |
+| `tools/chains.py BOARD OUT.json` | Rule-5 defects of `fancheck.py` (jogs, detours) as track chains between nodes; the target list of `pnsfix.py`. |
+| `tools/lockcopy.py REF IN OUT` | Copies the lock flags from REF, so session locks (`lock.py --frozen ... --vias`) do not leak into the result. |
+
+A typical session on a board with a few open nets:
+
+```bash
+C=--config=myboard.json
+python3 tools/mincut.py b0.kicad_pcb b1.kicad_pcb --nets SIG_A,SIG_B $C --freeze VIN,VBUS --rip-reserved
+python3 tools/pocket.py b1.kicad_pcb --box 20,34,30,48 --nets SIG_C,SIG_D,SIG_E --orders 30 --seed 3 $C --out pk
+python3 tools/gate.py b1.kicad_pcb pk_best.kicad_pcb SIG_C,SIG_D,SIG_E $C
+```
+
+and a jog cleanup with the PNS router (the instance holds the stock board CUR; a rules project a
+few um stricter than the real one keeps PNS off the exact clearance):
+
+```bash
+host/hoststart_n.sh 3 cur.kicad_pcb strict.kicad_pro
+$KPNS_PY tools/lock.py ipc:///tmp/kpns3/kicad/api.sock --frozen RF_IN,CLK_25M --vias
+$KPNS_PY tools/pnsfix.py cur.kicad_pcb fix/ --instance 3 $C
+python3 tools/lockcopy.py cur.kicad_pcb fix/acc05.kicad_pcb final.kicad_pcb
+```
+
+What we learned using them:
+- Accept on the **whole-board** open count, not on the target net: a rip-up that closes one net
+  and opens two elsewhere looks like progress locally.
+- Keep the plane net, RF and matched nets protected; give power trunks a high crossing cost
+  rather than making them walls.
+- Every tool run is deterministic for a given seed, so a result can be reproduced from its
+  command line.
+- PNS can stop a little short of the end pad and still report success, and a failed shove can
+  leave neighbours moved; `pnsfix.py` checks both, but always run `gate.py` (or DRC) on anything
+  you keep.
+- Part moves need their escape chains handled: only the chain from the pad to its first via
+  moves with the part. Walking past that via deletes the net's trunk and makes every move look
+  worse than it is.
+
+`ci/tools_test.sh` runs the tools on the StickHub demo in CI (stock KiCad 10, no fork).
 
 ### Parallel routing by several agents
 
