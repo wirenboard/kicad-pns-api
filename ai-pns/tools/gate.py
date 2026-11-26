@@ -1,9 +1,10 @@
 """gate.py OLD NEW [TARGETNETS] [--allow-vias] --config CFG : acceptance gate for one local copper edit
 (stock pcbnew + kicad-cli). OLD and NEW are stock KiCad 10 boards; TARGETNETS (comma-separated) are the nets
 the edit was meant to change. Prints CHANGED, RULE5, one FAIL line per finding and PASS or REJECT; exit 0 =
-pass, 1 = reject.
+pass, 1 = reject, 2 = the gate itself failed (one "GATE ERROR ..." line: bad config, kicad-cli error, ...).
 
- 1. kicad-cli DRC of NEW (zones refilled, rules = gate.drc_project + its .kicad_dru): unconnected <=
+ 1. kicad-cli DRC of NEW (zones refilled; rules = gate.drc_project + its .kicad_dru, default: the .kicad_pro
+    next to NEW, else next to OLD - a warning on stderr if there is none): unconnected <=
     gate.max_unconnected (default 0); copper violation counts per type equal gate.drc_expect when given,
     else not above OLD's (non-copper types in gate.drc_ignore are ignored);
  2. fr.check of NEW (whole board): no finding that OLD does not have (gate.frcheck_ignore: prefixes ignored);
@@ -16,7 +17,7 @@ pass, 1 = reject.
     [refs]}], gate.halo_pads [{"ref", "layer", "r"}], fr inter-pad gap zones (gate.gap_zones, default true),
     gate.no_track_layers (KiCad names); fancheck categories in gate.fancheck_not_worse do not grow;
  7. rule 5 (gate.rule5, default true; --no-rule5 turns it off): no new hairpin, jog or detour entry, jogs + detours strictly down;
- 8. frozen_nets byte-identical (minus TARGETNETS); vias unchanged (position, size) unless --allow-vias; every
+ 8. frozen_nets identical to 1 um (minus TARGETNETS); vias unchanged (position, size) unless --allow-vias; every
     changed net keeps its width set (no new width); fr power nets never get narrower.
 gate.extra_cmd: a command (list) run with OLD NEW appended; non-zero exit = FAIL.
 """
@@ -32,6 +33,21 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import routecfg as rc  # noqa: E402
+
+
+def die(msg):
+    print('GATE ERROR', msg, flush=True)
+    sys.exit(2)
+
+
+def _hook(t, v, tb):   # any unexpected exception is a gate error (2), never a REJECT (1)
+    import traceback
+    traceback.print_exception(t, v, tb, limit=3, file=sys.stderr)
+    print('GATE ERROR', t.__name__, v, flush=True)
+    sys.stdout.flush(); os._exit(2)
+
+
+sys.excepthook = _hook
 
 ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], epilog=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 ap.add_argument('old', metavar='OLD')
@@ -98,9 +114,22 @@ for n in changed:
 
 
 # 1. stock DRC
+def sibling_pro(path):
+    p = os.path.splitext(path)[0] + '.kicad_pro'
+    return p if os.path.exists(p) else None
+
+
+PRO = cfg.file('drc_project') or sibling_pro(NEW) or sibling_pro(OLD)
+if not PRO:
+    print('warning: no .kicad_pro (gate.drc_project, or next to NEW/OLD): kicad-cli DRC runs with default rules',
+          file=sys.stderr)
+elif not os.path.exists(PRO):
+    die(f'gate.drc_project not found: {PRO}')
+
+
 def drc(path):
     import json
-    pro = cfg.file('drc_project')
+    pro = PRO
     d = tempfile.mkdtemp(prefix='kpns_gate_')
     try:
         t = os.path.join(d, 'b.kicad_pcb'); shutil.copy(path, t)
@@ -110,7 +139,13 @@ def drc(path):
             if os.path.exists(dru):
                 shutil.copy(dru, os.path.join(d, 'b.kicad_dru'))
         j = os.path.join(d, 'drc.json')
-        subprocess.run(['kicad-cli', 'pcb', 'drc', '--refill-zones', '-o', j, '--format', 'json', t], capture_output=True)
+        try:
+            cp = subprocess.run(['kicad-cli', 'pcb', 'drc', '--refill-zones', '-o', j, '--format', 'json', t],
+                                capture_output=True, text=True, timeout=900)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            die(f'kicad-cli drc: {e}')
+        if cp.returncode != 0 or not os.path.exists(j):
+            die(f'kicad-cli drc failed (rc {cp.returncode}): {(cp.stderr or cp.stdout).strip()[-300:]}')
         r = json.load(open(j))
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -221,6 +256,8 @@ FZ = cfg.get('forbid_new_copper', [])
 HALO = []
 for h in cfg.get('halo_pads', []):
     f = bn.FindFootprintByReference(h['ref'])
+    if f is None:
+        die(f"gate.halo_pads: no footprint {h['ref']}")
     HALO += [(h['layer'], fr.P(p.GetPosition()), h['r']) for p in f.Pads()]
 NOTRK = set(bn.GetLayerID(x) for x in cfg.get('no_track_layers', []))
 GAPZ = cfg.get('gap_zones', True)

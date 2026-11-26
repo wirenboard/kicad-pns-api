@@ -288,8 +288,9 @@ usage with `--help`.
 All board knowledge goes into one JSON (or YAML) file passed with `--config`: plane and protected
 nets, frozen nets, a reservation board, forced pad exits, via-forbidden rectangles, width rules
 per net or prefix, and per-tool sections. The `fr` key holds the grid-router config (see
-`gridrouter/fr_config.example.json`), or `$FR_CONFIG` is used. `tools/routecfg.py` documents every
-key. `ci/tools_demo.json` is a working example for the StickHub demo board.
+`gridrouter/fr_config.example.json`), or `$FR_CONFIG` is used. `tools/routecfg.py` documents the
+shared keys and lists the per-tool keys, which each tool's `--help` explains; an unknown key, also
+inside a tool section, is an error. `ci/tools_demo.json` is a working example for the StickHub demo board.
 
 | file | what |
 |---|---|
@@ -297,7 +298,7 @@ key. `ci/tools_demo.json` is a working example for the StickHub demo board.
 | `tools/pocket.py IN --box x0,x1,y0,y1 --nets A,B` | Strips the nets' copper inside a window and re-routes them in many orders and seeds; keeps the best order. `--move REF:dx,dy[,rot]` first moves small parts, carrying plane-net escapes with the part, with a legality check (clearances, edge, courtyard overlap). `--forbid L:rect` steers a hand-guided order. |
 | `tools/pnsfix.py CUR OUTDIR --instance N` | Straightens jogs and detours one chain at a time with the PNS router (walkaround, then shove), in a running fork instance holding CUR. Each result goes through `gate.py`; a rejected attempt is rolled back and the rollback is verified. |
 | `tools/polyfix.py IN OUT --net N --layer L --old PTS --new PTS` | Replaces one track chain by a given polyline, snapping onto existing vertices; optional via move (`--via-move`) and T split (`--split`). |
-| `tools/gate.py OLD NEW [NETS]` | Acceptance gate for one edit: kicad-cli DRC, grid-router clearance check with a safety margin on new copper, pad-exit direction, no new free track ends, config zones, rule-5 counts strictly down, frozen nets byte-identical, vias and widths unchanged. Exit 0 = pass. |
+| `tools/gate.py OLD NEW [NETS]` | Acceptance gate for one edit: kicad-cli DRC, grid-router clearance check with a safety margin on new copper, pad-exit direction, no new free track ends, config zones, rule-5 counts strictly down, frozen nets identical to 1 µm, vias and widths unchanged. Exit 0 = pass, 1 = reject, 2 = gate error. |
 | `tools/chains.py BOARD OUT.json` | Rule-5 defects of `fancheck.py` (jogs, detours) as track chains between nodes; the target list of `pnsfix.py`. |
 | `tools/lockcopy.py REF IN OUT` | Copies the lock flags from REF, so session locks (`lock.py --frozen ... --vias`) do not leak into the result. |
 
