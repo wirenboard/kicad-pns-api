@@ -9,7 +9,7 @@ Relative paths in the file are relative to the file. Keys (all optional):
                       (see gridrouter/fr.py). Missing: $FR_CONFIG, else fr's defaults.
   plane_nets          ["GND"]  nets carried by a plane/pour: never ripped, not counted as open
   protected_nets      []       nets the tools never rip, strip or re-route (RF, matched pairs, sense lines)
-  frozen_nets         []       gate.py / pnsfix.py: copper of these nets must stay byte-identical
+  frozen_nets         []       never ripped or re-routed (mincut, pocket); gate.py: their copper must stay identical
   high_cost_nets      []       mincut.py: crossing their copper costs pen_high per cell (power trunks)
   reservations        null     a .kicad_pcb whose tracks/vias are "reserved" (a via plan): matching copper
                                (same net, geometry to 1 um) is kept unless the tool is told to rip it
@@ -23,6 +23,13 @@ Relative paths in the file are relative to the file. Keys (all optional):
                       plus "widths": [...] and optionally "plan": "first"|"last" (mincut's planning width)
   pairs               []       [["P", "N"], ...] routed back to back (pocket.py)
   mincut, pocket, gate, pnsfix   per-tool sections; a key given there overrides the top-level one.
+                      Keys only known in a section (each documented in that tool's --help):
+                        pocket  move_hole_clearance
+                        gate    drc_project, drc_expect, drc_ignore, max_unconnected, frcheck_ignore, margin,
+                                hole_extra, axis_min_pads, forbid_new_copper, halo_pads, gap_zones,
+                                no_track_layers, fancheck_not_worse, rule5, extra_cmd
+                        pnsfix  keep_width_nets, skip_nets, delete_only_nets, nodelete_points
+                      Unknown keys, at the top level or in a section, are errors.
 
 Coordinates are mm, y up (y = -KiCad y), as in fr.py. Layer letters are fr's (fr config "layers").
 """
@@ -41,13 +48,37 @@ DEFAULTS = dict(fr=None, plane_nets=['GND'], protected_nets=[], frozen_nets=[], 
                 window=None, pad_exits=[], via_forbid_rects=[], rule_area_via_forbid=True, width_rules=WIDTH_RULES,
                 pairs=[], mincut={}, pocket={}, gate={}, pnsfix={})
 SECTIONS = ('mincut', 'pocket', 'gate', 'pnsfix')
+SECTION_KEYS = dict(mincut=set(), pocket={'move_hole_clearance'},
+                    gate={'drc_project', 'drc_expect', 'drc_ignore', 'max_unconnected', 'frcheck_ignore', 'margin',
+                          'hole_extra', 'axis_min_pads', 'forbid_new_copper', 'halo_pads', 'gap_zones',
+                          'no_track_layers', 'fancheck_not_worse', 'rule5', 'extra_cmd'},
+                    pnsfix={'keep_width_nets', 'skip_nets', 'delete_only_nets', 'nodelete_points'})
+
+
+def astar_lib():
+    """path of libastar.so: next to astar.c, or (read-only install) in the user cache; built once with cc"""
+    so = os.environ.get('FR_ASTAR_LIB') or os.path.join(GRID, 'libastar.so')
+    if os.path.exists(so):
+        return so
+    if not os.access(os.path.dirname(so), os.W_OK):
+        cache = os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'), 'kicad-pns')
+        os.makedirs(cache, exist_ok=True)
+        so = os.path.join(cache, 'libastar.so')
+        if os.path.exists(so) and os.path.getmtime(so) >= os.path.getmtime(os.path.join(GRID, 'astar.c')):
+            os.environ['FR_ASTAR_LIB'] = so
+            return so
+    try:
+        subprocess.check_call(['cc', '-O2', '-shared', '-fPIC', '-o', so, os.path.join(GRID, 'astar.c'), '-lm'])
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise SystemExit(f'cannot build {so} from gridrouter/astar.c ({e}); build it by hand: '
+                         'cc -O2 -shared -fPIC -o libastar.so astar.c -lm, and point FR_ASTAR_LIB at it')
+    os.environ['FR_ASTAR_LIB'] = so
+    return so
 
 
 def gridrouter():
-    """import and return (fr, lib2) from ../gridrouter; builds libastar.so there once if it is missing"""
-    so = os.path.join(GRID, 'libastar.so')
-    if not os.path.exists(so):
-        subprocess.check_call(['cc', '-O2', '-shared', '-fPIC', '-o', so, os.path.join(GRID, 'astar.c'), '-lm'])
+    """import and return (fr, lib2) from ../gridrouter (libastar.so via astar_lib())"""
+    astar_lib()
     if GRID not in sys.path:
         sys.path.insert(0, GRID)
     import fr
@@ -71,6 +102,9 @@ class Config:
         self.section = section
         raw = data if data is not None else (_read(path) if path else {})
         bad = [k for k in raw if not k.startswith('_') and k not in DEFAULTS]
+        for sec in SECTIONS:
+            bad += [f'{sec}.{k}' for k in raw.get(sec, {}) if not k.startswith('_') and k not in DEFAULTS
+                    and k not in SECTION_KEYS[sec]]
         if bad:
             raise SystemExit(f'unknown config keys: {bad}')
         self.raw = raw
@@ -188,6 +222,17 @@ def via_forbid(cfg, B, fr):
                 o = z.Outline().Outline(0)
                 ra.append(Polygon([(K.ToMM(o.CPoint(i).x), -K.ToMM(o.CPoint(i).y)) for i in range(o.PointCount())]))
     return {'via': ra} if ra else None
+
+
+def check_nets(B, nets, frozen=()):
+    """exit 2 for a net the board does not have or a frozen one"""
+    have = set(str(n) for n in B.b.GetNetsByName().keys())
+    bad = [n for n in nets if n not in have]
+    if bad:
+        print('no such net:', ', '.join(bad), file=sys.stderr); sys.exit(2)
+    fz = [n for n in nets if n in frozen]
+    if fz:
+        print('frozen net (config frozen_nets):', ', '.join(fz), file=sys.stderr); sys.exit(2)
 
 
 def signal_nets(cfg, B):
