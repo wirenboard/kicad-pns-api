@@ -45,8 +45,8 @@ and Ubuntu 24.04; other distributions need glibc 2.38+ and GTK 3.
 **Host packages** (Debian 13 / Ubuntu 24.04 names; most desktops have them already):
 
 ```bash
-sudo apt install libgtk-3-0t64 libwebkit2gtk-4.1-0 libsecret-1-0 libasound2t64 \
-  libgl1 libegl1 libglx-mesa0 libgl1-mesa-dri xvfb python3-venv
+sudo apt install libgtk-3-0t64 libsecret-1-0 libgl1 libegl1 libopengl0 libglx-mesa0 \
+  libgl1-mesa-dri xvfb python3-venv
 ```
 
 Everything else (wxWidgets, OpenCascade, protobuf, nng, libgit2, Boost, ...) is bundled in `lib/`.

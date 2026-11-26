@@ -28,7 +28,7 @@ if [ ! -S /tmp/.X11-unix/X$n ]; then
   for i in $(seq 1 40); do [ -S /tmp/.X11-unix/X$n ] && break; sleep 0.25; done
 fi
 mkdir -p "$W/board" "$W/tmp"
-cp "$R/share/demo-stickhub/"* "$W/board/"
+cp -r "$R/share/demo-stickhub/." "$W/board/"
 export KICAD_CONFIG_HOME=$W/cfg TMPDIR=$W/tmp
 export KPNS_SOCKET=ipc://$W/tmp/kicad/api.sock PYAPI=$R/ai-pns/pyapi
 (cd "$W/board" && exec "$R/bin/kicad-pns-pcbnew" StickHub.kicad_pcb > "$W/pcbnew.log" 2>&1) &

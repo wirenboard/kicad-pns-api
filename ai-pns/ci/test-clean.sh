@@ -4,7 +4,7 @@
 # Proves the package is relocatable and bundles everything beyond those packages.
 set -euo pipefail
 IMG=$1; T=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
-RUNTIME="libgtk-3-0t64 libwebkit2gtk-4.1-0 libsecret-1-0 libasound2t64 libgl1 libegl1 libglx-mesa0 libgl1-mesa-dri"
+RUNTIME="libgtk-3-0t64 libsecret-1-0 libgl1 libegl1 libopengl0 libglx-mesa0 libgl1-mesa-dri"
 docker run --rm -v "$T:/pkg.tar.xz:ro" "$IMG" bash -c "
 set -e
 export DEBIAN_FRONTEND=noninteractive
