@@ -46,7 +46,7 @@ for t in segs:
                 if math.hypot(px - p['x'], py - p['y']) > 0.002:
                     # end inside the pad but not on its centre: fine if the segment continues to the centre elsewhere
                     # ...or another same-net segment on this layer joins this vertex and runs to the centre
-                    # inside the pad (eaglefy connector)
+                    # inside the pad (a converter-generated connector)
                     joined = any(s2 is not t and s2.GetLayer() == L and s2.GetNetname() == t.GetNetname() and
                                  any(abs(K.ToMM(q.x) - px) < 1e-6 and abs(K.ToMM(q.y) - py) < 1e-6 for q in (s2.GetStart(), s2.GetEnd()))
                                  and all(p['x0'] - 1e-3 <= K.ToMM(q.x) <= p['x1'] + 1e-3 and p['y0'] - 1e-3 <= K.ToMM(q.y) <= p['y1'] + 1e-3 for q in (s2.GetStart(), s2.GetEnd()))
@@ -135,6 +135,6 @@ for key in list(adj):
         st = math.hypot(path[-1][0]-path[0][0], path[-1][1]-path[0][1])
         if st > 0.05 and ln > 1.5*st and ln - st > 1.0:
             det.append((net, b.GetLayerName(L)[:3], round(path[0][0], 2), round(-path[0][1], 2), round(path[-1][0], 2), round(-path[-1][1], 2), round(ln, 2), round(st, 2)))
-print('hairpins (turn > 90 deg within 2 mm of a pad/via)', len(hair), hair[:60])
-print('zigzag jogs (< 0.3 mm)', len(jog), jog[:60])
-print('detours (> 1.5x straight, > 1 mm extra)', len(det), det[:80])
+print('hairpins (turn > 90 deg within 2 mm of a pad/via)', len(hair), hair)   # full lists: gate.py / pnsfix.py parse them
+print('zigzag jogs (< 0.3 mm)', len(jog), jog)
+print('detours (> 1.5x straight, > 1 mm extra)', len(det), det)
