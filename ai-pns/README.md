@@ -326,8 +326,11 @@ What we learned using them:
 - Keep the plane net, RF and matched nets protected; give power trunks a high crossing cost
   rather than making them walls. List differential pairs and length-matched nets in
   `pnsfix.skip_nets`: pnsfix straightens one net at a time and would break the coupling.
-- Every tool run is deterministic for a given seed, so a result can be reproduced from its
-  command line.
+- The grid-router tools (`mincut.py`, `pocket.py`, `polyfix.py`) are deterministic for a given
+  input and seed, so a result can be reproduced from its command line. `pnsfix.py` is not: the
+  PNS router's result can depend on what the fork session did before (after many attempts and
+  rollbacks we saw walkaround succeed in one instance and fail in another on the same board).
+  Reproduce a pnsfix step from a fresh instance started on the same board.
 - PNS can stop a little short of the end pad and still report success, and a failed shove can
   leave neighbours moved; `pnsfix.py` checks both, but always run `gate.py` (or DRC) on anything
   you keep.
