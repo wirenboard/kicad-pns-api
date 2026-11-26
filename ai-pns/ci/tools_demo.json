@@ -1,0 +1,22 @@
+{
+  "_comment": "Routing-tools config for the StickHub demo board (demos/stickhub), used by ci/tools_test.sh",
+  "fr": {
+    "layers": [["F", "F.Cu"], ["B", "B.Cu"]],
+    "clearance_track_track": 0.15,
+    "clearance_track_pad": 0.15,
+    "clearance_edge": 0.2,
+    "clearance_hole": 0.2,
+    "via_diameter": 0.5,
+    "via_drill": 0.3,
+    "via_hole_to_hole": 0.5,
+    "power_nets": ["VIN", "+5V", "+3.3V", "+1V8"],
+    "power_width": 0.3
+  },
+  "plane_nets": ["GND"],
+  "width_rules": [
+    {"power": true, "widths": [0.3, 0.2]},
+    {"default": true, "widths": [0.15]}
+  ],
+  "frozen_nets": ["VIN"],
+  "pnsfix": {"skip_nets": ["/D+", "/D-", "/U1D+", "/U1D-", "/U2D+", "/U2D-", "/U3D+", "/U3D-", "/U4D+", "/U4D-", "/U5D+", "/U5D-", "/U6D+", "/U6D-", "/U7D+", "/U7D-"]}
+}

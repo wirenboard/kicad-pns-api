@@ -56,7 +56,8 @@ def islands(B, net):
     for t in B.b.GetTracks():
         if t.GetNetname() != net: continue
         if t.GetClass() == 'PCB_VIA':
-            p = fr.P(t.GetPosition()); items.append((set(fr.ORDER), Point(p).buffer(fr.mm(t.GetWidth(fr.K.F_Cu)) / 2), ('via', p)))
+            p = fr.P(t.GetPosition()); vr = fr.CFG['via_connect_radius'] if fr.CFG['via_connect_radius'] is not None else fr.mm(t.GetWidth(fr.K.F_Cu)) / 2
+            items.append((set(fr.ORDER), Point(p).buffer(vr), ('via', p)))
         else:
             L = fr.LID.get(t.GetLayer())
             if not L: continue
