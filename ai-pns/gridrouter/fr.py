@@ -27,6 +27,17 @@ Board-specific settings live in a config (dict or JSON file; also read from $FR_
                                    centreline closer than w/2 to the rectangle (except for the listed nets)
   via_forbid_rects        []       [x0, x1, y0, y1]: no via closer than the via radius (see ALLOW_FORBIDDEN_VIAS)
   keepout_circles         []       {"layer": L, "x":, "y":, "r":} round keep-outs (e.g. tall THT leads)
+  keepout_footprint_pads  []       {"ref": REF, "layer": L, "r":} the same circle around every pad of footprint REF
+  alt_vias                []       {"rect": [x0, x1, y0, y1], "via_diameter":, "via_drill":} zones where a smaller
+                                   via is allowed: maps() offers its sites too, commit()/via() place the default via
+                                   wherever it fits exactly (fits()) and the smaller one only where it does not
+  hole_margin             0.03     drill holes are modelled as the hole + this margin (copper ring, chord error)
+  npth_pad_buffer         0.0      NPTH pad copper grown by this much (polygon chord error of round pads)
+  hole_to_hole_edge       null     check(): minimum hole edge-to-edge distance of two vias of one net
+                                   (null: via_hole_to_hole centre distance instead)
+  footprint_rule_areas    false    rule areas inside footprints are keep-outs too (board rule areas always are)
+  check_keepouts          false    check() also reports vias / tracks inside keep-out rule areas
+  via_connect_radius      null     lib2: radius of a via in island connectivity (null: the via's own radius)
 """
 import sys, math, ctypes, os, json, numpy as np
 import pcbnew as K
@@ -44,7 +55,8 @@ DEFAULTS = dict(layers=[['F', 'F.Cu'], ['B', 'B.Cu']],
                 clearance_track_track=0.2032, clearance_track_pad=0.2286, clearance_edge=0.254, clearance_hole=0.25,
                 via_diameter=0.7, via_drill=0.3, via_hole_to_hole=0.55, power_nets=[], power_width=0.4064,
                 gap_zone_skip_refs=[], gap_zone_skip_prefixes=[], forbid_rects=[], via_forbid_rects=[],
-                keepout_circles=[])
+                keepout_circles=[], keepout_footprint_pads=[], alt_vias=[], hole_margin=0.03, npth_pad_buffer=0.0,
+                hole_to_hole_edge=None, footprint_rule_areas=False, check_keepouts=False, via_connect_radius=None)
 CFG = {}
 ALLOW_FORBIDDEN_VIAS = False   # True: ignore via_forbid_rects (e.g. tented vias allowed there)
 
@@ -109,10 +121,12 @@ class Brd:
                     if poly.OutlineCount() == 0: continue
                     o = poly.Outline(0); pts = [(mm(o.CPoint(i).x), -mm(o.CPoint(i).y)) for i in range(o.PointCount())]
                     if len(pts) < 3: continue
-                    self.items.append((L, p.GetNetname(), 'pad', Polygon(pts).buffer(0), (f.GetReference(), p.GetNumber()), smd))
+                    pg_ = Polygon(pts).buffer(0)
+                    if CFG['npth_pad_buffer'] and p.GetAttribute() == K.PAD_ATTRIB_NPTH: pg_ = pg_.buffer(CFG['npth_pad_buffer'], 16)
+                    self.items.append((L, p.GetNetname(), 'pad', pg_, (f.GetReference(), p.GetNumber()), smd))
                 if not smd:
                     c = P(p.GetPosition()); r = mm(max(p.GetDrillSizeX(), p.GetDrillSizeY())) / 2
-                    for L in ORDER: self.items.append((L, p.GetNetname(), 'hole', Point(c).buffer(r + 0.03, 24), (f.GetReference(), p.GetNumber()), False))
+                    for L in ORDER: self.items.append((L, p.GetNetname(), 'hole', Point(c).buffer(r + CFG['hole_margin'], 24), (f.GetReference(), p.GetNumber()), False))
         # inter-pad gap zones of 2-to-6-pin parts (fan-out rule: no track into the gap between two pads of one part)
         self.gapz = {L: [] for L in ORDER}
         for f in b.GetFootprints():
@@ -139,7 +153,13 @@ class Brd:
         self.holes_np = []
         # rule areas
         self.keep = {L: [] for L in ORDER}; self.keepvia = []
-        for z in b.Zones():
+        self.kcircles = list(CFG['keepout_circles'])
+        for kp in CFG['keepout_footprint_pads']:
+            f = b.FindFootprintByReference(kp['ref'])
+            if f is None: raise KeyError(f"keepout_footprint_pads: no footprint {kp['ref']}")
+            for p in f.Pads(): self.kcircles.append(dict(layer=kp['layer'], x=P(p.GetPosition())[0], y=P(p.GetPosition())[1], r=kp['r']))
+        zs = list(b.Zones()) + ([z for f in b.GetFootprints() for z in f.Zones()] if CFG['footprint_rule_areas'] else [])
+        for z in zs:
             if not z.GetIsRuleArea(): continue
             o = z.Outline().Outline(0); pg = Polygon([(mm(o.CPoint(i).x), -mm(o.CPoint(i).y)) for i in range(o.PointCount())])
             for l in z.GetLayerSet().Seq():
@@ -176,6 +196,8 @@ class Brd:
             return distance_transform_edt(~mask) * res
         free = np.zeros((len(layers), H, W), np.uint8)
         viaok = np.ones((H, W), bool)
+        alts = sorted(set((a['via_diameter'], a['via_drill']) for a in CFG['alt_vias']))
+        aok = {a: np.ones((H, W), bool) for a in alts}
         ys, xs = np.mgrid[0:H, 0:W]; X = x0 + xs * res; Y = y0 + ys * res
         # edge distance
         # edge distance on a grid padded by 1.5 mm of real board (a plain border padding would make the
@@ -208,7 +230,7 @@ class Brd:
                 if fz['layer'] != L or net in fz.get('except_nets', ()): continue
                 rx0, rx1, ry0, ry1 = fz['rect']
                 f &= ~((X > rx0 - w / 2) & (X < rx1 + w / 2) & (Y > ry0 - w / 2) & (Y < ry1 + w / 2))
-            for kc in CFG['keepout_circles']:
+            for kc in self.kcircles:
                 if kc['layer'] == L: f &= np.hypot(X - kc['x'], Y - kc['y']) >= kc['r'] + w / 2
             if extra_forbid is not None and L in extra_forbid:
                 ef = [g for g in extra_forbid[L]]
@@ -217,19 +239,35 @@ class Brd:
                 pass
             free[li] = f
             viaok &= (dtt >= CTP + VR + m + 0.012) & (dtp >= CTP + VR + m + 0.012)
+            for (ad, ah), a in aok.items(): a &= (dtt >= CTP + ad / 2 + m + 0.012) & (dtp >= CTP + ad / 2 + m + 0.012)
         smd = [g for (l, n, k, g, ref, s) in self.items if k == 'pad' and s and g.intersects(winbox)]
-        viaok &= dist(raster(smd)) >= CTP + VR + m
+        dsmd = dist(raster(smd))
+        viaok &= dsmd >= CTP + VR + m
         holes = [Point(P(t.GetPosition())).buffer(mm(t.GetDrillValue()) / 2) for t in self.b.GetTracks() if t.GetClass() == 'PCB_VIA']
         holes += [g for (l, n, k, g, *_r) in self.items if k == 'hole' and l == 'F']
-        viaok &= dist(raster([h for h in holes if h.intersects(winbox)])) >= CFG['clearance_hole'] + CFG['via_drill'] / 2 + m
+        dh = dist(raster([h for h in holes if h.intersects(winbox)]))
+        viaok &= dh >= CFG['clearance_hole'] + CFG['via_drill'] / 2 + m
         viaok &= dedge >= CE + VR + m
         kv = [g for g in self.keepvia if g.intersects(winbox)]
-        if kv: viaok &= dist(raster(kv)) >= VR + m
-        if not ALLOW_FORBIDDEN_VIAS:
-            for rx0, rx1, ry0, ry1 in CFG['via_forbid_rects']:
-                viaok &= ~((X > rx0 - VR) & (X < rx1 + VR) & (Y > ry0 - VR) & (Y < ry1 + VR))
-        if extra_forbid is not None and 'via' in extra_forbid:
-            viaok &= dist(raster(extra_forbid['via'])) >= VR + m
+        dkv = dist(raster(kv)) if kv else None
+        if kv: viaok &= dkv >= VR + m
+        def vforbid(ok, r):
+            if not ALLOW_FORBIDDEN_VIAS:
+                for rx0, rx1, ry0, ry1 in CFG['via_forbid_rects']:
+                    ok &= ~((X > rx0 - r) & (X < rx1 + r) & (Y > ry0 - r) & (Y < ry1 + r))
+            if extra_forbid is not None and 'via' in extra_forbid:
+                ok &= dist(raster(extra_forbid['via'])) >= r + m
+        vforbid(viaok, VR)
+        self.viaok_default = viaok.copy()
+        for (ad, ah), a in aok.items():   # smaller vias where alt_vias allow them
+            a &= (dsmd >= CTP + ad / 2 + m) & (dh >= CFG['clearance_hole'] + ah / 2 + m) & (dedge >= CE + ad / 2 + m)
+            if kv: a &= dkv >= ad / 2 + m
+            vforbid(a, ad / 2)
+            Z = np.zeros_like(viaok)
+            for z in CFG['alt_vias']:
+                if (z['via_diameter'], z['via_drill']) == (ad, ah):
+                    rx0, rx1, ry0, ry1 = z['rect']; Z |= (X >= rx0) & (X <= rx1) & (Y >= ry0) & (Y <= ry1)
+            viaok |= Z & a
         self.free = free; self.viaok = viaok; self.layers = list(layers)
         return free, viaok
 
@@ -243,7 +281,7 @@ class Brd:
     # ---------------------------------------------------------------- route
     def route(self, net, start, targets, w=0.254, win=None, res=0.025, viacost=40, turn45=1.0, turn90=8.0,
               layercost=None, layers=None, maxexp=30000000, extra_forbid=None, novia=False, m=0.012,
-              free_start=0.0):
+              free_start=0.0, free_target=0.0):
         """start: (x,y,L) or list of them (exact points); targets: list of (x,y,L) exact points.
         grid is aligned to the first start point. Returns list of (x,y,L) vertices, or None."""
         layers = ORDER if layers is None else layers
@@ -270,6 +308,11 @@ class Brd:
             i, j = self.cell(x, y)
             if 0 <= i < H and 0 <= j < W and L in layers:
                 li = layers.index(L); tgt[li, i, j] = 1; free[li, i, j] = 1; tpts[(li, i, j)] = (x, y, L)
+                if free_target > 0:   # clear a disc around the target too (own pad halo)
+                    rr = int(free_target / res)
+                    for di in range(-rr, rr + 1):
+                        for dj in range(-rr, rr + 1):
+                            if di * di + dj * dj <= rr * rr and 0 <= i + di < H and 0 <= j + dj < W: free[li, i + di, j + dj] = 1
         st = []
         for (x, y, L) in starts:
             i, j = self.cell(x, y); li = layers.index(L)
@@ -316,7 +359,8 @@ class Brd:
         for (a, c) in zip(poly, poly[1:]):
             if a[2] != c[2]:
                 if abs(a[0] - c[0]) > 1e-6 or abs(a[1] - c[1]) > 1e-6: raise ValueError(('via move', a, c))
-                v = K.PCB_VIA(b); v.SetPosition(V(a[0], a[1])); v.SetWidth(K.FromMM(CFG['via_diameter'])); v.SetDrill(K.FromMM(CFG['via_drill']))
+                vd, vh = self.viasize(net, a[0], a[1])
+                v = K.PCB_VIA(b); v.SetPosition(V(a[0], a[1])); v.SetWidth(K.FromMM(vd)); v.SetDrill(K.FromMM(vh))
                 v.SetLayerPair(K.F_Cu, K.B_Cu); v.SetNet(ni); b.Add(v); new.append(v)
             else:
                 if abs(a[0] - c[0]) < 1e-6 and abs(a[1] - c[1]) < 1e-6: continue
@@ -327,8 +371,38 @@ class Brd:
         return new
 
     def via(self, net, x, y):
-        b = self.b; v = K.PCB_VIA(b); v.SetPosition(V(x, y)); v.SetWidth(K.FromMM(CFG['via_diameter'])); v.SetDrill(K.FromMM(CFG['via_drill']))
+        vd, vh = self.viasize(net, x, y)
+        b = self.b; v = K.PCB_VIA(b); v.SetPosition(V(x, y)); v.SetWidth(K.FromMM(vd)); v.SetDrill(K.FromMM(vh))
         v.SetLayerPair(K.F_Cu, K.B_Cu); v.SetNet(b.FindNet(net)); b.Add(v); self.added.append(v); self.load_geom(); return v
+
+    def fits(self, net, x, y, vd, vh):
+        """exact check of a through via (diameter vd, drill vh) at (x,y) for net against present copper, holes, edge"""
+        c = Point(x, y); r = vd / 2; hm = CFG['hole_margin']; hh = CFG['hole_to_hole_edge']
+        hh = CFG['clearance_hole'] if hh is None else hh
+        for (L, n, k, g, ref, smd) in self.items:
+            if k == 'hole':   # g = hole + hole_margin
+                if g.distance(c) + hm < CFG['clearance_hole'] + vh / 2 - 1e-4: return False
+                continue
+            if k == 'via':
+                dd = Point(P(ref.GetPosition())).distance(c)
+                if dd < 1e-6: continue
+                if dd - mm(ref.GetDrillValue()) / 2 - vh / 2 < hh - 1e-4: return False
+                if n == net: continue
+            if n == net and not (k == 'pad' and smd): continue
+            if g.distance(c) < r + CTP - 1e-4: return False
+        if self.outline.exterior.distance(c) < CE + r - 1e-4: return False
+        for pg in self.keepvia:
+            if pg.distance(c) < r - 1e-4: return False
+        return True
+
+    def viasize(self, net, x, y):
+        """(diameter, drill) for a new via: the default one, or an alt_vias size where the default does not fit"""
+        d = (CFG['via_diameter'], CFG['via_drill'])
+        for z in CFG['alt_vias']:
+            rx0, rx1, ry0, ry1 = z['rect']
+            if rx0 <= x <= rx1 and ry0 <= y <= ry1:
+                return d if self.fits(net, x, y, *d) else (z['via_diameter'], z['via_drill'])
+        return d
 
     def delete(self, net, pred=lambda k, g, L: True):
         rm = []
@@ -378,15 +452,21 @@ class Brd:
                 if n2 == n and k2 == 'via':
                     if L != 'F': continue
                     d = Point(P(ref.GetPosition())).distance(Point(P(ref2.GetPosition())))
-                    if d < CFG['via_hole_to_hole'] - 1e-3 and d > 1e-6: bad.append(f'via-via hole {n} {d:.3f} at {P(ref.GetPosition())}')
+                    if CFG['hole_to_hole_edge'] is None: lim = CFG['via_hole_to_hole']
+                    else: lim = CFG['hole_to_hole_edge'] + (mm(ref.GetDrillValue()) + mm(ref2.GetDrillValue())) / 2
+                    if d < lim - 1e-3 and d > 1e-6: bad.append(f'via-via hole {n} {d:.3f} at {P(ref.GetPosition())}')
                     continue
                 need = CTT if (k == 'trk' and k2 == 'trk') else (CFG['clearance_hole'] if k2 == 'hole' else CTP)
                 if n2 == n and k2 == 'pad': need = CTP
                 if k2 == 'hole' and n2 == n: continue
-                dd = g.distance(g2) + (0.03 if k2 == 'hole' else 0)
+                dd = g.distance(g2) + (0.03 if k2 == 'hole' else 0)   # hole items carry hole_margin (default 0.03)
                 if dd < need - 2e-5:
                     bad.append(f'{L} {dd:.3f}<{need} {n} {k} {desc(ref)} | {n2} {k2} {desc(ref2)}')
                     self.offend.append((n, ref, n2, ref2))
+            if CFG['check_keepouts'] and k == 'via' and L == ORDER[0] and any(g.intersection(pg).area > 1e-6 for pg in self.keepvia):
+                bad.append(f'keepout via {n} {desc(ref)}'); self.offend.append((n, ref, None, None))
+            if CFG['check_keepouts'] and k == 'trk' and any(g.intersection(pg).area > 1e-6 for pg in self.keep.get(L, [])):
+                bad.append(f'keepout trk {L} {n} {desc(ref)}'); self.offend.append((n, ref, None, None))
             if k == 'trk' and g.distance(self.outline.exterior) < CE - 1e-3 and L in ORDER:
                 bad.append(f'edge {n} {desc(ref)}'); self.offend.append((n, ref, None, None))
         return sorted(set(bad))
